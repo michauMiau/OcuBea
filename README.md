@@ -2,6 +2,16 @@
 
 A lightweight IP camera streamer mainly for phones
 
+## Progress
+
+### Current blockers
+
+Planning the project, choosing a language
+
+### Currently worked on
+
+Nothing right now
+
 ## The Goal
 
 Create a lightweight, low latency, high resolution camera streaming app for phones and other device
