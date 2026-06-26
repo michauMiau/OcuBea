@@ -18,7 +18,7 @@ The App will be built in a yet undecided, lightweight, high performance, easy to
 
 Libraries such as FFMPEG, Go2RTC and others will be used to encode the video and stream it
 
-Unlike the original app which only used h264, different codecs such as H265, AVIF and other codecs will be availble depending on the availible hardware/software encoders avaiilble on the host device 
+Unlike the original app which only used h264, different codecs such as H265, AVIF and other codecs will be availble depending on the availible hardware/software encoders avaiilble on the host and decoders on the client device 
 
 ## Requirements
 Must run on android 6 or later
