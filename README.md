@@ -14,6 +14,7 @@ The uses will be: A quick security camera, A 3D Printer camera, A Webcam for OBS
 
 ## The Architecture
 
+The APP shall be modular, easy to read the codebase, easy to understand, performant and easy to contribute to, and well documented
 The App will be built in a yet undecided, lightweight, high performance, easy to code, crossplatform language.
 
 Libraries such as FFMPEG, Go2RTC and others will be used to encode the video and stream it
@@ -24,3 +25,20 @@ Unlike the original app which only used h264, different codecs such as H265, AVI
 Must run on android 6 or later
 Can run on desktop platforms like Linux or Windows
 Optional: Run on IOS 12
+
+## Features to be recreated (Add proper markdown checklist)
+Basic Streaming
+Complete webui
+Basic App ui to change settings
+Basic API
+Motion Detection Recording (security camera)
+Audio Streaming
+Bidirectional Audio
+HTTPS Support
+More Streaming codecs
+Running APP in the background
+Running on start-up
+Full API Parity
+Auto Screen Dim/Turn Off
+ONVIF Support
+Night Vision
