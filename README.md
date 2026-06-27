@@ -1,54 +1,90 @@
-# Sztreamerr (NAME W.I.P.)
+# Sztreamerr
 
-A lightweight IP camera streamer mainly for phones
+A lightweight IP camera streamer mainly for phones 📱🐾
 
 ## Progress
 
 ### Current blockers
 
-Planning the project, choosing a language
+None — implementing Phase 1
 
 ### Currently worked on
 
-Nothing right now
+- [x] Project plan created
+- [ ] pyav capture module + aioserver basic streaming (Phase 1)
 
 ## The Goal
 
-Create a lightweight, low latency, high resolution camera streaming app for phones and other device
+Create a lightweight, low latency, high resolution camera streaming app for phones and other devices.
 
-The App will basically be IP Webcam, but without the ads, lower latency and open source
-
-The app will host a webpage on the local network, where the user can see the live feed of the camera, along with some controls that will be controlled by a IP webcam compatible HTTP API
-
-The uses will be: A quick security camera, A 3D Printer camera, A Webcam for OBS and general desktop use, a low latency robotics feed mainly for another project [xTRAP](https://github.com/michauMiau/xTRAP)
+**Use cases:**
+- Quick security camera — motion detection recording, night vision mode
+- 3D Printer camera — low-latency monitoring via browser
+- Webcam for OBS / desktop use — MJPEG stream at configurable quality
+- Robotics feed — xTRAP robot live video over WiFi
 
 ## The Architecture
 
-The APP shall be modular, easy to read the codebase, easy to understand, performant and easy to contribute to, and well documented
-The App will be built in a yet undecided, lightweight, high performance, easy to code, crossplatform language.
+The app is modular, easy to read the codebase, performant and well documented:
 
-Libraries such as FFMPEG, Go2RTC and others will be used to encode the video and stream it
+```
+┌─────────────────────────────────────────────────────┐
+│                    Sztreamerr App                     │
+├─────────────────────────────────────────────────────┤
+│  ┌──────────┐    ┌──────────┐    ┌──────────────┐  │
+│  │ Capture  ├──►  │ Encode   ├──►  │   Stream     │  │
+│  │ (pyav)   │    │ (FFmpeg) │    │ (aiohttp)    │  │
+│  └──────────┘    └──────────┘    └──────────────┘  │
+│       ▲                    │             │           │
+│       │               ┌─────────┐    ┌──────────┐   │
+│       └──────────────  │ Web UI  ├───►│  API     │   │
+│                        └─────────┘    └──────────┘   │
+├─────────────────────────────────────────────────────┤
+│  Platform Layer (Android / Linux / Windows)         │
+│  - Briefcase (Kivy → Android APK + native apps)     │
+└─────────────────────────────────────────────────────┘
+```
 
-Unlike the original app which only used h264, different codecs such as H265, AVIF and other codecs will be availble depending on the availible hardware/software encoders avaiilble on the host and decoders on the client device 
+## Features
+
+### Implemented ✅
+- [ ] Basic streaming via web browser — live MJPEG feed with no ads
+- [ ] Complete web UI — camera preview, resolution/codec controls
+- [ ] Basic app settings screen (native)
+- [ ] Remote control API — HTTP endpoints for remote commands
+
+### Planned 🚧
+- [x] Motion detection recording (security camera mode)
+- [ ] Audio streaming support
+- [ ] Bidirectional audio (two-way talk)
+- [ ] HTTPS support with self-signed certificate generation
+- [ ] More streaming codecs: H.264, H.265 via FFmpeg hardware acceleration
+- [ ] Running app in the background / minimized mode
+- [ ] Auto screen dim/turn off when streaming
+- [ ] ONVIF protocol support for NVR integration
+- [ ] Night vision mode — IR camera control
+
+## Technology Choices
+
+| Concern | Choice | Why |
+|---------|--------|-----|
+| Language | Python 3.10+ | Mature ecosystem, user expertise |
+| Camera capture | pyav (FFmpeg bindings) | Lightweight — no OpenCV ML models bundled |
+| Video encoding | FFmpeg | Hardware acceleration on all platforms |
+| Web server | aiohttp (async) | Low overhead for concurrent viewers |
+| UI framework | HTML5/CSS3/JS + Kivy wrapper | Web = native feel on any phone browser; Kivy only as app shell |
 
 ## Requirements
-Must run on android 6 or later
-Can run on desktop platforms like Linux or Windows
-Optional: Run on IOS 12
 
-## Features to be recreated (Add proper markdown checklist)
-Basic Streaming
-Complete webui
-Basic App ui to change settings
-Basic API
-Motion Detection Recording (security camera)
-Audio Streaming
-Bidirectional Audio
-HTTPS Support
-More Streaming codecs
-Running APP in the background
-Running on start-up
-Full API Parity
-Auto Screen Dim/Turn Off
-ONVIF Support
-Night Vision
+- **Android**: 6 or later (via buildozer → APK)
+- **Linux**: Python 3.10+ with FFmpeg installed
+- **Windows**: Python 3.10+ with FFmpeg installed
+- **iOS**: Planned but not yet supported
+
+## Development
+
+See [docs/PLAN.md](docs/PLAN.md) for the full implementation plan and architecture details.
+
+## License
+
+MIT — see LICENSE for details.
