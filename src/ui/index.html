@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sztreamerr — Kamera na żywo</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js"></script>
+</head>
+<body>
+<header class="header">
+  <h1>Sztreamerr</h1>
+  <span id="status" class="badge green">&#9679;</span>
+</header>
+
+<div class="main">
+  <video id="video" autoplay playsinline muted></video>
+
+  <section class="controls">
+    <label>Brightness <input type="range" min="-50" max="50" value="0" step="1"></label>
+    <label>Contrast   <input type="range" min="-50" max="50" value="0" step="1"></label>
+    <label>Saturation  <input type="range" min="-50" max="50" value="0" step="1"></label>
+  </section>
+
+  <nav class="tabs">
+    <button data-tab="feed">Podgląd</button>
+    <button data-tab="settings">Ustawienia</button>
+  </nav>
+
+  <div id="tab-feed">
+    <p>Szczegółowe statystyki są tutaj jeszcze do dodania.</p>
+  </div>
+
+  <div id="tab-settings" class="panel" hidden>
+    <form id="camera-form">
+      <label>Framerate<br><input type="number" name="framerate" value="30"></label>
+      <label>Rozdzielczość (wysokość)<br><input type="number" name="height" min="240" max="1080" step="60" value="1080"></label>
+      <button type="submit">Zapisz ustawienia</button>
+    </form>
+  </div>
+
+  <section class="api-doc">
+    <h3>Dokumentacja API — do uzupełnienia po powrocie</h3>
+    <p>Tymczasowo brak endpointów sterujących.</p>
+  </section>
+</div>
+
+<script src="/static/feed.js"></script>
+</body>
+</html>

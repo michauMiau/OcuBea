@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.so
+.DS_Store
+.env
+buildozer.spec
+dist/
+*.apk

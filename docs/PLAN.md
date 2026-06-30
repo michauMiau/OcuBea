@@ -8,10 +8,9 @@
 ├─────────────────────────────────────────────────────┤
 │  ┌──────────┐    ┌──────────┐    ┌──────────────┐  │
 │  │ Capture  ├──►  │ Encode   ├──►  │   Stream     │  │
-│  │  Module  │    │  Module  │    │   Module     │  │
+│  │ (FFmpeg) │    │  Module  │    │ (aiohttp)    │  │
 │  └──────────┘    └──────────┘    └──────────────┘  │
 │       ▲                    │             │           │
-│       │                    │             ▼           │
 │       │               ┌─────────┐    ┌──────────┐   │
 │       └──────────────  │ Web UI  ├───►│  API     │   │
 │                        └─────────┘    └──────────┘   │
@@ -21,13 +20,14 @@
 └─────────────────────────────────────────────────────┘
 ```
 
-## Module Design
-
-### 1. Capture Module (`src/capture/`)
-- **pyav (FFmpeg Python bindings)** — `av` package for camera capture and frame decoding. Lightweight, no ML overhead unlike OpenCV which bundles heavy vision models
-- **Native fallback**: Android Camera2 API via Java bridge (pyjnius), Linux v4l2 via ctypes
+#### 1. Capture Module (`src/capture/`)
+- **FFmpeg subprocess** — `subprocess.run(['ffmpeg', '-f v4l2 -i /dev/video0'])` for cross-platform capture (Linux V4L2, Android Camera2 via FFmpeg wrapper). Lightweight — no OpenCV ML models bundled
+- **Android fallback**: native Camera2 API via Java bridge (pyjnius) — planned but not yet implemented
 - Frame format: raw frames passed to FFmpeg for encoding
 - Backend abstraction: `src/capture/backend.py` ABC with `read_frame()` returning bytes + resolution metadata
+- **CameraInfo** class for camera device enumeration and configuration
+- **VideoFrame** frozen dataclass (`pixels`, `width`, `height`, auto-generated `timestamp_ms`) — represents a single captured frame
+- `ffmpeg_capture.py` — FFmpeg subprocess implementation wrapping raw V4L2 → MJPEG output
 
 ### 2. Encode Module (`src/encode/`)
 - FFmpeg bindings via `subprocess.run(['ffmpeg', ...], capture_output=True)` for encoding frames to H.264/H.265
@@ -47,22 +47,23 @@
 
 ## Implementation Phases
 
-### Phase 1 — Foundation (Days 1–4)
-- [ ] **1.1** Project scaffolding: `pyproject.toml`, src layout, config management (`src/core/config.py`)
-- [ ] **1.2** Capture module with pyav backend + camera enumeration
-- [ ] **1.3** Static web UI (camera preview page)
-- [ ] **1.4** aiohttp server serving the UI and MJPEG stream endpoint
+### Phase 1 — Foundation (Days 1–4) ✅
+- [x] **1.1** Project scaffolding: `pyproject.toml`, src layout, config management (`src/core/__init__.py`)
+- [x] **1.2** Capture module with FFmpeg subprocess backend + camera enumeration
+- [x] **1.3** Static web UI (camera preview page)
+- [x] **1.4** aiohttp server serving the UI and MJPEG stream endpoint
 
-### Phase 2 — Core Features (Days 5–8)
-- [ ] **2.1** FFmpeg H.264/H.265 encoding integration
-- [ ] **2.2** Multi-viewer streaming support with concurrent connections
-- [ ] **2.3** Settings management: persist preferences, per-device defaults
-- [ ] **2.4** Basic API endpoints for remote control
+### Phase 2 — Core Features (Days 5–8) ✅
+- [x] **2.1** FFmpeg H.264/H.265 encoding integration (`engine.py` + `pipeline.py`) — continuous streaming via subprocess
+- [x] **2.2** Multi-viewer streaming support with concurrent connections (`multi_viewer.py`) — independent frame queues per viewer
+- [x] **2.3** Settings persistence — per-device defaults, config file save/load (`settings.py`)
+- [x] **2.4** Basic API endpoints for remote control (10 endpoints defined in `endpoints.py` registry)
 
-### Phase 3 — Polish (Days 9–10)
+### Phase 3 — Polish (Days 9–10) 🚧
 - [ ] **3.1** Motion detection via background pyav frame analysis
 - [ ] **3.2** Android packaging with Briefcase + buildozer
 - [ ] **3.3** Desktop app builds (Linux AppImage, Windows installer)
+- [ ] **3.4** HTTPS support with self-signed certificate generation
 
 ## Technology Choices
 
@@ -79,7 +80,6 @@
 1. **pyav on Android**: pyav packages FFmpeg binaries — check if the bundled version includes Camera2 support or if we need a separate native camera module.
 2. **Hardware acceleration varies by device**: Detect encoder availability at runtime; fall back to software encoding when needed (document in settings).
 3. **MJPEG latency under load**: Implement connection pooling and bandwidth throttling per viewer.
-4. **OpenMeow confusion**: Removed all references — OpenMeow is a LEGO robotics framework unrelated to this project.
 
 ## Dependencies (pyproject.toml)
 ```toml
@@ -101,21 +101,28 @@ android = ["buildozer"]
 ## Source Layout
 ```
 src/
-├── main.py              # Entry point — app lifecycle (Kivy) + aioserver loop
-├── config.py            # App configuration (pydantic-settings)
+├── main.py              # Entry point — app lifecycle + aiohttp server loop
+├── core/__init__.py     # Settings, CameraConfig, ServerConfig (pydantic)
 ├── capture/
 │   ├── __init__.py
-│   └── backend.py       # ABC for camera backends
+│   ├── backend.py       # ABC for camera backends + VideoFrame frozen dataclass + CameraInfo
+│   └── ffmpeg_capture.py  # FFmpeg subprocess implementation (V4L2 → MJPEG)
 ├── encode/
 │   ├── __init__.py
-│   └── ffmpeg.py        # FFmpeg encoding pipeline
+│   ├── engine.py        # H.264/H.265 encoding via FFmpeg subprocess
+│   └── pipeline.py      # Frame processing pipeline
 ├── stream/
 │   ├── __init__.py
-│   └── server.py        # aiohttp HTTP/MJPEG streaming server
-├── ui/
-│   ├── html/index.html  # Web UI (camera preview + settings)
-│   ├── static/style.css
-│   └── components.js
-└── api/
-    └── endpoints.py     # Control API endpoints
+│   ├── server.py        # aiohttp HTTP/MJPEG streaming server + FrameSource
+│   └── mjpeg.py         # MJPEG boundary/header generation utilities
+├── api/
+│   ├── __init__.py
+│   ├── config.py        # API configuration endpoints
+│   └── endpoints.py     # Camera control & status API endpoints
+└── ui/
+    ├── index.html       # Web UI (camera preview + settings)
+    ├── style.css        # Stylesheet
+    └── static/
+        ├── app.js       # Main application logic
+        └── feed.js      # MJPEG video feed handling
 ```
