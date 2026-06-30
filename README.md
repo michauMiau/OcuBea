@@ -46,16 +46,16 @@ The app is modular, easy to read the codebase, performant and well documented:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    Sztreamerr App                     │
+│                    Sztreamerr App                   │
 ├─────────────────────────────────────────────────────┤
-│  ┌──────────┐    ┌──────────┐    ┌──────────────┐  │
-│  │ Capture  ├──►  │ Encode   ├──►  │   Stream     │  │
-│  │ (pyav)   │    │ (FFmpeg) │    │ (aiohttp)    │  │
-│  └──────────┘    └──────────┘    └──────────────┘  │
-│       ▲                    │             │           │
+│  ┌──────────┐    ┌──────────┐    ┌──────────────┐   │
+│  │ Capture  ├──► │ Encode   ├──► │   Stream     │   │
+│  │ (pyav)   │    │ (FFmpeg) │    │ (aiohttp)    │   │
+│  └──────────┘    └──────────┘    └──────────────┘   │
+│       ▲                    │             │          │
 │       │               ┌─────────┐    ┌──────────┐   │
-│       └──────────────  │ Web UI  ├───►│  API     │   │
-│                        └─────────┘    └──────────┘   │
+│       └────────────── │ Web UI  ├───►│  API     │   │
+│                       └─────────┘    └──────────┘   │
 ├─────────────────────────────────────────────────────┤
 │  Platform Layer (Android / Linux / Windows)         │
 │  - Briefcase (Kivy → Android APK + native apps)     │
@@ -84,29 +84,29 @@ The app is modular, easy to read the codebase, performant and well documented:
 - [ ] Running app in the background / minimized mode
 - [ ] Auto screen dim/turn off when streaming
 - [ ] ONVIF protocol support for NVR integration
-- [ ] Night vision mode — IR camera control
+- [ ] Autostartup, possible option to set the app as a launcher for a permanent security camera
+- [ ] Night vision mode — without special hardware, utilizing existing camera and processing tricks
 
 ## Technology Choices
 
-|| Concern | Choice | Why ||
-||---------|--------|-----||
-|| Language | Python 3.10+ | Mature ecosystem, user expertise ||
-|| Camera capture | FFmpeg subprocess (pyav) | Lightweight — no OpenCV ML models bundled ||
-|| Video encoding | FFmpeg | Hardware acceleration on all platforms ||
-|| Web server | aiohttp (async) | Low overhead for concurrent viewers ||
-|| UI framework | HTML5/CSS3/JS + Kivy wrapper | Web = native feel on any phone browser; Kivy only as app shell ||
+| Concern | Choice | Why |
+|---------|--------|-----|
+| Language | Python 3.10+ | Mature ecosystem, user expertise |
+| Camera capture | FFmpeg subprocess (pyav) | Lightweight — not using OpenCV |
+| Video encoding | FFmpeg | Hardware acceleration on all platforms |
+| Web server | aiohttp (async) | Low overhead for concurrent viewers |
+| UI framework | HTML5/CSS3/JS + Kivy wrapper | Web = native feel on any phone browser; Kivy only as app shell |
 
 ## Requirements
 
-- **Android**: 6 or later (via buildozer → APK)
+- **Android**: 6 or lower (via buildozer → APK)
 - **Linux**: Python 3.10+ with FFmpeg installed
 - **Windows**: Python 3.10+ with FFmpeg installed
-- **iOS**: Planned but not yet supported
+- **iOS**: Planned but not yet supported, possibly using kivy-for-ios and existing buildozer
 
 ## Development
 
 See [docs/PLAN.md](docs/PLAN.md) for the full implementation plan and architecture details.
 
 ## License
-
-MIT — see LICENSE for details.
+GPl-3 See LICENSE for details.
