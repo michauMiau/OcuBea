@@ -1,4 +1,4 @@
-"""OpenMeow camera — MJPEG frames from a V4L2 device."""
+"""V4L2 camera — MJPEG frames from a V4L2 device."""
 
 from __future__ import annotations
 
@@ -6,13 +6,12 @@ import time
 from dataclasses import dataclass, field
 
 import cv2
-from cv2.typing import MatLike
 
 from .backend import CameraBackend, VideoFrame
 
 
 @dataclass(frozen=True)
-class OpenMeowConfig:
+class Config:
     resolution_w: int = 1920
     resolution_h: int = 1080
     framerate: float = field(default=30.0, repr=False)
@@ -21,12 +20,12 @@ class OpenMeowConfig:
     saturation: float = 50.0
 
 
-class OpenMeow(CameraBackend):
-    """OpenMeow MJPEG backend — streams from a V4L2 device as H.264 frames."""
+class Camera(CameraBackend):
+    """V4L2 MJPEG camera — streams from a V4L2 device."""
 
     def __init__(self, index: int = 0) -> None:
         self.index = index
-        self.config = OpenMeowConfig()
+        self.config = Config()
         self._cap: cv2.VideoCapture | None = None
         self._frame: VideoFrame | None = None
 
@@ -35,10 +34,7 @@ class OpenMeow(CameraBackend):
     # ------------------------------------------------------------------
 
     def open(self, index: int) -> None:  # noqa: D102 — no docstring (public override)
-        cap = cv2.VideoCapture(
-            index,
-            cv2.CAP_V4L2,
-        )
+        cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
         if not cap.isOpened():
             return
 
@@ -49,9 +45,7 @@ class OpenMeow(CameraBackend):
         for attr_name in ("CAP_PROP_FRAME_WIDTH", "CAP_PROP_FRAME_HEIGHT"):
             cap.set(getattr(cv2, attr_name), w if "WIDTH" in attr_name else h)
 
-        cv2.VideoCapture.set(
-            cap, cv2.CAP_PROP_FPS, fps
-        )
+        cv2.VideoCapture.set(cap, cv2.CAP_PROP_FPS, fps)
         self._cap = cap
 
     def read_frame(self) -> VideoFrame | None:  # noqa: D102

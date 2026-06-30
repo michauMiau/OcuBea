@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -15,11 +15,7 @@ class VideoFrame:
     pixels: bytes
     width: int
     height: int
-    timestamp_ms: float = 0.0
-
-    def __post_init__(self) -> None:
-        if self.timestamp_ms == 0.0:
-            object.__setattr__(self, "timestamp_ms", time.time() * 1000)
+    timestamp_ms: float = field(default_factory=lambda: time.time() * 1000.0, compare=False)
 
 
 @dataclass(frozen=True)
@@ -37,13 +33,13 @@ class CameraBackend(ABC):
     """Abstract base class for camera capture backends."""
 
     @abstractmethod
-    def open(self, index: int) -> None:
+    async def open(self, index: int) -> None:
         pass
 
     @abstractmethod
-    def read_frame(self) -> VideoFrame | None:
+    async def read_frame(self) -> VideoFrame | None:
         pass
 
     @abstractmethod
-    def close(self) -> None:
+    async def close(self) -> None:
         pass

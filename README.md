@@ -5,13 +5,29 @@ A lightweight IP camera streamer mainly for phones 📱🐾
 ## Progress
 
 ### Current blockers
-
-None — implementing Phase 1
+None — core infrastructure complete, ready for Phase 3 features
 
 ### Currently worked on
-
 - [x] Project plan created
-- [ ] pyav capture module + aioserver basic streaming (Phase 1)
+- [x] FFmpeg subprocess capture backend (cross-platform: Linux/Android)
+- [x] MJPEG streaming server with aiohttp and multi-viewer support
+- [x] Web UI foundation
+- [x] Camera lifecycle management (open/close safety, double-close protection)
+- [x] VideoFrame frozen dataclass with auto-generated timestamps
+- [x] FrameSource abstraction for stream generation
+- [x] H.264/H.265 encoding integration via FFmpeg subprocess
+- [x] Encoding pipeline with frame queues (producer-consumer pattern)
+- [x] Multi-viewer streaming support (concurrent MJPEG connections)
+- [x] API endpoints registry for remote control
+
+### Recent fixes (June 2026)
+- ✅ Fixed `VideoFrame` frozen dataclass — timestamp_ms now auto-generates via `default_factory`
+- ✅ Separated `CameraInfo` as distinct class from `VideoFrame`
+- ✅ Added double-close protection to prevent camera being closed twice
+- ✅ Cleaned up MJPEG boundary generation (raw JPEG from capture → server wraps with boundaries)
+- ✅ Implemented H.264/H.265 encoding pipeline via FFmpeg subprocess (`H264Encoder` + `EncodingPipeline`)
+- ✅ Added multi-viewer streaming support — concurrent MJPEG connections with independent frame queues
+- ✅ Created API endpoints registry (10 endpoints) for camera/stream/encoder/settings management
 
 ## The Goal
 
@@ -48,10 +64,15 @@ The app is modular, easy to read the codebase, performant and well documented:
 ## Features
 
 ### Implemented ✅
-- [ ] Basic streaming via web browser — live MJPEG feed with no ads
-- [ ] Complete web UI — camera preview, resolution/codec controls
-- [ ] Basic app settings screen (native)
-- [ ] Remote control API — HTTP endpoints for remote commands
+- [x] Basic streaming via web browser — live MJPEG feed (FFmpeg subprocess capture + aiohttp server)
+- [x] Complete web UI foundation — camera preview, resolution/codec controls
+- [x] Camera lifecycle management — safe open/close with double-close protection
+- [x] FFmpeg subprocess capture backend — cross-platform (Linux V4L2, Android)
+- [x] MJPEG streaming server with multipart/x-mixed-replace protocol
+- [x] FrameSource abstraction for stream generation
+- [x] H.264/H.265 encoding integration via FFmpeg subprocess (`H264Encoder` + `EncodingPipeline`)
+- [x] Multi-viewer streaming support — concurrent MJPEG connections with independent frame queues
+- [x] API endpoints registry — 10 endpoints for camera/stream/encoder/settings management
 
 ### Planned 🚧
 - [x] Motion detection recording (security camera mode)
@@ -66,13 +87,13 @@ The app is modular, easy to read the codebase, performant and well documented:
 
 ## Technology Choices
 
-| Concern | Choice | Why |
-|---------|--------|-----|
-| Language | Python 3.10+ | Mature ecosystem, user expertise |
-| Camera capture | pyav (FFmpeg bindings) | Lightweight — no OpenCV ML models bundled |
-| Video encoding | FFmpeg | Hardware acceleration on all platforms |
-| Web server | aiohttp (async) | Low overhead for concurrent viewers |
-| UI framework | HTML5/CSS3/JS + Kivy wrapper | Web = native feel on any phone browser; Kivy only as app shell |
+|| Concern | Choice | Why ||
+||---------|--------|-----||
+|| Language | Python 3.10+ | Mature ecosystem, user expertise ||
+|| Camera capture | FFmpeg subprocess (pyav) | Lightweight — no OpenCV ML models bundled ||
+|| Video encoding | FFmpeg | Hardware acceleration on all platforms ||
+|| Web server | aiohttp (async) | Low overhead for concurrent viewers ||
+|| UI framework | HTML5/CSS3/JS + Kivy wrapper | Web = native feel on any phone browser; Kivy only as app shell ||
 
 ## Requirements
 

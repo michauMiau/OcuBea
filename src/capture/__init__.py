@@ -1,10 +1,10 @@
-"""Camera capture backend for Sztreamerr."""
-
-from .backend import CameraBackend, VideoFrame, CameraInfo, CodecMode
+from .backend import CameraBackend, VideoFrame, CameraInfo
+from .ffmpeg_capture import Config as FFmpegConfig, Camera as FFmpegCamera
 
 __all__ = [
-    "CameraBackend",
-    "VideoFrame",
-    "CameraInfo",
-    "CodecMode",
+   "CameraBackend",
+   "VideoFrame",
+   "CameraInfo",
+   "FFmpegConfig",
+   "FFmpegCamera",
 ]
