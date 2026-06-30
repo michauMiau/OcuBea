@@ -5,11 +5,11 @@ A lightweight IP camera streamer mainly for phones 📱🐾
 ## Progress
 
 ### Current blockers
-None — core infrastructure complete, ready for Phase 3 features
+None — core infrastructure complete, ready for Android packaging
 
-### Currently worked on
+### Currently worked on (Phase 2 ✅ + Phase 3 🚧)
 - [x] Project plan created
-- [x] FFmpeg subprocess capture backend (cross-platform: Linux/Android)
+- [x] FFmpeg subprocess capture backend (cross-platform: Linux V4L2 + Android Camera2)
 - [x] MJPEG streaming server with aiohttp and multi-viewer support
 - [x] Web UI foundation
 - [x] Camera lifecycle management (open/close safety, double-close protection)
@@ -19,6 +19,7 @@ None — core infrastructure complete, ready for Phase 3 features
 - [x] Encoding pipeline with frame queues (producer-consumer pattern)
 - [x] Multi-viewer streaming support (concurrent MJPEG connections)
 - [x] API endpoints registry for remote control
+- [ ] **Android packaging** — Kivy wrapper + Buildozer + Camera2 backend
 
 ### Recent fixes (June 2026)
 - ✅ Fixed `VideoFrame` frozen dataclass — timestamp_ms now auto-generates via `default_factory`
