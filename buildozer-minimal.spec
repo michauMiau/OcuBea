@@ -1,7 +1,7 @@
 [app]
 title = Sztreamerr
 package.name = sztreamerr
-package.domain = org.michiumiu
+package.domain = io.michaumiau
 source.dir = .
 version = 0.3.0
 orientation = landscape
