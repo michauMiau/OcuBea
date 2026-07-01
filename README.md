@@ -5,9 +5,11 @@ A lightweight IP camera streamer mainly for phones 📱🐾
 ## Progress
 
 ### Current blockers
+
 None — core infrastructure complete, ready for Android packaging
 
 ### Currently worked on (Phase 2 ✅ + Phase 3 🚧)
+
 - [x] Project plan created
 - [x] FFmpeg subprocess capture backend (cross-platform: Linux V4L2 + Android Camera2)
 - [x] MJPEG streaming server with aiohttp and multi-viewer support
@@ -22,6 +24,7 @@ None — core infrastructure complete, ready for Android packaging
 - [ ] **Android packaging** — Kivy wrapper + Buildozer + Camera2 backend
 
 ### Recent fixes (June 2026)
+
 - ✅ Fixed `VideoFrame` frozen dataclass — timestamp_ms now auto-generates via `default_factory`
 - ✅ Separated `CameraInfo` as distinct class from `VideoFrame`
 - ✅ Added double-close protection to prevent camera being closed twice
@@ -35,6 +38,7 @@ None — core infrastructure complete, ready for Android packaging
 Create a lightweight, low latency, high resolution camera streaming app for phones and other devices.
 
 **Use cases:**
+
 - Quick security camera — motion detection recording, night vision mode
 - 3D Printer camera — low-latency monitoring via browser
 - Webcam for OBS / desktop use — MJPEG stream at configurable quality
@@ -44,7 +48,7 @@ Create a lightweight, low latency, high resolution camera streaming app for phon
 
 The app is modular, easy to read the codebase, performant and well documented:
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
 │                    Sztreamerr App                   │
 ├─────────────────────────────────────────────────────┤
@@ -65,6 +69,7 @@ The app is modular, easy to read the codebase, performant and well documented:
 ## Features
 
 ### Implemented ✅
+
 - [x] Basic streaming via web browser — live MJPEG feed (FFmpeg subprocess capture + aiohttp server)
 - [x] Complete web UI foundation — camera preview, resolution/codec controls
 - [x] Camera lifecycle management — safe open/close with double-close protection
@@ -76,6 +81,7 @@ The app is modular, easy to read the codebase, performant and well documented:
 - [x] API endpoints registry — 10 endpoints for camera/stream/encoder/settings management
 
 ### Planned 🚧
+
 - [x] Motion detection recording (security camera mode)
 - [ ] Audio streaming support
 - [ ] Bidirectional audio (two-way talk)
@@ -90,7 +96,7 @@ The app is modular, easy to read the codebase, performant and well documented:
 ## Technology Choices
 
 | Concern | Choice | Why |
-|---------|--------|-----|
+| ------- | ------ | --- |
 | Language | Python 3.10+ | Mature ecosystem, user expertise |
 | Camera capture | FFmpeg subprocess (pyav) | Lightweight — not using OpenCV |
 | Video encoding | FFmpeg | Hardware acceleration on all platforms |
@@ -109,4 +115,5 @@ The app is modular, easy to read the codebase, performant and well documented:
 See [docs/PLAN.md](docs/PLAN.md) for the full implementation plan and architecture details.
 
 ## License
+
 GPl-3 See LICENSE for details.
