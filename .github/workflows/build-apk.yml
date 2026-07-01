@@ -36,14 +36,7 @@ jobs:
     
     - name: Accept Android licenses
       uses: SimonMarquis/android-accept-licenses@v1
-
-    - name: Accept build tools licenses
-      run: |
-        export ANDROID_HOME=$HOME/android-sdk
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-        yes | $ANDROID_HOME/tools/bin/sdkmanager "platforms;android-28" || true
-        yes | $ANDROID_HOME/tools/bin/sdkmanager "build-tools;37.0.0" || true
-
+    
     - name: Install SDK packages
       run: |
         export ANDROID_HOME=$HOME/android-sdk
@@ -56,23 +49,17 @@ jobs:
       with:
         python-version: '3.11'
     
-    - name: Install Buildozer
+    - name: Install Buildozer deps
       run: |
         sudo apt-get update && sudo apt-get install -y python3-dev python3-pip build-essential git zip unzip wget curl libtool autoconf automake pkg-config libltdl-dev
-        pip install --user cython  # must be first — jnius/pyjnius need it to compile
-        sleep 5  # wait for cython installation to complete
+        pip install --user cython
+        sleep 5
         pip install --user buildozer kivy pillow pyjnius requests aiohttp
         export PATH="$HOME/.local/bin:$PATH"
-        which buildozer || echo "WARNING: buildozer not found in PATH"
-    
-    - name: Fix SDL ALooper_pollAll deprecation
-      run: |
-        # Patch SDL's deprecated ALooper_pollAll -> ALooper_pollOnce
-        find /home/runner/.buildozer/android/platform/build-arm64-v8a_armeabi-v7a/build/bootstrap_builds/sdl2/jni/SDL/src -name '*.c' | xargs sed -i 's/ALooper_pollAll(/ALooper_pollOnce(/g'
     
     - name: Build APK
       env:
-        CFLAGS: "-Wno-error=implicit-function-declaration"
+        CFLAGS: "-Wno-error=implicit-function-declaration -Wno-error=deprecated-declarations"
         LDFLAGS: "-Wno-error=implicit-function-declaration"
       run: |
         cd $GITHUB_WORKSPACE
