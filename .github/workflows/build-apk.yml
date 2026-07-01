@@ -33,14 +33,7 @@ jobs:
     
     - name: Accept Android licenses
       uses: SimonMarquis/android-accept-licenses@v1
-
-    - name: Accept android licenses again
-      run: |
-        export ANDROID_HOME=$HOME/android-sdk
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
-        yes | $ANDROID_HOME/tools/bin/sdkmanager "platforms;android-28"
-        yes | $ANDROID_HOME/tools/bin/sdkmanager "build-tools;27.0.3"
-
+    
     - name: Install SDK packages
       run: |
         export ANDROID_HOME=$HOME/android-sdk
