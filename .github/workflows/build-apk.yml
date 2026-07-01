@@ -28,10 +28,10 @@ jobs:
         cd /tmp
         wget https://dl.google.com/android/repository/commandlinetools-linux-7583922_latest.zip
         unzip -q commandlinetools-linux-*.zip
-        # Move contents of extracted cmdline-tools into the 'latest' directory
         mv $PWD/cmdline-tools/* $ANDROID_HOME/cmdline-tools/latest/
         rmdir $PWD/cmdline-tools 2>/dev/null || true
-        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses
+        sudo apt-get update && sudo apt-get install -y yes
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses
         $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-34" "build-tools;37.0.0"
     
     - name: Install Buildozer
