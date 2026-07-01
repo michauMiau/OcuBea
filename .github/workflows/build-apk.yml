@@ -24,14 +24,17 @@ jobs:
     - name: Setup Android SDK
       run: |
         export ANDROID_HOME=$HOME/android-sdk
-        mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin
+        mkdir -p $ANDROID_HOME/cmdline-tools/latest/bin $ANDROID_HOME/licenses
         cd /tmp
         wget https://dl.google.com/android/repository/commandlinetools-linux-7583922_latest.zip
         unzip -q commandlinetools-linux-*.zip
         mv $PWD/cmdline-tools/* $ANDROID_HOME/cmdline-tools/latest/
         rmdir $PWD/cmdline-tools 2>/dev/null || true
-        sudo apt-get update && sudo apt-get install -y yes
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses
+        # Pre-accept all licenses by writing them directly
+        echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > $ANDROID_HOME/licenses/android-sdk-license
+        echo "84831b9409646a975e0e3d7c01d7727c63fcd223" >> $ANDROID_HOME/licenses/android-sdk-cmake-license
+        echo "d56f5187479451eabf01fb78af6dfcb131a6481e" >> $ANDROID_HOME/licenses/android-sdk-license
+        # Install platform and build-tools
         $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-34" "build-tools;37.0.0"
     
     - name: Install Buildozer
