@@ -58,7 +58,7 @@ jobs:
     
     - name: Install Buildozer
       run: |
-        sudo apt-get update && sudo apt-get install -y python3-pip build-essential git zip unzip wget curl python3-dev
+        sudo apt-get update && sudo apt-get install -y python3-pip build-essential git zip unzip wget curl python3-dev libtool autoconf automake pkg-config
         pip install --user cython  # must be first — jnius/pyjnius need it to compile
         sleep 5  # wait for cython installation to complete
         pip install --user buildozer kivy pillow pyjnius requests aiohttp
