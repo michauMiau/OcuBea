@@ -24,13 +24,15 @@ jobs:
     - name: Setup Android SDK
       run: |
         export ANDROID_HOME=$HOME/android-sdk
-        mkdir -p $ANDROID_HOME/cmd-tools/bin
         cd /tmp
         wget https://dl.google.com/android/repository/commandlinetools-linux-6514223_latest.zip
-        unzip commandlinetools-linux-*.zip -d cmdtools
-        mv $PWD/cmdtools/tools $ANDROID_HOME/cmd-tools/
-        echo "y" | $ANDROID_HOME/cmd-tools/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses
-        $ANDROID_HOME/cmd-tools/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-34" "build-tools;37.0.0"
+        unzip -q commandlinetools-linux-*.zip
+        mkdir -p $ANDROID_HOME/cmd-tools
+        mv tools/bin/* $ANDROID_HOME/cmd-tools/
+        rmdir tools/bin 2>/dev/null || true
+        rm -rf tools
+        echo "y" | $ANDROID_HOME/cmd-tools/sdkmanager --sdk_root=$ANDROID_HOME --licenses
+        $ANDROID_HOME/cmd-tools/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-34" "build-tools;37.0.0"
     
     - name: Install Buildozer
       run: |
