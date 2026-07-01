@@ -7,10 +7,11 @@ version = 0.3.0
 orientation = landscape
 fullscreen = 0
 android.permissions = CAMERA,INTERNET,WAKE_LOCK
-requirements = cpython@3.12,kivy,pyjnius,jnius,sdl2
+requirements = python3,kivy,pyjnius,jnius,sdl2
 p4a.bootstrap = sdl2
 deploy_dir = bin/
-# Use default Python version from p4a recipe (currently 3.12+ compatible)
+# Pin p4a to version with Python 3.11 support (avoids Python.h path mismatch)
+p4a.branch = v2023.09.08
 android.ndk = 28c
 buildozer.target = android-34
 android.minapi = 24
