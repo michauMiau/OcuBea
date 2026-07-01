@@ -105,7 +105,7 @@ The app is modular, easy to read the codebase, performant and well documented:
 
 ## Requirements
 
-- **Android**: 6 or lower (via buildozer → APK)
+- **Android**: 6 or higher (SDK level 23)
 - **Linux**: Python 3.10+ with FFmpeg installed
 - **Windows**: Python 3.10+ with FFmpeg installed
 - **iOS**: Planned but not yet supported, possibly using kivy-for-ios and existing buildozer
