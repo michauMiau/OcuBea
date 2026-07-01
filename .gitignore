@@ -3,6 +3,5 @@ __pycache__/
 *.so
 .DS_Store
 .env
-buildozer.spec
 dist/
 *.apk
