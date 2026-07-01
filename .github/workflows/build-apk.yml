@@ -58,7 +58,7 @@ jobs:
     
     - name: Install Buildozer
       run: |
-        sudo apt-get update && sudo apt-get install -y python3-pip build-essential git zip unzip wget curl python3-dev libtool autoconf automake pkg-config libltdl-dev
+        sudo apt-get update && sudo apt-get install -y python3-dev python3-pip build-essential git zip unzip wget curl libtool autoconf automake pkg-config libltdl-dev
         pip install --user cython  # must be first — jnius/pyjnius need it to compile
         sleep 5  # wait for cython installation to complete
         pip install --user buildozer kivy pillow pyjnius requests aiohttp
@@ -66,6 +66,9 @@ jobs:
         which buildozer || echo "WARNING: buildozer not found in PATH"
     
     - name: Build APK
+      env:
+        CFLAGS: "-Wno-error=implicit-function-declaration"
+        LDFLAGS: "-Wno-error=implicit-function-declaration"
       run: |
         cd $GITHUB_WORKSPACE
         yes | buildozer android debug
