@@ -14,4 +14,4 @@ deploy_dir = bin/
 p4a.branch = v2023.09.16
 android.ndk = 25b
 buildozer.target = android-34
-android.minapi = 24
+android.minapi = 26
