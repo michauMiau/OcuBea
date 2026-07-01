@@ -9,6 +9,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ACCEPT_LICENSES: "true"
+      JAVA_TOOL_OPTIONS: "-Djava.net.preferIPv4Stack=true"
     
     steps:
     - uses: actions/checkout@v4
@@ -37,6 +40,7 @@ jobs:
     - name: Install SDK packages
       run: |
         export ANDROID_HOME=$HOME/android-sdk
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
         $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME \
           "platforms;android-34" "build-tools;37.0.0"
     
@@ -57,6 +61,7 @@ jobs:
     - name: Build APK
       run: |
         cd $GITHUB_WORKSPACE
+        export ANDROID_SDK_ACCEPT_LICENSES=true
         buildozer android debug
     
     - name: Upload APK
