@@ -1,4 +1,4 @@
-old post from a forum in 2011, hopefully this advice still works, minus the removing systemui part 
+old post from a forum in 2011, hopefully this advice still works, minus the removing systemui part
 
 * root the device. you can find instructions online. please do this
 at your own risk and. IT WILL VOID YOUR MANUFACTURERS GUARANTEE!
@@ -23,6 +23,6 @@ in system settings):
 * using os.system(), you can call execute the built in "am" program to
 start other programs, to e.g. switch to settings if you want some
 "secret" way to exit the app (I also just found this
-link:http://android.serverbox.ch/?p=306, looks liek maybe you don't
+link:<http://android.serverbox.ch/?p=306>, looks liek maybe you don't
 have to remove SystemUI completely but can start/stop it using "am" as
 well)

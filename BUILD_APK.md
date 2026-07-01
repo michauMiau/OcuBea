@@ -1,19 +1,22 @@
 # 🤖 Sztreamerr — Budowanie APK
 
 ## Problem z Buildozerem na tym środowisku
+
 Buildozer wymaga pełnej konfiguracji Android SDK, która jest trudna do ustawienia w tym kontenerze. Poniżej znajdują się alternatywne metody budowania APK.
 
 ---
 
 ## Metoda 1: Użycie Kivy z Buildozer (zalecane)
 
-### Wymagania:
+### Wymagania
+
 ```bash
 sudo apt-get install openjdk-17-jdk unzip python3-pip
 pip install buildozer cython kivy[full]
 ```
 
-### Konfiguracja Android SDK:
+### Konfiguracja Android SDK
+
 ```bash
 export ANDROID_HOME=~/Android/Sdk
 mkdir -p $ANDROID_HOME/cmd-tools/tools/bin
@@ -23,13 +26,15 @@ mv cmdtools/cmdline-tools $ANDROID_HOME/cmd-tools/
 ln -s $ANDROID_HOME/cmd-tools/tools/bin/sdkmanager $ANDROID_HOME/tools/bin/sdkmanager
 ```
 
-### Akceptacja licencji:
+### Akceptacja licencji
+
 ```bash
 echo "y" | $ANDROID_HOME/tools/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses
 $ANDROID_HOME/tools/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-34" "build-tools;37.0.0"
 ```
 
-### Budowanie:
+### Budowanie
+
 ```bash
 cd /tmp/sztreamerr
 buildozer android debug
@@ -40,13 +45,16 @@ buildozer android debug
 
 ## Metoda 2: Użycie Kivy Direct (prostsze)
 
-### Wymagania:
+### Wymagania
+
 ```bash
 pip install kivy[full]
 ```
 
-### Konfiguracja:
+### Konfiguracja
+
 Utwórz plik `buildozer.spec` z minimalnymi ustawieniami:
+
 ```ini
 [app]
 title = Sztreamerr
@@ -59,7 +67,8 @@ fullscreen = 0
 android.permissions = CAMERA,INTERNET,WAKE_LOCK
 ```
 
-### Budowanie:
+### Budowanie
+
 ```bash
 cd /tmp/sztreamerr
 buildozer android debug
@@ -69,41 +78,14 @@ buildozer android debug
 
 ## Metoda 3: Użycie GitHub Actions (automatyczne)
 
-Utwórz plik `.github/workflows/build-android.yml`:
-```yaml
-name: Build Android APK
-on:
-  push:
-    branches: [main]
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up Java
-        uses: actions/setup-java@v3
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-      - name: Install dependencies
-        run: |
-          pip install buildozer cython kivy[full]
-      - name: Build APK
-        run: |
-          cd /tmp/sztreamerr
-          buildozer android debug
-      - name: Upload APK
-        uses: actions/upload-artifact@v3
-        with:
-          name: sztreamerr-apk
-          path: bin/*.apk
-```
+Github Actions jest już ustawione
+
 
 ---
 
 ## Struktura projektu Sztreamerr
 
-```
+```text
 /tmp/sztreamerr/
 ├── src/                    # Kod źródłowy
 │   ├── main.py             # Entry point + aiohttp server loop
@@ -132,6 +114,7 @@ jobs:
 ## Status implementacji (Phase 1 + Phase 2)
 
 ✅ **Phase 1 — Foundation**
+
 - [x] Projekt scaffolding (pyproject.toml, src layout, config management)
 - [x] Capture module: CameraBackend, VideoFrame, CameraInfo
 - [x] FFmpeg subprocess capture backend (Linux V4L2 + Android fallback)
@@ -142,6 +125,7 @@ jobs:
 - [x] FrameSource abstraction for stream generation
 
 ✅ **Phase 2 — H.264 Encoding + Multi-Viewer Streaming**
+
 - [x] H264Encoder z continuous streaming via FFmpeg subprocess
 - [x] EncodingPipeline z producer-consumer pattern i frame queues
 - [x] MultiViewerManager z independent frame queue per viewer (max 16)
@@ -153,6 +137,7 @@ jobs:
 ## Next Steps (Phase 3)
 
 🚧 **Android Packaging**
+
 - [ ] Kivy wrapper for existing aiohttp server ✅ DONE
 - [ ] Buildozer configuration for Android packaging ✅ DONE
 - [ ] Android Camera2 API integration (replace V4L2) ✅ DONE
@@ -163,6 +148,7 @@ jobs:
 ## Kontakt i wsparcie
 
 Jeśli napotkasz problemy z budowaniem APK, sprawdź:
+
 1. Czy wszystkie zależności są zainstalowane (Java 17+, unzip, pip)
 2. Czy Android SDK jest poprawnie skonfigurowany
 3. Czy plik `buildozer.spec` ma prawidłową strukturę
