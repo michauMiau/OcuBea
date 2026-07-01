@@ -1,0 +1,49 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Java
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'zulu'
+        java-version: '17'
+    
+    - name: Setup Android SDK
+      run: |
+        export ANDROID_HOME=$HOME/android-sdk
+        mkdir -p $ANDROID_HOME/cmd-tools/tools/bin
+        cd /tmp
+        wget https://dl.google.com/android/repository/commandlinetools-linux-6514223_latest.zip
+        unzip commandlinetools-linux-*.zip -d cmdtools
+        mv cmdtools/cmdline-tools $ANDROID_HOME/cmd-tools/
+        ln -s $ANDROID_HOME/cmd-tools/tools/bin/sdkmanager $ANDROID_HOME/tools/bin/sdkmanager
+        echo "y" | $ANDROID_HOME/tools/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses
+        $ANDROID_HOME/tools/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-34" "build-tools;37.0.0"
+    
+    - name: Install Buildozer
+      run: |
+        pip install buildozer cython kivy[full]
+    
+    - name: Build APK
+      run: |
+        cd $GITHUB_WORKSPACE
+        buildozer android debug
+    
+    - name: Upload APK
+      uses: actions/upload-artifact@v3
+      with:
+        name: sztreamerr-apk
+        path: bin/*.apk
