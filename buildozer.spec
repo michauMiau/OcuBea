@@ -11,7 +11,7 @@ requirements = python3,kivy,pyjnius,jnius,sdl2
 p4a.bootstrap = sdl2
 deploy_dir = bin/
 # Pin p4a to version with Python 3.11 support (avoids Python.h path mismatch)
-p4a.branch = v2023.09.08
+p4a.branch = v2023.09.16
 android.ndk = 28c
 buildozer.target = android-34
 android.minapi = 24
