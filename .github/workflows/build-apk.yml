@@ -40,9 +40,17 @@ jobs:
         $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME \
           "platforms;android-34" "build-tools;37.0.0"
     
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
     - name: Install Buildozer
       run: |
-        pip install buildozer cython kivy[full]
+        sudo apt-get update && sudo apt-get install -y python3-pip build-essential git zip unzip wget curl
+        pip install --user buildozer cython kivy pillow pyjnius jnius requests aiohttp
+        export PATH="$HOME/.local/bin:$PATH"
+        which buildozer || echo "WARNING: buildozer not found in PATH"
     
     - name: Build APK
       run: |
