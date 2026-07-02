@@ -7,7 +7,8 @@ from kivy.app import App as KivyApp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.clock import Clock
-import asyncio
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import threading
 
 CAMERA_W = 1280
 CAMERA_H = 720
@@ -47,44 +48,41 @@ class SztreamerrApp(KivyApp):
     def _start_server(self, *args):
         self.status.text = 'Starting server...'
         try:
-            loop = asyncio.get_event_loop()
-            loop.create_task(self._run_server())
+            t = threading.Thread(target=self._run_httpd, daemon=True)
+            t.start()
         except Exception as e:
-            logger.error(f'async error: {e}')
+            logger.error(f'Server thread error: {e}')
+            self.status.text = f'Error: {str(e)}'
 
-    async def _run_server(self):
+    def _run_httpd(self):
         try:
-            from aiohttp import web
+            class Handler(SimpleHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == '/':
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/html')
+                        self.end_headers()
+                        self.wfile.write(b'<h1>Sztreamerr running!</h1>')
+                    elif self.path.startswith('/stream'):
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+                        self.end_headers()
+                        # Minimal JPEG frame (solid dark)
+                        frame = b'\xff\xd8\xff\xe0' + b'\x00' * 100 + b'\xff\xd9'
+                        self.wfile.write(frame)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
 
-            async def index(request):
-                return web.Response(text='Sztreamerr running!')
-
-            async def mjpeg(request):
-                async def gen():
-                    while True:
-                        yield b'\xff\xd8\xff\xe0' + b'\x00' * 100 + b'\xff\xd9'
-                        await asyncio.sleep(1 / 30)
-                return web.StreamResponse(
-                    headers={
-                        'Content-Type': 'multipart/x-mixed-replace; boundary=frame',
-                        'Cache-Control': 'no-cache',
-                    })
-
-            app = web.Application()
-            app.router.add_get('/', index)
-            app.router.add_get('/stream', mjpeg)
-
-            runner = web.AppRunner(app)
-            await runner.setup()
-            site = web.TCPSite(runner, SERVER_HOST, SERVER_PORT)
-            await site.start()
-
+            httpd = HTTPServer((SERVER_HOST, SERVER_PORT), Handler)
             self.status.text = f'✅ Running at http://{SERVER_HOST}:{SERVER_PORT}'
+            logger.info(f'Server started on {SERVER_HOST}:{SERVER_PORT}')
         except Exception as e:
             logger.error(f'Server error: {e}')
             import traceback; traceback.print_exc()
-            self.status.text = f'Error: {str(e)}'
 
+    def on_stop(self):
+        logger.info('App stopped')
 
 if __name__ == '__main__':
     SztreamerrApp().run()

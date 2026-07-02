@@ -7,7 +7,7 @@ version = 0.3.0
 orientation = landscape
 fullscreen = 0
 android.permissions = CAMERA,INTERNET,WAKE_LOCK
-requirements = python3,kivy,pyjnius,jnius,sdl2
+requirements = python3,kivy,pyjnius,jnius,sdl2,aiohttp,pillow,requests,openssl
 p4a.bootstrap = sdl2
 deploy_dir = bin/
 # Pin p4a to version with Python 3.11 support (avoids Python.h path mismatch)
