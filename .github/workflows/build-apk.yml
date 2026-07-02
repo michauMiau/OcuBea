@@ -3,8 +3,14 @@ name: Build Android APK
 on:
   push:
     branches: [ main, master ]
+    paths:
+      - 'src/**'
+      - '.github/workflows/build-apk.yml'
   pull_request:
     branches: [ main, master ]
+    paths:
+      - 'src/**'
+      - '.github/workflows/build-apk.yml'
 
 jobs:
   build:
@@ -16,7 +22,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 0
+        sparse-checkout: |
+          src/
+          buildozer.spec
     
     - name: Set up Java
       uses: actions/setup-java@v4
@@ -51,10 +59,8 @@ jobs:
     
     - name: Install Buildozer deps
       run: |
-        sudo apt-get update && sudo apt-get install -y python3-dev python3-pip build-essential git zip unzip wget curl libtool autoconf automake pkg-config libltdl-dev
-        pip install --user cython
-        sleep 5
-        pip install --user buildozer kivy pillow pyjnius requests aiohttp
+        sudo apt-get update && sudo apt-get install -y python3-dev build-essential git zip unzip libtool autoconf automake pkg-config libltdl-dev
+        pip install --user cython buildozer kivy pillow pyjnius requests aiohttp
         export PATH="$HOME/.local/bin:$PATH"
     
     - name: Build APK
@@ -62,8 +68,7 @@ jobs:
         CFLAGS: "-Wno-error=implicit-function-declaration -Wno-error=deprecated-declarations"
         LDFLAGS: "-Wno-error=implicit-function-declaration"
       run: |
-        # Copy main.py to project root (p4a looks for entry point there)
-        cp -f src/main.py . || true
+        cp -f src/main.py .
         
         # Patch SDL2's ALooper_pollAll -> pollOnce (deprecation fix)
         if [ -d "$HOME/.buildozer/android/platform/build-arm64-v8a_armeabi-v7a/build/bootstrap_builds/sdl2/jni/SDL/src" ]; then
