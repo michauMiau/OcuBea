@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/**'
       - '.github/workflows/build-apk.yml'
+      - 'buildozer.spec'
   pull_request:
     branches: [ main, master ]
     paths:
