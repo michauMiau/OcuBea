@@ -2,7 +2,7 @@
 title = Sztreamerr
 package.name = sztreamerr
 package.domain = io.michaumiau
-source.dir = .
+source.dir = src
 version = 0.3.0
 orientation = landscape
 fullscreen = 0
