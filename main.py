@@ -23,7 +23,7 @@ class SztreamerrApp(App):
         self.status_label = Label(
             text='Initializing...',
             size_hint_y=0.05,
-            color=(0.7, 0.7, 0.7, 1),
+            foreground_color=(0.7, 0.7, 0.7, 1),
             font_size=14
         )
         layout.add_widget(self.status_label)
