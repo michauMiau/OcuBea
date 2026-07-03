@@ -20,6 +20,7 @@ from queue import Queue, Empty
 # ---------------------------------------------------------------------------
 def setup_logging():
     """Log do /sdcard/Sztreamerr.log na Androidzie, stdout w przeciwnym razie."""
+    import logging.handlers
     log_dir = "/sdcard/Sztreamerr"
     if os.path.isdir(log_dir):
         log_path = f"{log_dir}/Sztreamerr.log"
@@ -28,10 +29,13 @@ def setup_logging():
 
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-    handlers = [logging.StreamHandler(sys.stdout)]
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     if log_path:
-        h = logging.FileHandler(log_path, mode="a")
-        handlers.append(h)
+        # Rotacja co 5MB, max 3 pliki — Android ma ograniczoną pamięć
+        file_handler: logging.Handler = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=5 * 1024 * 1024, backupCount=3,
+        )
+        handlers.append(file_handler)
 
     logger = logging.getLogger("Sztreamerr")
     logger.setLevel(logging.INFO)
@@ -732,9 +736,9 @@ def main():
     """Główny entry point aplikacji."""
     import argparse
     parser = argparse.ArgumentParser(description="Sztreamerr IP Camera Streamer")
-    parser.add_argument("--host", default="0.0.0.0", help="Host do nasłuchiwania (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8080, help="Port HTTP (default: 8080)")
-    parser.add_argument("--fps", type=int, default=15, help="FPS streamu (default: 15)")
+    parser.add_argument("--host", default=os.getenv("SZTREAMERR_HOST", "0.0.0.0"), help="Host do nasłuchiwania (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=int(os.getenv("SZTREAMERR_PORT", "8080")), help="Port HTTP (default: 8080)")
+    parser.add_argument("--fps", type=int, default=int(os.getenv("SZTREAMERR_FPS", "15")), help="FPS streamu (default: 15)")
 
     args = parser.parse_args()
 
