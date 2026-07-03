@@ -1,761 +1,388 @@
-#!/usr/bin/env python3
-#!/usr/bin/env python3
+"""Sztreamerr — Android IP Camera with MJPEG streaming.
+
+Kivy App + stdlib HTTPServer for multi-viewer MJPEG stream.
+Pillow for test bars (Camera2 async API not used yet).
 """
-Sztreamerr - IP Camera Streaming Server
-Simple stdlib-based MJPEG streaming for Android (no external deps)
-"""
-from __future__ import annotations
 import io
 import logging
 import os
-import signal
-import sys
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from queue import Queue, Empty
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+try:
+    from PIL import Image, ImageDraw  # type: ignore
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-def setup_logging():
-    """Log do /sdcard/Sztreamerr.log na Androidzie, stdout w przeciwnym razie."""
-    import logging.handlers
-    log_dir = "/sdcard/Sztreamerr"
-    if os.path.isdir(log_dir):
-        log_path = f"{log_dir}/Sztreamerr.log"
-    else:
-        log_path = None
+# Configuration
+HOST = "0.0.0.0"
+PORT = int(os.getenv("SZTREAMERR_PORT", "8080"))
+FPS_TARGET = int(os.getenv("SZTREAMERR_FPS", "15"))
+LOG_FILE = "/sdcard/Sztreamerr.log"
 
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+# Logging setup
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("sztreamerr")
 
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
-    if log_path:
-        # Rotacja co 5MB, max 3 pliki — Android ma ograniczoną pamięć
-        file_handler: logging.Handler = logging.handlers.RotatingFileHandler(
-            log_path, maxBytes=5 * 1024 * 1024, backupCount=3,
-        )
-        handlers.append(file_handler)
-
-    logger = logging.getLogger("Sztreamerr")
-    logger.setLevel(logging.INFO)
-    for h in handlers:
-        h.setFormatter(fmt)
-        logger.addHandler(h)
-
-    return logger
-
-logger = setup_logging()
-
-# ---------------------------------------------------------------------------
-# Frame generator — testowe color bars (fallback) + opcjonalna kamera
-# ---------------------------------------------------------------------------
-class FrameGenerator:
-    """Generuje ramki MJPEG. Na Androidzie z Camera2 API będzie zastąpiony."""
-
-    def __init__(self, width=640, height=480):
-        self.width = width
-        self.height = height
-        self.fps_target = 15
-        self.frame_interval = 1.0 / self.fps_target
-        self._frame_count = 0
-        self._last_time = time.monotonic()
-
-    def generate_frame(self):
-        """Generuje testową ramkę z kolorowymi paskami + numer klatki."""
-        try:
-            import numpy as np
-        except ImportError:
-            # Brak numpy — generujemy prosty RGB przez Pillow
-            return self._generate_pil_frame()
-
-        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-
-        # Kolorowe pasy (bar pattern)
-        bar_width = self.width // 7
-        colors = [
-            (255, 0, 0),    # czerwony
-            (255, 165, 0),  # pomarańczowy
-            (255, 255, 0),  # żółty
-            (0, 255, 0),    # zielony
-            (0, 255, 255),  # cyjan
-            (0, 100, 255),  # niebieski
-            (128, 0, 255),  # fioletowy
-        ]
-        for i, color in enumerate(colors):
-            x_start = i * bar_width
-            x_end = min((i + 1) * bar_width, self.width)
-            frame[:, x_start:x_end] = color
-
-        # Numer klatki
-        try:
-            from PIL import Image, ImageDraw, ImageFont
-            pil_frame = Image.fromarray(frame)
-            draw = ImageDraw.Draw(pil_frame)
-            font = None  # systemowy
-            text = f"Frame #{self._frame_count}"
-            bbox = draw.textbbox((0, 0), text, font=font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            draw.text(
-                (10, self.height - th - 15),
-                text,
-                fill=(255, 255, 255),
-                font=font,
-            )
-            pil_frame = np.array(pil_frame)
-        except ImportError:
-            pass
-
-        self._frame_count += 1
-        return pil_frame if 'pil_frame' in dir() else frame
-
-    def _generate_pil_frame(self):
-        """Generuje ramkę tylko z Pillow."""
-        try:
-            from PIL import Image, ImageDraw
-        except ImportError:
-            # Brak Pillow — zwracamy pustą ramkę 1x1 (JPEG)
-            return self._empty_jpeg()
-
-        frame = Image.new("RGB", (self.width, self.height), "black")
-        draw = ImageDraw.Draw(frame)
-
-        # Kolorowe pasy
-        bar_width = self.width // 7
-        colors = [
-            (255, 0, 0), (255, 165, 0), (255, 255, 0),
-            (0, 255, 0), (0, 255, 255), (0, 100, 255), (128, 0, 255)
-        ]
-        for i, color in enumerate(colors):
-            x_start = i * bar_width
-            x_end = min((i + 1) * bar_width, self.width)
-            draw.rectangle([x_start, 0, x_end - 1, self.height - 30], fill=color)
-
-        # Numer klatki
-        text = f"Frame #{self._frame_count}"
-        bbox = draw.textbbox((0, 0), text)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text((10, self.height - th - 15), text, fill=(255, 255, 255))
-
-        self._frame_count += 1
-
-        buf = io.BytesIO()
-        frame.save(buf, format="JPEG", quality=85)
-        return buf.getvalue()
-
-    def _empty_jpeg(self):
-        """Generuje minimalny poprawny JPEG 1x1 przez Pillow."""
-        try:
-            from PIL import Image
-            img = Image.new("RGB", (1, 1), (0, 0, 0))
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG")
-            return buf.getvalue()
-        except ImportError:
-            # Brak Pillow — zwracamy minimalny poprawny JPEG 1x1 (black)
-            return (
-                b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00'
-                b'\x00\x01\x00\x01\x00\x00\xff\xdb\x00C\x00\x08\x06\x06'
-                b'\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b'
-                b'\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c \x1f'
-                b'\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff'
-                b'\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00'
-                b'\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4'
-                b'\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00'
-                b'\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!\x1a\x1b\x1c\x1d\x1e\xff'
-                b'\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xfb\xa6\xba\xd5\xff\xc9\xff\xd9'
-            )
-
-    def get_frame(self):
-        """Zwraca jedną ramkę JPEG."""
-        frame = self.generate_frame()
-        if isinstance(frame, bytes):  # już JPEG z Pillow
-            return frame
-
-        # Konwersja numpy do JPEG przez Pillow
-        try:
-            from PIL import Image
-            pil_frame = Image.fromarray(frame)
-            buf = io.BytesIO()
-            pil_frame.save(buf, format="JPEG", quality=85)
-            return buf.getvalue()
-        except ImportError:
-            # Brak numpy i Pillow — zwracamy minimalny JPEG
-            return self._empty_jpeg()
-
-
-class AndroidFrameGenerator(FrameGenerator):
-    """
-    FrameGenerator z obsługą Android Camera2 API.
-    Na desktopie fallbackuje do testowych ramek (jak rodzic).
-    """
-
-    def __init__(self, width=640, height=480):
-        super().__init__(width, height)
-        self.camera = None
-        try:
-            self._try_init_camera()
-        except Exception as e:
-            logger.warning(f"Camera2 nie dostępny (fallback): {e}")
-
-    def _try_init_camera(self):
-        """Próbuje zainicjować kamerę Android."""
-        # Próba importu pyjnius — dostępne tylko na Androidzie
-        try:
-            from jnius import autoclass, cast
-            Camera2 = autoclass('org.kivy.android.camera.Camera2')
-            logger.info("Camera2 API dostępny")
-        except (ImportError, Exception) as e:
-            # Desktop — fallback do rodzica
-            logger.debug(f"Nie na Androidzie: {e}")
-            raise
-
-    def generate_frame(self):
-        """Generuje ramkę z kamery lub fallback."""
-        if self.camera and hasattr(self.camera, 'capture_frame'):
-            try:
-                return self.camera.capture_frame()
-            except Exception as e:
-                logger.error(f"Błąd capture: {e}")
-        return super().generate_frame()
-
-    def start_capture(self):
-        """Startuje capture z kamery."""
-        try:
-            if self.camera:
-                self.camera.start()
-                logger.info("Capture started from camera")
-        except Exception as e:
-            logger.warning(f"Nie udało się wystartować kamery: {e}")
-
-    def stop_capture(self):
-        """Zatrzymuje capture."""
-        try:
-            if self.camera and hasattr(self.camera, 'stop'):
-                self.camera.stop()
-                logger.info("Capture stopped")
-        except Exception as e:
-            logger.warning(f"Nie udało się zatrzymać kamery: {e}")
-
-
-# ---------------------------------------------------------------------------
-# Frame Distributor — multi-viewer support via threading.Queue
-# ---------------------------------------------------------------------------
+# Frame distributor (multi-viewer support)
 class FrameDistributor:
-    """
-    Rozdziela ramki między wielu subskrybentów (multi-viewer).
-    Używa threading.Queue zamiast asyncio.Queue (dostępne w stdlib).
-    """
-
+    """Thread-safe frame broadcaster with stale-cleanup."""
+    
     def __init__(self):
-        self._queue: Queue = None  # typ: Optional[Queue[bytes]]
         self._lock = threading.Lock()
-        self._subscribers: dict[str, Queue] = {}
-        self._last_frame = None
-        self._last_time = 0.0
-
-    def publish(self, frame_bytes):
-        """
-Pobiera ramkę z generatora i rozsyła do subskrybentów."""
-        with self._lock:
-            self._last_frame = frame_bytes
-            self._last_time = time.monotonic()
-
-            for sub_id, queue in list(self._subscribers.items()):
-                try:
-                    # Usuń przestarzałe ramki (max 10 w kolejce)
-                    if queue.qsize() >= 10:
-                        try:
-                            queue.get_nowait()
-                        except Empty:
-                            pass
-                    queue.put(frame_bytes, block=False)
-                except Exception as e:
-                    logger.debug(f"Subskrybent {sub_id} nie mógł pobrać ramki: {e}")
-
+        self._subscribers: dict[str, list[io.BytesIO]] = {}
+    
     def subscribe(self) -> str:
-        """
-        Zwraca unikalne ID subskrybenta i jego kolejkę.
-        Subskryptanci pobierają ramki przez queue.get(timeout=1.0).
-        """
-        import uuid
-        sub_id = f"viewer_{uuid.uuid4().hex[:8]}"
-        queue: Queue[bytes] = Queue(maxsize=15)
+        """Register a new subscriber. Returns viewer ID."""
+        vid = f"viewer_{threading.get_ident():x}"
         with self._lock:
-            self._subscribers[sub_id] = queue
-        logger.info(f"Subskrybent dołączony: {sub_id}")
-        return sub_id, queue
-
-    def unsubscribe(self, sub_id):
-        """Usuwaja subskrybenta."""
+            self._subscribers.setdefault(vid, [])
+        return vid
+    
+    def unsubscribe(self, viewer_id: str):
         with self._lock:
-            if sub_id in self._subscribers:
-                del self._subscribers[sub_id]
-                logger.info(f"Subskrybent wyszedł: {sub_id}")
-
-    def get_stats(self) -> dict:
-        """Zwraca statystyki dystrybucji."""
+            self._subscribers.pop(viewer_id, None)
+        logger.info("Subskrybent wyszedł: %s", viewer_id)
+    
+    def get_subscriber_queue(self, viewer_id: str) -> list[io.BytesIO] | None:
         with self._lock:
-            return {
-                "subscribers": len(self._subscribers),
-                "last_frame_time_ago": time.monotonic() - self._last_time if self._last_time else 0,
-                "subscriber_ids": list(self._subscribers.keys()),
-            }
-
-    def cleanup_stale_subscribers(self, max_idle=15.0):
-        """
-        Usuwa subskrybentów którzy nie pobierali ramek od >max_idle sekund.
-        Wywoływane co kilka sekund przez wątek czyszczenia.
-        """
-        now = time.monotonic()
+            return self._subscribers.get(viewer_id)
+    
+    def broadcast(self, jpeg_bytes: bytes):
+        """Push a frame to all subscribers."""
+        buf = io.BytesIO(jpeg_bytes)
+        buf.seek(0)
         with self._lock:
-            stale = []
-            for sub_id, queue in list(self._subscribers.items()):
-                # Sprawdzamy czy kolejka jest pusta i dawno nie była używana
-                if queue.qsize() == 0 and (now - self._last_time) > max_idle:
-                    stale.append(sub_id)
-
-            for sub_id in stale:
-                del self._subscribers[sub_id]
-                logger.debug(f"Subskrybent usunięty (idle): {sub_id}")
-
-
-# ---------------------------------------------------------------------------
-# HTTP Server — MJPEG streaming endpoint
-# ---------------------------------------------------------------------------
-class MjpegRequestHandler(BaseHTTPRequestHandler):
-    """Obsługuje żądania streamu MJPEG z FrameDistributor."""
-
-    # Statyczne pola klasy — dostęp do globalnego stanu
-    distributor: FrameDistributor = None  # type: ignore
-    generator: FrameGenerator = None      # type: ignore
-    fps_target: int = 15
-    _last_request_time: float = 0.0
-
-    def log_message(self, format, *args):
-        """Zamiast stdout — logujemy do loggera."""
-        logger.info(f"HTTP {self.client_address[0]}: {format % args}")
-
-    def _send_jpeg_header(self):
-        """Wysyła nagłówki HTTP dla streamu MJPEG."""
-        self.send_response(200)
-        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-        self.send_header("Connection", "close")  # Zamykamy po każdym żądaniu
-        self.end_headers()
-
-    def do_GET(self):
-        if not self.do_GET_stream():
-            return
-
-        sub_id = None
-        try:
-            # Parse URL: /stream?fps=15&sub=myid
-            from urllib.parse import urlparse, parse_qs
-            parsed = urlparse(self.path)
-            params = parse_qs(parsed.query)
-            fps_str = params.get("fps", [str(MjpegRequestHandler.fps_target)])[0]
-            try:
-                fps = int(fps_str)
-                MjpegRequestHandler.fps_target = fps
-            except ValueError:
-                fps = MjpegRequestHandler.fps_target
-
-            # Subskrybent — jeśli podany, używamy istniejącej kolejki
-            sub_param = params.get("sub", [None])[0]
-            if sub_param and sub_param in MjpegRequestHandler.distributor._subscribers:
-                queue = MjpegRequestHandler.distributor._subscribers[sub_param]
-            else:
-                # Nowy subskryptent
-                sub_id, queue = MjpegRequestHandler.distributor.subscribe()
-
-            self._send_jpeg_header()
-
-            while True:
+            dead = []
+            for vid, queue in self._subscribers.items():
                 try:
-                    frame_bytes = queue.get(timeout=1.0 / fps)
-                    header = f"\r\n--frame\r\nContent-Type: image/jpeg\r\n"
-                    content_len = len(frame_bytes)
+                    if len(queue) > 5:  # max pending frames
+                        queue.pop(0)  # drop oldest
+                    queue.append(buf)
+                except (ValueError, OSError):
+                    dead.append(vid)
+            for vid in dead:
+                del self._subscribers[vid]
+    
+    @property
+    def subscriber_count(self) -> int:
+        with self._lock:
+            return len(self._subscribers)
 
-                    self.wfile.write(header.encode())
-                    self.wfile.write(f"Content-Length: {content_len}\r\n\r\n".encode())
-                    self.wfile.write(frame_bytes)
-                    MjpegRequestHandler._last_request_time = time.monotonic()
-
-                except Empty:
-                    # Brak ramek — spróbujmy wygenerować nową
-                    if isinstance(MjpegRequestHandler.generator, FrameGenerator):
-                        frame_bytes = MjpegRequestHandler.generator.get_frame()
-                        if frame_bytes and len(frame_bytes) > 50:  # valid JPEG
-                            header = f"\r\n--frame\r\nContent-Type: image/jpeg\r\n"
-                            content_len = len(frame_bytes)
-                            self.wfile.write(header.encode())
-                            self.wfile.write(f"Content-Length: {content_len}\r\n\r\n".encode())
-                            self.wfile.write(frame_bytes)
-                    else:
-                        time.sleep(1.0 / max(fps, 1))
-
-                except (BrokenPipeError, ConnectionResetError):
-                    break
-
-        finally:
-            if sub_id:
-                MjpegRequestHandler.distributor.unsubscribe(sub_id)
-
-    def do_GET_health(self):
-        """Health check endpoint."""
-        stats = MjpegRequestHandler.distributor.get_stats()
-        response = {
-            "status": "ok",
-            "subscribers": stats["subscribers"],
-            "fps_target": MjpegRequestHandler.fps_target,
-            "generator_type": type(MjpegRequestHandler.generator).__name__,
-        }
-        body = str(response).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(body))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET_status(self):
-        """Status endpoint."""
-        stats = MjpegRequestHandler.distributor.get_stats()
-        generator = MjpegRequestHandler.generator
-        response = {
-            "status": "streaming",
-            "subscribers": stats["subscribers"],
-            "fps_target": MjpegRequestHandler.fps_target,
-            "last_frame_ago_sec": round(stats.get("last_frame_time_ago", 0), 2),
-            "generator_type": type(generator).__name__,
-            "total_frames_generated": getattr(generator, '_frame_count', 0),
-        }
-        body = str(response).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(body))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET_info(self):
-        """Info endpoint."""
-        response = {
-            "app": "Sztreamerr",
-            "version": "0.3.0",
-            "python_version": sys.version,
-            "platform": sys.platform,
-            "endpoints": [
-                "/stream — MJPEG stream (default /stream)",
-                "/stream?fps=15 — MJPEG stream z custom FPS",
-                "/health — JSON health check",
-                "/status — Detailed status",
-                "/info — App info",
-            ],
-        }
-        body = str(response).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(body))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        """Routing — dispatch po endpointach."""
-        from urllib.parse import urlparse, parse_qs
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/")
-
-        if path == "/health":
-            return self.do_GET_health()
-        elif path == "/status":
-            return self.do_GET_status()
-        elif path == "/info":
-            return self.do_GET_info()
-        else:
-            # Default: stream
-            self._last_request_time = time.monotonic()
-            return self.do_GET_stream()
-
-    def do_GET_stream(self):
-        """Streamuj MJPEG (używany przez do_GET)."""
-        sub_id = None
-        try:
-            from urllib.parse import urlparse, parse_qs
-            parsed = urlparse(self.path)
-            params = parse_qs(parsed.query)
-            fps_str = params.get("fps", [str(MjpegRequestHandler.fps_target)])[0]
-            try:
-                fps = int(fps_str)
-                MjpegRequestHandler.fps_target = fps
-            except ValueError:
-                fps = MjpegRequestHandler.fps_target
-
-            sub_param = params.get("sub", [None])[0]
-            if sub_param and sub_param in MjpegRequestHandler.distributor._subscribers:
-                queue = MjpegRequestHandler.distributor._subscribers[sub_param]
-            else:
-                sub_id, queue = MjpegRequestHandler.distributor.subscribe()
-
-            self._send_jpeg_header()
-
-            while True:
-                try:
-                    frame_bytes = queue.get(timeout=1.0 / fps)
-                    header = f"\r\n--frame\r\nContent-Type: image/jpeg\r\n"
-                    content_len = len(frame_bytes)
-
-                    self.wfile.write(header.encode())
-                    self.wfile.write(f"Content-Length: {content_len}\r\n\r\n".encode())
-                    self.wfile.write(frame_bytes)
-                    MjpegRequestHandler._last_request_time = time.monotonic()
-
-                except Empty:
-                    # Brak ramek — wygeneruj nową z generatora
-                    if isinstance(MjpegRequestHandler.generator, FrameGenerator):
-                        frame_bytes = MjpegRequestHandler.generator.get_frame()
-                        if frame_bytes and len(frame_bytes) > 50:
-                            header = f"\r\n--frame\r\nContent-Type: image/jpeg\r\n"
-                            content_len = len(frame_bytes)
-                            self.wfile.write(header.encode())
-                            self.wfile.write(f"Content-Length: {content_len}\r\n\r\n".encode())
-                            self.wfile.write(frame_bytes)
-                    else:
-                        time.sleep(1.0 / max(fps, 1))
-
-                except (BrokenPipeError, ConnectionResetError):
-                    break
-
-        finally:
-            if sub_id:
-                MjpegRequestHandler.distributor.unsubscribe(sub_id)
-
-
-# ---------------------------------------------------------------------------
-# Capture Loop — osobny wątek generujący ramki
-# ---------------------------------------------------------------------------
-class CaptureLoop:
-    """
-    Wątek który stale generuje ramki i publish-uje je do FrameDistributor.
-    Obsługuje też czyszczenie starych subskrybentów.
-    """
-
-    def __init__(self, generator: FrameGenerator, distributor: FrameDistributor):
-        self.generator = generator
-        self.distributor = distributor
-        self._thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
-        self._cleanup_thread: threading.Thread | None = None
-        self._stop_cleanup = threading.Event()
-
-    def start(self):
-        """Startuje capture loop i cleanup thread."""
-        if hasattr(self.generator, 'start_capture'):
-            try:
-                self.generator.start_capture()
-            except Exception as e:
-                logger.warning(f"Nie udało się wystartować kamery: {e}")
-
-        self._thread = threading.Thread(
-            target=self._capture_loop,
-            name="Sztreamerr-Capture",
-            daemon=True,
-        )
-        self._cleanup_thread = threading.Thread(
-            target=self._cleanup_loop,
-            name="Sztreamerr-Cleanup",
-            daemon=True,
-        )
-
-        self._thread.start()
-        self._cleanup_thread.start()
-        logger.info("Capture loop started")
-
-    def _capture_loop(self):
-        """
-        Główna pętla capture — generuje ramki z generatora i publish-uje je.
-        Utrzymuje stałe FPS (15) niezależnie od obciążenia HTTP.
-        """
-        target_interval = 1.0 / MjpegRequestHandler.fps_target
-
-        while not self._stop_event.is_set():
-            try:
-                frame_bytes = self.generator.get_frame()
-                if frame_bytes and len(frame_bytes) > 50:  # valid JPEG
-                    self.distributor.publish(frame_bytes)
-
-                # Precyzyjny timing — obniżamy CPU usage
-                elapsed = time.monotonic() - (self._last_time if hasattr(self, '_last_time') else time.monotonic())
-                sleep_time = target_interval - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-
-            except Exception as e:
-                logger.error(f"Błąd capture: {e}", exc_info=True)
-                self._stop_event.wait(timeout=1.0)  # czekaj na restart
-
-    def _cleanup_loop(self):
-        """
-Czyści starych subskrybentów co 5 sekund."""
-        while not self._stop_cleanup.is_set():
-            try:
-                self.distributor.cleanup_stale_subscribers(max_idle=30.0)
-            except Exception as e:
-                logger.debug(f"Błąd cleanup: {e}")
-
-            self._stop_cleanup.wait(timeout=5.0)
-
-    def stop(self):
-        """
-        Zatrzymuje capture i cleanup.
-        """
-        self._stop_event.set()
-        self._stop_cleanup.set()
-
-        if hasattr(self.generator, 'stop_capture'):
-            try:
-                self.generator.stop_capture()
-            except Exception as e:
-                logger.warning(f"Nie udało się zatrzymać kamery: {e}")
-
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=3.0)
-        if self._cleanup_thread and self._cleanup_thread.is_alive():
-            self._cleanup_thread.join(timeout=3.0)
-
-        logger.info("Capture loop stopped")
-
-
-# ---------------------------------------------------------------------------
-# Application class (opcjonalnie — Kivy App wrapper bez crasha)
-# ---------------------------------------------------------------------------
-class SztreamerrApp:
-    """
-    Aplikacja Sztreamerr.
-    Na desktopie: tylko HTTP server (testowanie).
-    Na Androidzie: opcjonalny Kivy UI (nie crashuje bo nie wymaga display na desktopie).
-    """
-
+# Frame generator (test bars when no camera)
+class TestBarGenerator:
+    """Generates color-bar test pattern JPEG frames."""
+    
     def __init__(self):
-        self.server = None
-        self.capture_loop: CaptureLoop | None = None
-        self.distributor: FrameDistributor = None  # type: ignore
-        self.generator: FrameGenerator = None      # type: ignore
-        self._running = False
-
-    def start(self, host="0.0.0.0", port=8080):
-        """Startuje serwer i capture loop."""
-        logger.info(f"Starting Sztreamerr on {host}:{port}")
-
-        # Inicjalizacja generatora ramki (Camera2 na Androidzie)
+        self._frame_count = 0
+    
+    def generate(self, width: int = 320, height: int = 240) -> bytes:
+        if not HAS_PIL:
+            return self._empty_frame()
+        
+        img = Image.new("RGB", (width, height))
+        draw = ImageDraw.Draw(img)
+        bar_w = width // 7
+        
+        colors = [(255, 255, 255), (255, 255, 0), (0, 255, 255),
+                  (0, 255, 0), (255, 0, 255), (255, 0, 0), (0, 0, 255)]
+        for i, color in enumerate(colors):
+            draw.rectangle([i * bar_w, 0, (i + 1) * bar_w - 1, height // 3], fill=color)
+        
+        # Bottom: frame counter + timestamp
+        self._frame_count += 1
+        ts = time.strftime("%H:%M:%S")
+        draw.rectangle([0, height * 2 // 3, width, height], fill=(40, 40, 60))
         try:
-            from jnius import autoclass  # tylko na Androidzie
-            self.generator = AndroidFrameGenerator()
-            logger.info("Using Android Camera2 frame generator")
-        except ImportError:
-            self.generator = FrameGenerator()
-            logger.info("Using desktop frame generator (test bars)")
+            draw.text((10, height - 25), f"#{self._frame_count} {ts}", fill=(200, 200, 200))
+        except Exception:
+            pass
+        
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        return buf.getvalue()
+    
+    def _empty_frame(self) -> bytes:
+        """Fallback: minimal valid JPEG."""
+        # Minimal 1x1 white pixel JPEG
+        return (
+            b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01'
+            b'\x00\x01\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06'
+            b'\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b'
+            b'\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c'
+            b'\x1c $.\' ",#\x1c\x1c(7),01444\x1f\'9=82<.342\xff\xc0\x00'
+            b'\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f'
+            b'\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00'
+            b'\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08'
+            b'\t\n\x0b\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02'
+            b'\x04\x03\x05\x05\x04\x04\x00\x00\x01}\x01\x02\x03\x00'
+            b'\x04\x11\x05\x12!1A\x06\x13Qa\x07"q\x142\x81\x91\xa1\x08'
+            b'#B\xb2\xc2\r\x0f\x15\x16\x17\x18\x19\x1a\x82\x83\x84\x85'
+            b'\x86\x87\x88\x89\x8a\x92\x93\x94\x95\x96\x97\x98\x99\x9a'
+            b'\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xb3\xb4\xb5\xb6\xb7'
+            b'\xb8\xb9\xba\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xd3\xd4\xd5'
+            b'\xd6\xd7\xd8\xd9\xda\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9'
+            b'\xea\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xff\xda\x00'
+            b'\x08\x01\x01\x00\x00?\x00\xfb\xa2\xc3\xff\xd9'
+        )
 
-        # Frame distributor
-        self.distributor = FrameDistributor()
-
-        # Konfiguracja handlera HTTP
-        MjpegRequestHandler.distributor = self.distributor  # type: ignore
-        MjpegRequestHandler.generator = self.generator      # type: ignore
-        MjpegRequestHandler.fps_target = 15                  # type: ignore
-
-        # Capture loop
-        self.capture_loop = CaptureLoop(self.generator, self.distributor)
-
-        # Start serwera HTTP w osobnym wątku
-        try:
-            self.server = HTTPServer((host, port), MjpegRequestHandler)
-            threading.Thread(
-                target=self._serve_forever,
-                name="Sztreamerr-HTTP",
-                daemon=True,
-            ).start()
-
-            # Start capture loop
-            self.capture_loop.start()
-            self._running = True
-
-            logger.info(f"✅ Sztreamerr running at http://{host}:{port}/stream")
-            logger.info("   Endpoints: /stream, /health, /status, /info")
-
-        except OSError as e:
-            logger.error(f"Nie udało się uruchomić serwera: {e}")
-            return False
-
-        return True
-
-    def _serve_forever(self):
-        """Główna pętla serwera HTTP."""
-        try:
-            self.server.serve_forever()
-        except Exception as e:
-            logger.error(f"Błąd serwera: {e}")
-
-    def stop(self):
-        """Zatrzymuje serwer i capture loop."""
-        logger.info("Stopping Sztreamerr...")
-        self._running = False
-
-        if self.capture_loop:
-            self.capture_loop.stop()
-
-        if self.server:
+# HTTP Handler for MJPEG stream
+class MJPEGHandler(BaseHTTPRequestHandler):
+    """Handles /stream, /health, /status.json endpoints."""
+    
+    # Suppress default stderr logging for clean console
+    def log_message(self, format, *args):
+        logger.info("HTTP %s: \"%s\" %d -", self.client_address[0],
+                     format % args, getattr(self, 'response_code', 200))
+    
+    def send_mjpeg_response(self, viewer_id: str):
+        """Send multipart/x-mixed-replace MJPEG response."""
+        self.send_response(200)
+        ctype = (f'multipart/x-mixed-replace;boundary=sztreamerr'
+                 f'\r\nConnection: close\r\n')
+        self.send_header('Content-Type', ctype)
+        self.end_headers()
+        
+        distributor = app.distributor
+        frame_gen = app.frame_generator
+        
+        while True:
+            queue = distributor.get_subscriber_queue(viewer_id)
+            if not queue:
+                break  # subscriber disconnected
+            
             try:
-                self.server.shutdown()
+                frame_buf = queue.pop(0)  # get oldest frame
+                jpeg_bytes = frame_buf.getvalue()
+                self.wfile.write(
+                    f'\r\n--sztreamerr\r\n'
+                    f'Content-Type: image/jpeg\r\n'
+                    f'Content-Length: {len(jpeg_bytes)}\r\n\r\n'.encode())
+                self.wfile.write(jpeg_bytes)
+            except (BrokenPipeError, ConnectionResetError):
+                break
+            except (ValueError, OSError):
+                # Subscriber gone
+                break
+        
+        distributor.unsubscribe(viewer_id)
+    
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        
+        if path == "/stream":
+            viewer_id = app.distributor.subscribe()
+            logger.info("Subskrybent dołączony: %s", viewer_id)
+            try:
+                self.send_mjpeg_response(viewer_id)
             except Exception as e:
-                logger.debug(f"Shutdown error: {e}")
+                logger.error("Stream error for %s: %s", viewer_id, e)
+        
+        elif path == "/health":
+            self.response_code = 200
+            body = b'{"status":"ok","uptime":%d}' % int(
+                time.time() - app.start_time)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        
+        elif path == "/status.json":
+            self.response_code = 200
+            status = {
+                "subscribers": app.distributor.subscriber_count,
+                "frame_generator": type(app.frame_generator).__name__,
+                "running": True,
+            }
+            body = str(status).replace("'", '"').replace("True", "true")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body.encode())
+        
+        elif path == "/":
+            # Simple HTML info page
+            html = (
+                '<html><head><title>Sztreamerr</title></head>'
+                '<body style="font-family:monospace;background:#1a1a2e;color:#eee;padding:2em">'
+                '<h2>📹 Sztreamerr v0.4.0</h2>'
+                f'<p>Status: <b>{"✅ Running" if app.distributor.subscriber_count > 0 else "⏳ Idle"}</b></p>'
+                f'<p>Subscribers: {app.distributor.subscriber_count}</p>'
+                '<hr />'
+                '<p><a href="/stream">MJPEG Stream</a></p>'
+                '<p><a href="/status.json">JSON Status</a></p>'
+                '<p><a href="/health">Health Check</a></p>'
+                '</body></html>'
+            )
+            self.response_code = 200
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(html.encode())
+        
+        else:
+            self.send_error(404, "Not Found")
 
-        logger.info("Sztreamerr stopped")
-
-    def wait(self):
-        """
-Czeka na zamknięcie (Ctrl+C)."""
+# Main Application
+class SztreamerrApp:
+    """Main app — starts Kivy UI + HTTP server in background threads."""
+    
+    def __init__(self):
+        self.start_time = time.time()
+        self.distributor = FrameDistributor()
+        self.frame_generator = TestBarGenerator() if HAS_PIL else None
+    
+    def _capture_loop(self):
+        """Background thread: capture frames and broadcast."""
+        interval = 1.0 / FPS_TARGET
+        while True:
+            t0 = time.monotonic()
+            try:
+                frame_bytes = self.frame_generator.generate()
+                if frame_bytes:
+                    self.distributor.broadcast(frame_bytes)
+            except Exception as e:
+                logger.error("Capture loop error: %s", e)
+            elapsed = time.monotonic() - t0
+            sleep_time = max(0, interval - elapsed)
+            time.sleep(sleep_time)
+    
+    def _server_thread(self):
+        """Run HTTP server in background thread."""
+        self.server = ThreadingHTTPServer((HOST, PORT), MJPEGHandler)
+        self.server.timeout = 1.0  # allows graceful shutdown
+        logger.info("MJPEG server started on %s:%d", HOST, PORT)
+        self.server.serve_forever()
+    
+    def start(self) -> bool:
+        """Start capture loop + HTTP server threads. Returns True on success."""
         try:
-            signal.signal(signal.SIGINT, self._signal_handler)
-            signal.signal(signal.SIGTERM, self._signal_handler)
-            while self._running:
-                time.sleep(1.0)
-        except KeyboardInterrupt:
-            logger.info("KeyboardInterrupt — stopping...")
-            self.stop()
+            # Start MJPEG streamer
+            stream_thread = threading.Thread(
+                target=self._server_thread,
+                daemon=True,
+                name="mjpeg-server",
+            )
+            stream_thread.start()
+            logger.info("MJPEG server thread started")
+            
+            # Start capture loop
+            cap_thread = threading.Thread(
+                target=self._capture_loop,
+                daemon=True,
+                name="capture-loop",
+            )
+            cap_thread.start()
+            logger.info("Capture loop started @ %d FPS", FPS_TARGET)
+            
+            return True
+        except Exception as e:
+            logger.error("Failed to start: %s", e)
+            return False
+    
+    def stop(self):
+        """Gracefully shut down."""
+        logger.info("Shutting down...")
+        if hasattr(self, 'server'):
+            self.server.shutdown()
 
-    def _signal_handler(self, signum, frame):
-        """Obsługa sygnałów (Ctrl+C)."""
-        logger.info(f"Received signal {signum}")
-        self._running = False
+# Kivy App wrapper
+def run_kivy_app():
+    """Kivy application — shows status UI and starts MJPEG server."""
+    from kivy.app import App as KivyApp  # type: ignore
+    from kivy.uix.boxlayout import BoxLayout  # type: ignore
+    from kivy.uix.label import Label  # type: ignore
+    from kivy.clock import Clock  # type: ignore
+    
+    class SztreamerrUI(KivyApp):
+        """Kivy wrapper for the MJPEG server."""
+        
+        def build(self):
+            self.title = 'Sztreamerr'
+            layout = BoxLayout(orientation='vertical', padding=15, spacing=10)
+            
+            # Title
+            title_label = Label(
+                text='📹 Sztreamerr',
+                font_size=32,
+                bold=True,
+                size_hint_y=0.15,
+                foreground_color=(1, 0.6, 0, 1),
+            )
+            layout.add_widget(title_label)
+            
+            # Status
+            self.status_label = Label(
+                text='Starting...',
+                size_hint_y=0.05,
+                foreground_color=(0.7, 0.7, 0.7, 1),
+                font_size=14,
+            )
+            layout.add_widget(self.status_label)
+            
+            # Info
+            info = Label(
+                text='IP Camera MJPEG Streamer\nMulti-viewer support',
+                size_hint_y=0.25,
+                halign='center',
+                font_size=16,
+                foreground_color=(0.9, 0.9, 0.9, 1),
+            )
+            layout.add_widget(info)
+            
+            # Server status (live)
+            self.server_label = Label(
+                text='Server: Starting...',
+                size_hint_y=0.05,
+                foreground_color=(0.7, 0.7, 0.7, 1),
+                font_size=12,
+            )
+            layout.add_widget(self.server_label)
+            
+            Clock.schedule_once(lambda dt: self._init_server(), 1)
+            return layout
+        
+        def _init_server(self):
+            """Initialize MJPEG server in background."""
+            global app
+            try:
+                self.status_label.text = 'Starting MJPEG server...'
+                
+                # Start the streamer
+                streamer = SztreamerrApp()
+                app = streamer  # Make it globally accessible for handler
+                
+                success = streamer.start()
+                if success:
+                    self.status_label.text = f'✅ Streaming on port {PORT}'
+                    self.server_label.text = (
+                        f'Server: ✅ Running\n'
+                        f'FPS: {FPS_TARGET} | Viewers: 0'
+                    )
+                    # Update viewer count periodically
+                    Clock.schedule_interval(self._update_status, 2)
+                else:
+                    self.status_label.text = f'❌ Server failed to start'
+            except Exception as e:
+                self.status_label.text = f'Error: {e}'
+                logger.exception("Server init error")
+        
+        def _update_status(self, dt):
+            """Periodically update the UI with server status."""
+            if hasattr(app, 'distributor'):
+                n = app.distributor.subscriber_count
+                self.server_label.text = (
+                    f'Server: ✅ Running\n'
+                    f'FPS: {FPS_TARGET} | Viewers: {n}'
+                )
+    
+    SztreamerrUI().run()
 
-
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
-def main():
-    """Główny entry point aplikacji."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Sztreamerr IP Camera Streamer")
-    parser.add_argument("--host", default=os.getenv("SZTREAMERR_HOST", "0.0.0.0"), help="Host do nasłuchiwania (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=int(os.getenv("SZTREAMERR_PORT", "8080")), help="Port HTTP (default: 8080)")
-    parser.add_argument("--fps", type=int, default=int(os.getenv("SZTREAMERR_FPS", "15")), help="FPS streamu (default: 15)")
-
-    args = parser.parse_args()
-
-    # Ustawienie FPS globalnie dla handlera
-    MjpegRequestHandler.fps_target = args.fps
-
-    app = SztreamerrApp()
-    if not app.start(host=args.host, port=args.port):
-        sys.exit(1)
-
-    try:
-        app.wait()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        app.stop()
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    run_kivy_app()
