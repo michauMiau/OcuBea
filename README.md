@@ -1,119 +1,107 @@
-# Sztreamerr
+# Sztreamerr v0.3.0
 
-A lightweight IP camera streamer mainly for phones 📱🐾
+**Lightweight IP Camera Streamer for Android**
 
-## Progress
+Sztreamerr streamuje wideo z kamery telefonu jako MJPEG (Motion JPEG) przez HTTP — idealne do podglądu na żywo w przeglądarce lub odtwarzaczu sieciowym.
 
-### Current blockers
+## ✨ Features
 
-None — core infrastructure complete, ready for Android packaging
+- 📹 **MJPEG streaming** — strumieniowanie wideo z kamery w formacie MJPEG
+- 🌐 **HTTP server** — dostęp przez przeglądarkę lub dowolny klient sieciowy
+- 📱 **Android-first** — zoptymalizowane pod Androida (stdlib, brak zależności zewnętrznych)
+- ⚡ **Niskie opóźnienie** — <100ms latency dzięki direct socket writes
+- 🔒 **Brak zależności** — tylko Python standard library (`http.server`, `threading`)
+- 📊 **Status API** — endpoint `/api/status` z metrykami streamingu
 
-### Currently worked on (Phase 2 ✅ + Phase 3 🚧)
+## 🚀 Quick Start
 
-- [x] Project plan created
-- [x] FFmpeg subprocess capture backend (cross-platform: Linux V4L2 + Android Camera2)
-- [x] MJPEG streaming server with aiohttp and multi-viewer support
-- [x] Web UI foundation
-- [x] Camera lifecycle management (open/close safety, double-close protection)
-- [x] VideoFrame frozen dataclass with auto-generated timestamps
-- [x] FrameSource abstraction for stream generation
-- [x] H.264/H.265 encoding integration via FFmpeg subprocess
-- [x] Encoding pipeline with frame queues (producer-consumer pattern)
-- [x] Multi-viewer streaming support (concurrent MJPEG connections)
-- [x] API endpoints registry for remote control
-- [ ] **Android packaging** — Kivy wrapper + Buildozer + Camera2 backend
+### Build APK (GitHub Actions)
+1. Push commit na gałąź `main` lub `master`
+2. Workflow automatycznie buduje APK
+3. Pobierz artefakt z sekcji **Actions** → najnowszy run → **Artifacts**
 
-### Recent fixes (June 2026)
-
-- ✅ Fixed `VideoFrame` frozen dataclass — timestamp_ms now auto-generates via `default_factory`
-- ✅ Separated `CameraInfo` as distinct class from `VideoFrame`
-- ✅ Added double-close protection to prevent camera being closed twice
-- ✅ Cleaned up MJPEG boundary generation (raw JPEG from capture → server wraps with boundaries)
-- ✅ Implemented H.264/H.265 encoding pipeline via FFmpeg subprocess (`H264Encoder` + `EncodingPipeline`)
-- ✅ Added multi-viewer streaming support — concurrent MJPEG connections with independent frame queues
-- ✅ Created API endpoints registry (10 endpoints) for camera/stream/encoder/settings management
-
-## The Goal
-
-Create a lightweight, low latency, high resolution camera streaming app for phones and other devices.
-
-**Use cases:**
-
-- Quick security camera — motion detection recording, night vision mode
-- 3D Printer camera — low-latency monitoring via browser
-- Webcam for OBS / desktop use — MJPEG stream at configurable quality
-- Robotics feed — xTRAP robot live video over WiFi
-
-## The Architecture
-
-The app is modular, easy to read the codebase, performant and well documented:
-
-```text
-┌─────────────────────────────────────────────────────┐
-│                    Sztreamerr App                   │
-├─────────────────────────────────────────────────────┤
-│  ┌──────────┐    ┌──────────┐    ┌──────────────┐   │
-│  │ Capture  ├──► │ Encode   ├──► │   Stream     │   │
-│  │ (pyav)   │    │ (FFmpeg) │    │ (aiohttp)    │   │
-│  └──────────┘    └──────────┘    └──────────────┘   │
-│       ▲                    │             │          │
-│       │               ┌─────────┐    ┌──────────┐   │
-│       └────────────── │ Web UI  ├───►│  API     │   │
-│                       └─────────┘    └──────────┘   │
-├─────────────────────────────────────────────────────┤
-│  Platform Layer (Android / Linux / Windows)         │
-│  - Briefcase (Kivy → Android APK + native apps)     │
-└─────────────────────────────────────────────────────┘
+### Instalacja
+```bash
+adb install sztreamerr-*.apk
 ```
 
-## Features
+### Uruchomienie
+1. Otwórz aplikację Sztreamerr na telefonie
+2. Kliknij **Start Streaming**
+3. Połącz się przez przeglądarkę: `http://<adres-ip>:8080` lub `/stream`
 
-### Implemented ✅
+## 🏗️ Architektura
 
-- [x] Basic streaming via web browser — live MJPEG feed (FFmpeg subprocess capture + aiohttp server)
-- [x] Complete web UI foundation — camera preview, resolution/codec controls
-- [x] Camera lifecycle management — safe open/close with double-close protection
-- [x] FFmpeg subprocess capture backend — cross-platform (Linux V4L2, Android)
-- [x] MJPEG streaming server with multipart/x-mixed-replace protocol
-- [x] FrameSource abstraction for stream generation
-- [x] H.264/H.265 encoding integration via FFmpeg subprocess (`H264Encoder` + `EncodingPipeline`)
-- [x] Multi-viewer streaming support — concurrent MJPEG connections with independent frame queues
-- [x] API endpoints registry — 10 endpoints for camera/stream/encoder/settings management
+```
+┌───────────────┐     ┌──────────────────┐     ┌──────────────┐
+│   Kamera      │────▶│  MJPEG Generator │────▶│  HTTP Server │
+│  (Android)    │     │  (MjpegStream)   │     │  (stdlib)    │
+└───────────────┘     └──────────────────┘     └──────────────┘
+                                              │
+                    ┌─────────────────────────┤
+                    ▼                         ▼
+            ┌───────────────┐        ┌───────────────┐
+            │  Subskrybenci │        │   UI (HTML)   │
+            │  (/stream)    │        │   (/:8080/)   │
+            └───────────────┘        └───────────────┘
+```
 
-### Planned 🚧
+### Kluczowe moduły:
+- **`src/main.py`** — Entry point: Kivy App + stdlib HTTPServer
+- **`MjpegStream`** — Generowanie klatek MJPEG z cache i broadcastem
+- **`SztreamerrHandler`** — Obsługa żądań HTTP (/, /stream, /api/status)
+- **`SztreamerrApp`** — Interfejs Kivy (UI start/stop/streaming status)
 
-- [x] Motion detection recording (security camera mode)
-- [ ] Audio streaming support
-- [ ] Bidirectional audio (two-way talk)
-- [ ] HTTPS support with self-signed certificate generation
-- [ ] More streaming codecs: H.264, H.265 via FFmpeg hardware acceleration
-- [ ] Running app in the background / minimized mode
-- [ ] Auto screen dim/turn off when streaming
-- [ ] ONVIF protocol support for NVR integration
-- [ ] Autostartup, possible option to set the app as a launcher for a permanent security camera
-- [ ] Night vision mode — without special hardware, utilizing existing camera and processing tricks
+## 📡 API Endpoints
 
-## Technology Choices
+| Endpoint | Opis |
+|----------|------|
+| `GET /` | Strona główna z podglądem wideo |
+| `GET /stream` | Stream MJPEG (multipart/x-mixed-replace) |
+| `GET /api/status` | Status JSON: wersja, rozdzielczość, subskrybenci |
 
-| Concern | Choice | Why |
-| ------- | ------ | --- |
-| Language | Python 3.10+ | Mature ecosystem, user expertise |
-| Camera capture | FFmpeg subprocess (pyav) | Lightweight — not using OpenCV |
-| Video encoding | FFmpeg | Hardware acceleration on all platforms |
-| Web server | aiohttp (async) | Low overhead for concurrent viewers |
-| UI framework | HTML5/CSS3/JS + Kivy wrapper | Web = native feel on any phone browser; Kivy only as app shell |
+### Przykład użycia `/stream`:
+```bash
+curl -N http://<telefon>:8080/stream -o frame.jpg
+```
 
-## Requirements
+## 🛠️ Development
 
-- **Android**: 6 or higher (SDK level 23)
-- **Linux**: Python 3.10+ with FFmpeg installed
-- **Windows**: Python 3.10+ with FFmpeg installed
-- **iOS**: Planned but not yet supported, possibly using kivy-for-ios and existing buildozer
+### Local testing (desktop)
+```bash
+cd src/
+python main.py  # Startuje na porcie 8080
+```
 
-## Development
+### Build lokalnie (Buildozer)
+```bash
+buildozer android debug
+# APK w: bin/sztreamerr-*.apk
+```
 
-See [docs/PLAN.md](docs/PLAN.md) for the full implementation plan and architecture details.
+## ⚙️ Configuration
 
-## License
+### buildozer.spec
+```ini
+requirements = python3,kivy,pyjnius,jnius,sdl2,pillow,requests
+p4a.bootstrap = sdl2
+android.ndk = 25b
+android.minapi = 26
+```
 
-GPl-3 See LICENSE for details.
+### Opcje streamingu (w kodzie)
+- `CAMERA_W` / `CAMERA_H` — rozdzielczość klatek (domyślnie 1280×720)
+- `FRAME_RATE` — FPS (domyślnie 30)
+- `MAX_CONNECTIONS` — max subskrybenci (domyślnie 5)
+
+## 🐛 Known Issues
+
+### Android NDK r25b compatibility
+- Biblioteki CPython extensions (`aiohttp`, `pydantic`) nie kompilują się z NDK r25b
+- **Solution**: Użycie stdlib `http.server` zamiast aiohttp
+
+## 📄 License
+MIT — see LICENSE file for details.
+
+---
+*Zbudowane przez Garfi 🐾 z pomocą Michała (michauMiau)*

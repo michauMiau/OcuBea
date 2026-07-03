@@ -1,480 +1,757 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Sztreamerr — IP Camera Streamer
-Kivy-based Android app with built-in HTTP server for MJPEG streaming.
-Uses only Python standard library for maximum compatibility with Android/Buildozer.
-
-No external dependencies required at runtime:
-- http.server (stdlib) for HTTP and MJPEG serving
-- threading for background stream generation
-- struct for efficient JPEG header writing
+Sztreamerr - IP Camera Streaming Server
+Simple stdlib-based MJPEG streaming for Android (no external deps)
 """
-
-import os
-import sys
-import time
-import logging
-from kivy.app import App as KivyApp
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.uix.button import Button
-from kivy.clock import Clock, create_message_loop
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
-import struct
+from __future__ import annotations
 import io
+import logging
+import os
+import signal
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from queue import Queue, Empty
 
-# ─── Logging Setup ──────────────────────────────────────────────
-default_log_path = '/sdcard/Sztreamerr.log'
-try:
-    handler = logging.FileHandler(default_log_path)
-except Exception:
-    from logging import NullHandler as handler
-formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
-handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[handler])
-logger = logging.getLogger(__name__)
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+def setup_logging():
+    """Log do /sdcard/Sztreamerr.log na Androidzie, stdout w przeciwnym razie."""
+    log_dir = "/sdcard/Sztreamerr"
+    if os.path.isdir(log_dir):
+        log_path = f"{log_dir}/Sztreamerr.log"
+    else:
+        log_path = None
 
-# ─── Constants ──────────────────────────────────────────────────
-SERVER_HOST = '0.0.0.0'
-SERVER_PORT = 8080
-CAMERA_W = 1280
-CAMERA_H = 720
-FRAME_RATE = 30  # Target FPS
-FRAME_INTERVAL = 1.0 / FRAME_RATE
-BORDER_SIZE = 40  # Bytes for JPEG header/footer padding
-MAX_CONNECTIONS = 5
-KEEPALIVE_TIMEOUT = 120  # Seconds before closing idle connections
-BUFFER_SIZE = 64 * 1024  # 64KB write buffer
-APP_VERSION = '0.3.0'
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-# ─── MJPEG Frame Generator (thread-safe) ──────────────────────
-class MjpegStream:
-    """
-    Generates synthetic MJPEG frames using only stdlib.
-    Each frame is a valid JPEG with metadata for camera info.
-    Thread-safe via lock-based broadcasting to multiple viewers.
-    
-    Optimized for Android:
-    - Deterministic per-second patterns (no random module overhead)
-    - Pre-allocated frame buffers
-    """
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if log_path:
+        h = logging.FileHandler(log_path, mode="a")
+        handlers.append(h)
 
-    def __init__(self, width=CAMERA_W, height=CAMERA_H):
+    logger = logging.getLogger("Sztreamerr")
+    logger.setLevel(logging.INFO)
+    for h in handlers:
+        h.setFormatter(fmt)
+        logger.addHandler(h)
+
+    return logger
+
+logger = setup_logging()
+
+# ---------------------------------------------------------------------------
+# Frame generator — testowe color bars (fallback) + opcjonalna kamera
+# ---------------------------------------------------------------------------
+class FrameGenerator:
+    """Generuje ramki MJPEG. Na Androidzie z Camera2 API będzie zastąpiony."""
+
+    def __init__(self, width=640, height=480):
         self.width = width
         self.height = height
-        self.frame_counter = 0
-        self._lock = threading.Lock()
-        self.subscribers = []
-        
-        # Pre-allocate frame buffers for performance
-        self._frame_cache = {}
-        self._cache_size = 10  # Cache last N frames per second
-        
-        logger.info(f'MjpegStream initialized: {width}x{height} @ {FRAME_RATE}fps')
+        self.fps_target = 15
+        self.frame_interval = 1.0 / self.fps_target
+        self._frame_count = 0
+        self._last_time = time.monotonic()
 
-    def _generate_frame(self):
-        """
-        Generate a single MJPEG frame as bytes.
-        Uses SOI/EOI markers with embedded metadata for testing/debugging.
-        Optimized for Android performance:
-        - Pre-computed header/footer (no real-time construction)
-        - Deterministic pattern based on frame counter
-        """
-        self.frame_counter += 1
-        
-        # Check cache first
-        cache_key = self.frame_counter % self._cache_size
-        if cache_key in self._frame_cache:
-            return self._frame_cache[cache_key]
-        
-        # JPEG SOI marker (Start Of Image)
-        soi = b'\xff\xd8'
-
-        # APP0 marker with frame info (simplified — real implementations use full APP0)
-        app0_data = struct.pack('<H', 16) + b'JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
-
-        # JPEG EOI marker (End Of Image)
-        eoi = b'\xff\xd9'
-
-        # Construct frame: SOI + APP0 + padding data + EOI
-        frame_data = bytearray()
-        frame_data.extend(soi)
-        frame_data.extend(app0_data)
-
-        # Add a minimal amount of entropy (deterministic per-second patterns)
-        # Using frame_counter mod 256 for deterministic but varied patterns
-        pattern_byte = self.frame_counter % 256
-        frame_data.extend(bytes([pattern_byte] * BORDER_SIZE))
-
-        frame_data.extend(eoi)
-        
-        # Cache the frame (circular buffer)
-        if len(self._frame_cache) >= self._cache_size:
-            oldest_key = min(self._frame_cache.keys())
-            del self._frame_cache[oldest_key]
-        self._frame_cache[cache_key] = bytes(frame_data)
-
-        return bytes(frame_data)
-
-    def broadcast_frame(self):
-        """
-        Broadcast a new frame to all connected subscribers.
-        Thread-safe with lock protection.
-        Optimized for Android:
-        - Single lock acquisition per frame (not per subscriber)
-        - Direct socket writes (no buffering on Android)
-        """
-        if not self.subscribers:
-            # No viewers — skip generation overhead
-            return
-
-        frame = self._generate_frame()
-        boundary = f'--frame_boundary\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n'.encode()
-        end_boundary = b'\r\n'
-
-        # Single lock acquisition for all subscribers (faster than per-subscriber locking)
-        with self._lock:
-            for subscriber in list(self.subscribers):
-                try:
-                    subscriber.write(boundary + frame + end_boundary)
-                    subscriber.flush()
-                except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                    logger.debug(f'Subscriber disconnected: {e}')
-                    self.subscribers.remove(subscriber)
-
-    def add_subscriber(self):
-        """
-        Add a new viewer to the broadcast list.
-        Returns True if added, False if too many subscribers.
-        Thread-safe with lock protection.
-        """
-        with self._lock:
-            if len(self.subscribers) >= MAX_CONNECTIONS:
-                logger.warning(f'Max connections reached ({MAX_CONNECTIONS})')
-                return False
-            self.subscribers.append(None)
-            logger.debug(f'Subscriber added: {len(self.subscribers)}/{MAX_CONNECTIONS}')
-            return True
-
-    def remove_subscriber(self, subscriber):
-        """
-        Remove a viewer from the broadcast list.
-        Thread-safe with lock protection.
-        """
-        with self._lock:
-            try:
-                self.subscribers.remove(subscriber)
-            except ValueError:
-                pass  # Already removed (e.g. timeout)
-
-    def generate_loop(self):
-        """
-        Main loop for generating and broadcasting frames.
-        Runs in a separate thread to avoid blocking Kivy main thread.
-        Optimized for Android:
-        - Precise timing with time.monotonic() (more accurate than time.sleep())
-        - Minimal overhead per iteration
-        """
-        target_time = time.monotonic()
-        
-        while True:
-            self.broadcast_frame()
-            
-            # Calculate next frame time for consistent FPS
-            target_time += FRAME_INTERVAL
-            sleep_time = max(0, target_time - time.monotonic())
-            if sleep_time > 0.1:  # Don't sleep too long (keeps responsive to disconnects)
-                time.sleep(sleep_time)
-
-# ─── HTTP Request Handler (stdlib) ─────────────────────────────
-class SztreamerrHandler(BaseHTTPRequestHandler):
-    """
-    Custom HTTP request handler for serving MJPEG stream and UI.
-    Uses stdlib http.server — no aiohttp, no asyncio needed.
-    
-    Optimized for Android:
-    - Minimal logging (no 404s for favicon, etc.)
-    - Direct socket writes with proper buffering
-    - Keep-alive connections for reduced overhead
-    """
-
-    def do_GET(self):
-        if self.path == '/':
-            self._serve_index()
-        elif self.path.startswith('/stream'):
-            self._serve_mjpeg_stream()
-        elif self.path == '/api/status':
-            self._serve_status()
-        else:
-            self.send_error(404, 'Not Found')
-
-    def _serve_index(self):
-        """Serve the main UI page."""
-        index_path = os.path.join(os.path.dirname(__file__), '..', 'ui', 'index.html')
-        if not os.path.isfile(index_path):
-            self.send_error(404, 'UI not found — check src/ui/index.html exists')
-            return
-
-        with open(index_path, 'rb') as f:
-            data = f.read()
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.send_header('X-Sztreamerr-Version', APP_VERSION)
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _serve_status(self):
-        """Serve JSON status endpoint for debugging."""
-        import json
-        from collections import OrderedDict
-        
-        status = OrderedDict([
-            ('version', APP_VERSION),
-            ('camera_w', CAMERA_W),
-            ('camera_h', CAMERA_H),
-            ('frame_rate', FRAME_RATE),
-            ('subscribers', len(mjpeg_stream.subscribers) if mjpeg_stream else 0),
-        ])
-        
-        data = json.dumps(status).encode()
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _serve_mjpeg_stream(self):
-        """
-        Serve MJPEG stream to a single client.
-        Uses direct writes with buffer for performance on Android.
-        
-        Optimized:
-        - Direct socket access (no buffering layer)
-        - Minimal overhead per frame
-        """
-        if not mjpeg_stream.add_subscriber():
-            self.send_error(503, 'Too many connections')
-            return
-
+    def generate_frame(self):
+        """Generuje testową ramkę z kolorowymi paskami + numer klatki."""
         try:
-            # Pre-compute boundary once for performance
-            boundary = b'--frame_boundary\r\nContent-Type: image/jpeg\r\n'
-            end_boundary = b'\r\n'
-            
-            self.send_response(200)
-            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame_boundary')
-            self.send_header('X-Accel-Buffering', 'no')  # Disable Nginx buffering for real-time
-            self.end_headers()
+            import numpy as np
+        except ImportError:
+            # Brak numpy — generujemy prosty RGB przez Pillow
+            return self._generate_pil_frame()
 
-            while True:
-                frame = mjpeg_stream._generate_frame() if hasattr(mjpeg_stream, '_generate_frame') else None
-                
-                if not frame:
-                    break
-                    
-                # Direct write to socket (no buffering on Android)
-                self.wfile.write(boundary + b'Content-Length: ' + str(len(frame)).encode() + b'\r\n\r\n')
-                self.wfile.write(frame)
-                self.wfile.write(end_boundary)
-                
-                time.sleep(FRAME_INTERVAL)
-        except (ConnectionResetError, BrokenPipeError) as e:
-            logger.debug(f'Client disconnected: {e}')
-        finally:
-            mjpeg_stream.remove_subscriber(None)
+        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
+        # Kolorowe pasy (bar pattern)
+        bar_width = self.width // 7
+        colors = [
+            (255, 0, 0),    # czerwony
+            (255, 165, 0),  # pomarańczowy
+            (255, 255, 0),  # żółty
+            (0, 255, 0),    # zielony
+            (0, 255, 255),  # cyjan
+            (0, 100, 255),  # niebieski
+            (128, 0, 255),  # fioletowy
+        ]
+        for i, color in enumerate(colors):
+            x_start = i * bar_width
+            x_end = min((i + 1) * bar_width, self.width)
+            frame[:, x_start:x_end] = color
+
+        # Numer klatki
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            pil_frame = Image.fromarray(frame)
+            draw = ImageDraw.Draw(pil_frame)
+            font = None  # systemowy
+            text = f"Frame #{self._frame_count}"
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            draw.text(
+                (10, self.height - th - 15),
+                text,
+                fill=(255, 255, 255),
+                font=font,
+            )
+            pil_frame = np.array(pil_frame)
+        except ImportError:
+            pass
+
+        self._frame_count += 1
+        return pil_frame if 'pil_frame' in dir() else frame
+
+    def _generate_pil_frame(self):
+        """Generuje ramkę tylko z Pillow."""
+        try:
+            from PIL import Image, ImageDraw
+        except ImportError:
+            # Brak Pillow — zwracamy pustą ramkę 1x1 (JPEG)
+            return self._empty_jpeg()
+
+        frame = Image.new("RGB", (self.width, self.height), "black")
+        draw = ImageDraw.Draw(frame)
+
+        # Kolorowe pasy
+        bar_width = self.width // 7
+        colors = [
+            (255, 0, 0), (255, 165, 0), (255, 255, 0),
+            (0, 255, 0), (0, 255, 255), (0, 100, 255), (128, 0, 255)
+        ]
+        for i, color in enumerate(colors):
+            x_start = i * bar_width
+            x_end = min((i + 1) * bar_width, self.width)
+            draw.rectangle([x_start, 0, x_end - 1, self.height - 30], fill=color)
+
+        # Numer klatki
+        text = f"Frame #{self._frame_count}"
+        bbox = draw.textbbox((0, 0), text)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text((10, self.height - th - 15), text, fill=(255, 255, 255))
+
+        self._frame_count += 1
+
+        buf = io.BytesIO()
+        frame.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+    def _empty_jpeg(self):
+        """Generuje minimalny poprawny JPEG 1x1 przez Pillow."""
+        try:
+            from PIL import Image
+            img = Image.new("RGB", (1, 1), (0, 0, 0))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG")
+            return buf.getvalue()
+        except ImportError:
+            # Brak Pillow — zwracamy minimalny poprawny JPEG 1x1 (black)
+            return (
+                b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00'
+                b'\x00\x01\x00\x01\x00\x00\xff\xdb\x00C\x00\x08\x06\x06'
+                b'\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b'
+                b'\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c \x1f'
+                b'\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff'
+                b'\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00'
+                b'\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4'
+                b'\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00'
+                b'\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!\x1a\x1b\x1c\x1d\x1e\xff'
+                b'\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xfb\xa6\xba\xd5\xff\xc9\xff\xd9'
+            )
+
+    def get_frame(self):
+        """Zwraca jedną ramkę JPEG."""
+        frame = self.generate_frame()
+        if isinstance(frame, bytes):  # już JPEG z Pillow
+            return frame
+
+        # Konwersja numpy do JPEG przez Pillow
+        try:
+            from PIL import Image
+            pil_frame = Image.fromarray(frame)
+            buf = io.BytesIO()
+            pil_frame.save(buf, format="JPEG", quality=85)
+            return buf.getvalue()
+        except ImportError:
+            # Brak numpy i Pillow — zwracamy minimalny JPEG
+            return self._empty_jpeg()
+
+
+class AndroidFrameGenerator(FrameGenerator):
+    """
+    FrameGenerator z obsługą Android Camera2 API.
+    Na desktopie fallbackuje do testowych ramek (jak rodzic).
+    """
+
+    def __init__(self, width=640, height=480):
+        super().__init__(width, height)
+        self.camera = None
+        try:
+            self._try_init_camera()
+        except Exception as e:
+            logger.warning(f"Camera2 nie dostępny (fallback): {e}")
+
+    def _try_init_camera(self):
+        """Próbuje zainicjować kamerę Android."""
+        # Próba importu pyjnius — dostępne tylko na Androidzie
+        try:
+            from jnius import autoclass, cast
+            Camera2 = autoclass('org.kivy.android.camera.Camera2')
+            logger.info("Camera2 API dostępny")
+        except (ImportError, Exception) as e:
+            # Desktop — fallback do rodzica
+            logger.debug(f"Nie na Androidzie: {e}")
+            raise
+
+    def generate_frame(self):
+        """Generuje ramkę z kamery lub fallback."""
+        if self.camera and hasattr(self.camera, 'capture_frame'):
+            try:
+                return self.camera.capture_frame()
+            except Exception as e:
+                logger.error(f"Błąd capture: {e}")
+        return super().generate_frame()
+
+    def start_capture(self):
+        """Startuje capture z kamery."""
+        try:
+            if self.camera:
+                self.camera.start()
+                logger.info("Capture started from camera")
+        except Exception as e:
+            logger.warning(f"Nie udało się wystartować kamery: {e}")
+
+    def stop_capture(self):
+        """Zatrzymuje capture."""
+        try:
+            if self.camera and hasattr(self.camera, 'stop'):
+                self.camera.stop()
+                logger.info("Capture stopped")
+        except Exception as e:
+            logger.warning(f"Nie udało się zatrzymać kamery: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Frame Distributor — multi-viewer support via threading.Queue
+# ---------------------------------------------------------------------------
+class FrameDistributor:
+    """
+    Rozdziela ramki między wielu subskrybentów (multi-viewer).
+    Używa threading.Queue zamiast asyncio.Queue (dostępne w stdlib).
+    """
+
+    def __init__(self):
+        self._queue: Queue = None  # typ: Optional[Queue[bytes]]
+        self._lock = threading.Lock()
+        self._subscribers: dict[str, Queue] = {}
+        self._last_frame = None
+        self._last_time = 0.0
+
+    def publish(self, frame_bytes):
+        """
+Pobiera ramkę z generatora i rozsyła do subskrybentów."""
+        with self._lock:
+            self._last_frame = frame_bytes
+            self._last_time = time.monotonic()
+
+            for sub_id, queue in list(self._subscribers.items()):
+                try:
+                    # Usuń przestarzałe ramki (max 10 w kolejce)
+                    if queue.qsize() >= 10:
+                        try:
+                            queue.get_nowait()
+                        except Empty:
+                            pass
+                    queue.put(frame_bytes, block=False)
+                except Exception as e:
+                    logger.debug(f"Subskrybent {sub_id} nie mógł pobrać ramki: {e}")
+
+    def subscribe(self) -> str:
+        """
+        Zwraca unikalne ID subskrybenta i jego kolejkę.
+        Subskryptanci pobierają ramki przez queue.get(timeout=1.0).
+        """
+        import uuid
+        sub_id = f"viewer_{uuid.uuid4().hex[:8]}"
+        queue: Queue[bytes] = Queue(maxsize=15)
+        with self._lock:
+            self._subscribers[sub_id] = queue
+        logger.info(f"Subskrybent dołączony: {sub_id}")
+        return sub_id, queue
+
+    def unsubscribe(self, sub_id):
+        """Usuwaja subskrybenta."""
+        with self._lock:
+            if sub_id in self._subscribers:
+                del self._subscribers[sub_id]
+                logger.info(f"Subskrybent wyszedł: {sub_id}")
+
+    def get_stats(self) -> dict:
+        """Zwraca statystyki dystrybucji."""
+        with self._lock:
+            return {
+                "subscribers": len(self._subscribers),
+                "last_frame_time_ago": time.monotonic() - self._last_time if self._last_time else 0,
+                "subscriber_ids": list(self._subscribers.keys()),
+            }
+
+    def cleanup_stale_subscribers(self, max_idle=15.0):
+        """
+        Usuwa subskrybentów którzy nie pobierali ramek od >max_idle sekund.
+        Wywoływane co kilka sekund przez wątek czyszczenia.
+        """
+        now = time.monotonic()
+        with self._lock:
+            stale = []
+            for sub_id, queue in list(self._subscribers.items()):
+                # Sprawdzamy czy kolejka jest pusta i dawno nie była używana
+                if queue.qsize() == 0 and (now - self._last_time) > max_idle:
+                    stale.append(sub_id)
+
+            for sub_id in stale:
+                del self._subscribers[sub_id]
+                logger.debug(f"Subskrybent usunięty (idle): {sub_id}")
+
+
+# ---------------------------------------------------------------------------
+# HTTP Server — MJPEG streaming endpoint
+# ---------------------------------------------------------------------------
+class MjpegRequestHandler(BaseHTTPRequestHandler):
+    """Obsługuje żądania streamu MJPEG z FrameDistributor."""
+
+    # Statyczne pola klasy — dostęp do globalnego stanu
+    distributor: FrameDistributor = None  # type: ignore
+    generator: FrameGenerator = None      # type: ignore
+    fps_target: int = 15
+    _last_request_time: float = 0.0
 
     def log_message(self, format, *args):
-        """
-        Override default logging to reduce noise in Android logcat.
-        Only logs important messages (no 404s for favicon, etc.).
-        """
-        msg = format % args
-        if any(x in msg for x in ['stream', 'error']):
-            logger.info(f'HTTP {msg}')
+        """Zamiast stdout — logujemy do loggera."""
+        logger.info(f"HTTP {self.client_address[0]}: {format % args}")
 
-# ─── HTTP Server with Threading ────────────────────────────────
-class SztreamerrServer:
+    def _send_jpeg_header(self):
+        """Wysyła nagłówki HTTP dla streamu MJPEG."""
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Connection", "close")  # Zamykamy po każdym żądaniu
+        self.end_headers()
+
+    def do_GET(self):
+        if not self.do_GET_stream():
+            return
+
+        sub_id = None
+        try:
+            # Parse URL: /stream?fps=15&sub=myid
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            fps_str = params.get("fps", [str(MjpegRequestHandler.fps_target)])[0]
+            try:
+                fps = int(fps_str)
+                MjpegRequestHandler.fps_target = fps
+            except ValueError:
+                fps = MjpegRequestHandler.fps_target
+
+            # Subskrybent — jeśli podany, używamy istniejącej kolejki
+            sub_param = params.get("sub", [None])[0]
+            if sub_param and sub_param in MjpegRequestHandler.distributor._subscribers:
+                queue = MjpegRequestHandler.distributor._subscribers[sub_param]
+            else:
+                # Nowy subskryptent
+                sub_id, queue = MjpegRequestHandler.distributor.subscribe()
+
+            self._send_jpeg_header()
+
+            while True:
+                try:
+                    frame_bytes = queue.get(timeout=1.0 / fps)
+                    header = f"\r\n--frame\r\nContent-Type: image/jpeg\r\n"
+                    content_len = len(frame_bytes)
+
+                    self.wfile.write(header.encode())
+                    self.wfile.write(f"Content-Length: {content_len}\r\n\r\n".encode())
+                    self.wfile.write(frame_bytes)
+                    MjpegRequestHandler._last_request_time = time.monotonic()
+
+                except Empty:
+                    # Brak ramek — spróbujmy wygenerować nową
+                    if isinstance(MjpegRequestHandler.generator, FrameGenerator):
+                        frame_bytes = MjpegRequestHandler.generator.get_frame()
+                        if frame_bytes and len(frame_bytes) > 50:  # valid JPEG
+                            header = f"\r\n--frame\r\nContent-Type: image/jpeg\r\n"
+                            content_len = len(frame_bytes)
+                            self.wfile.write(header.encode())
+                            self.wfile.write(f"Content-Length: {content_len}\r\n\r\n".encode())
+                            self.wfile.write(frame_bytes)
+                    else:
+                        time.sleep(1.0 / max(fps, 1))
+
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+
+        finally:
+            if sub_id:
+                MjpegRequestHandler.distributor.unsubscribe(sub_id)
+
+    def do_GET_health(self):
+        """Health check endpoint."""
+        stats = MjpegRequestHandler.distributor.get_stats()
+        response = {
+            "status": "ok",
+            "subscribers": stats["subscribers"],
+            "fps_target": MjpegRequestHandler.fps_target,
+            "generator_type": type(MjpegRequestHandler.generator).__name__,
+        }
+        body = str(response).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET_status(self):
+        """Status endpoint."""
+        stats = MjpegRequestHandler.distributor.get_stats()
+        generator = MjpegRequestHandler.generator
+        response = {
+            "status": "streaming",
+            "subscribers": stats["subscribers"],
+            "fps_target": MjpegRequestHandler.fps_target,
+            "last_frame_ago_sec": round(stats.get("last_frame_time_ago", 0), 2),
+            "generator_type": type(generator).__name__,
+            "total_frames_generated": getattr(generator, '_frame_count', 0),
+        }
+        body = str(response).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET_info(self):
+        """Info endpoint."""
+        response = {
+            "app": "Sztreamerr",
+            "version": "0.3.0",
+            "python_version": sys.version,
+            "platform": sys.platform,
+            "endpoints": [
+                "/stream — MJPEG stream (default /stream)",
+                "/stream?fps=15 — MJPEG stream z custom FPS",
+                "/health — JSON health check",
+                "/status — Detailed status",
+                "/info — App info",
+            ],
+        }
+        body = str(response).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        """Routing — dispatch po endpointach."""
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+
+        if path == "/health":
+            return self.do_GET_health()
+        elif path == "/status":
+            return self.do_GET_status()
+        elif path == "/info":
+            return self.do_GET_info()
+        else:
+            # Default: stream
+            self._last_request_time = time.monotonic()
+            return self.do_GET_stream()
+
+    def do_GET_stream(self):
+        """Streamuj MJPEG (używany przez do_GET)."""
+        sub_id = None
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            fps_str = params.get("fps", [str(MjpegRequestHandler.fps_target)])[0]
+            try:
+                fps = int(fps_str)
+                MjpegRequestHandler.fps_target = fps
+            except ValueError:
+                fps = MjpegRequestHandler.fps_target
+
+            sub_param = params.get("sub", [None])[0]
+            if sub_param and sub_param in MjpegRequestHandler.distributor._subscribers:
+                queue = MjpegRequestHandler.distributor._subscribers[sub_param]
+            else:
+                sub_id, queue = MjpegRequestHandler.distributor.subscribe()
+
+            self._send_jpeg_header()
+
+            while True:
+                try:
+                    frame_bytes = queue.get(timeout=1.0 / fps)
+                    header = f"\r\n--frame\r\nContent-Type: image/jpeg\r\n"
+                    content_len = len(frame_bytes)
+
+                    self.wfile.write(header.encode())
+                    self.wfile.write(f"Content-Length: {content_len}\r\n\r\n".encode())
+                    self.wfile.write(frame_bytes)
+                    MjpegRequestHandler._last_request_time = time.monotonic()
+
+                except Empty:
+                    # Brak ramek — wygeneruj nową z generatora
+                    if isinstance(MjpegRequestHandler.generator, FrameGenerator):
+                        frame_bytes = MjpegRequestHandler.generator.get_frame()
+                        if frame_bytes and len(frame_bytes) > 50:
+                            header = f"\r\n--frame\r\nContent-Type: image/jpeg\r\n"
+                            content_len = len(frame_bytes)
+                            self.wfile.write(header.encode())
+                            self.wfile.write(f"Content-Length: {content_len}\r\n\r\n".encode())
+                            self.wfile.write(frame_bytes)
+                    else:
+                        time.sleep(1.0 / max(fps, 1))
+
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+
+        finally:
+            if sub_id:
+                MjpegRequestHandler.distributor.unsubscribe(sub_id)
+
+
+# ---------------------------------------------------------------------------
+# Capture Loop — osobny wątek generujący ramki
+# ---------------------------------------------------------------------------
+class CaptureLoop:
     """
-    Lightweight HTTP server using stdlib http.server.
-    Handles MJPEG streaming and UI serving in a single threaded process.
-    Designed for Android performance — minimal overhead, no asyncio loop.
-    
-    Optimized for Android:
-    - ThreadingMixIn for concurrent request handling
-    - Daemon threads (don't block shutdown)
-    - Proper socket timeout handling
+    Wątek który stale generuje ramki i publish-uje je do FrameDistributor.
+    Obsługuje też czyszczenie starych subskrybentów.
     """
 
-    def __init__(self, host=SERVER_HOST, port=SERVER_PORT):
-        self.host = host
-        self.port = port
-        self.server = None
-        self._running = False
+    def __init__(self, generator: FrameGenerator, distributor: FrameDistributor):
+        self.generator = generator
+        self.distributor = distributor
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._cleanup_thread: threading.Thread | None = None
+        self._stop_cleanup = threading.Event()
 
     def start(self):
+        """Startuje capture loop i cleanup thread."""
+        if hasattr(self.generator, 'start_capture'):
+            try:
+                self.generator.start_capture()
+            except Exception as e:
+                logger.warning(f"Nie udało się wystartować kamery: {e}")
+
+        self._thread = threading.Thread(
+            target=self._capture_loop,
+            name="Sztreamerr-Capture",
+            daemon=True,
+        )
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop,
+            name="Sztreamerr-Cleanup",
+            daemon=True,
+        )
+
+        self._thread.start()
+        self._cleanup_thread.start()
+        logger.info("Capture loop started")
+
+    def _capture_loop(self):
         """
-        Start the HTTP server in a background thread.
-        Uses ThreadingMixIn for concurrent request handling.
+        Główna pętla capture — generuje ramki z generatora i publish-uje je.
+        Utrzymuje stałe FPS (15) niezależnie od obciążenia HTTP.
         """
-        from socketserver import ThreadingMixIn
+        target_interval = 1.0 / MjpegRequestHandler.fps_target
 
-        class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-            daemon_threads = True
-            allow_reuse_address = True
-            timeout = KEEPALIVE_TIMEOUT
-            # Use send_buffer_size for performance on Android
-            # (increases TCP window size)
-            
-            def handle_error(self, request, client_address):
-                """Suppress connection reset errors (common in mobile)."""
-                pass  # Don't log every disconnect
+        while not self._stop_event.is_set():
+            try:
+                frame_bytes = self.generator.get_frame()
+                if frame_bytes and len(frame_bytes) > 50:  # valid JPEG
+                    self.distributor.publish(frame_bytes)
 
-        self.server = ThreadedHTTPServer((self.host, self.port), SztreamerrHandler)
-        self._running = True
+                # Precyzyjny timing — obniżamy CPU usage
+                elapsed = time.monotonic() - (self._last_time if hasattr(self, '_last_time') else time.monotonic())
+                sleep_time = target_interval - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
-        # Start server in background thread (Kivy main loop is single-threaded)
-        t = threading.Thread(target=self.server.serve_forever, daemon=True)
-        t.start()
+            except Exception as e:
+                logger.error(f"Błąd capture: {e}", exc_info=True)
+                self._stop_event.wait(timeout=1.0)  # czekaj na restart
 
-        logger.info(f'HTTP server started: http://{self.host}:{self.port}')
-        return self
+    def _cleanup_loop(self):
+        """
+Czyści starych subskrybentów co 5 sekund."""
+        while not self._stop_cleanup.is_set():
+            try:
+                self.distributor.cleanup_stale_subscribers(max_idle=30.0)
+            except Exception as e:
+                logger.debug(f"Błąd cleanup: {e}")
+
+            self._stop_cleanup.wait(timeout=5.0)
 
     def stop(self):
         """
-        Gracefully shut down the HTTP server.
-        Closes all connections and waits for background threads to finish.
+        Zatrzymuje capture i cleanup.
         """
+        self._stop_event.set()
+        self._stop_cleanup.set()
+
+        if hasattr(self.generator, 'stop_capture'):
+            try:
+                self.generator.stop_capture()
+            except Exception as e:
+                logger.warning(f"Nie udało się zatrzymać kamery: {e}")
+
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3.0)
+        if self._cleanup_thread and self._cleanup_thread.is_alive():
+            self._cleanup_thread.join(timeout=3.0)
+
+        logger.info("Capture loop stopped")
+
+
+# ---------------------------------------------------------------------------
+# Application class (opcjonalnie — Kivy App wrapper bez crasha)
+# ---------------------------------------------------------------------------
+class SztreamerrApp:
+    """
+    Aplikacja Sztreamerr.
+    Na desktopie: tylko HTTP server (testowanie).
+    Na Androidzie: opcjonalny Kivy UI (nie crashuje bo nie wymaga display na desktopie).
+    """
+
+    def __init__(self):
+        self.server = None
+        self.capture_loop: CaptureLoop | None = None
+        self.distributor: FrameDistributor = None  # type: ignore
+        self.generator: FrameGenerator = None      # type: ignore
+        self._running = False
+
+    def start(self, host="0.0.0.0", port=8080):
+        """Startuje serwer i capture loop."""
+        logger.info(f"Starting Sztreamerr on {host}:{port}")
+
+        # Inicjalizacja generatora ramki (Camera2 na Androidzie)
+        try:
+            from jnius import autoclass  # tylko na Androidzie
+            self.generator = AndroidFrameGenerator()
+            logger.info("Using Android Camera2 frame generator")
+        except ImportError:
+            self.generator = FrameGenerator()
+            logger.info("Using desktop frame generator (test bars)")
+
+        # Frame distributor
+        self.distributor = FrameDistributor()
+
+        # Konfiguracja handlera HTTP
+        MjpegRequestHandler.distributor = self.distributor  # type: ignore
+        MjpegRequestHandler.generator = self.generator      # type: ignore
+        MjpegRequestHandler.fps_target = 15                  # type: ignore
+
+        # Capture loop
+        self.capture_loop = CaptureLoop(self.generator, self.distributor)
+
+        # Start serwera HTTP w osobnym wątku
+        try:
+            self.server = HTTPServer((host, port), MjpegRequestHandler)
+            threading.Thread(
+                target=self._serve_forever,
+                name="Sztreamerr-HTTP",
+                daemon=True,
+            ).start()
+
+            # Start capture loop
+            self.capture_loop.start()
+            self._running = True
+
+            logger.info(f"✅ Sztreamerr running at http://{host}:{port}/stream")
+            logger.info("   Endpoints: /stream, /health, /status, /info")
+
+        except OSError as e:
+            logger.error(f"Nie udało się uruchomić serwera: {e}")
+            return False
+
+        return True
+
+    def _serve_forever(self):
+        """Główna pętla serwera HTTP."""
+        try:
+            self.server.serve_forever()
+        except Exception as e:
+            logger.error(f"Błąd serwera: {e}")
+
+    def stop(self):
+        """Zatrzymuje serwer i capture loop."""
+        logger.info("Stopping Sztreamerr...")
+        self._running = False
+
+        if self.capture_loop:
+            self.capture_loop.stop()
+
         if self.server:
-            self._running = False
-            self.server.shutdown()
-            logger.info('HTTP server stopped')
+            try:
+                self.server.shutdown()
+            except Exception as e:
+                logger.debug(f"Shutdown error: {e}")
 
-# ─── Kivy App Entry Point (Android) ──────────────────────────
-class SztreamerrApp(KivyApp):
-    """
-    Main Android app using stdlib HTTPServer for MJPEG streaming.
-    Optimized for low-latency on mobile devices:
-    - No external dependencies (aiohttp, pydantic, etc.)
-    - Direct socket writes (no buffering)
-    - Minimal memory overhead
-    """
+        logger.info("Sztreamerr stopped")
 
-    def build(self):
-        # Create UI layout
-        root = BoxLayout(orientation='vertical', padding=10, spacing=10)
-
-        # Title label with app name and version
-        self.title_label = Label(
-            text=f'Sztreamerr v{APP_VERSION}\nIP Camera Streamer',
-            font_size=24,
-            bold=True,
-            size_hint_y=0.1
-        )
-        root.add_widget(self.title_label)
-
-        # Status indicator with live connection count
-        self.status_label = Label(
-            text='Starting server...',
-            color=(0.7, 0.7, 0.7, 1),
-            size_hint_y=0.05,
-            font_size=14,
-            halign='center'
-        )
-        root.add_widget(self.status_label)
-
-        # Video preview placeholder (will be replaced with actual stream in real implementation)
-        self.video_container = BoxLayout(
-            background_color=(0, 0, 0, 1),
-            size_hint_y=0.6
-        )
-        root.add_widget(self.video_container)
-
-        # Control buttons for server start/stop
-        controls = BoxLayout(size_hint_y=0.15, spacing=10)
-        self.start_button = Button(
-            text='Start Streaming',
-            size_hint_x=0.5,
-            background_color=(0.2, 0.7, 0.2, 1),
-            font_size=18
-        )
-        self.stop_button = Button(
-            text='Stop Streaming',
-            disabled=True,
-            size_hint_x=0.5,
-            background_color=(0.7, 0.2, 0.2, 1),
-            font_size=18
-        )
-        controls.add_widget(self.start_button)
-        controls.add_widget(self.stop_button)
-        root.add_widget(controls)
-
-        # Connection count display
-        self.connection_label = Label(
-            text='Connections: 0',
-            size_hint_y=0.05,
-            color=(0.8, 0.8, 0.8, 1),
-            font_size=12,
-            halign='center'
-        )
-        root.add_widget(self.connection_label)
-
-        # Bind button events (use Lambda for closure capture)
-        self.start_button.bind(on_press=self._start_streaming)
-        self.stop_button.bind(on_press=lambda *args: self._stop_streaming())
-
-        # Schedule server start with delay (avoid race conditions on Android)
-        Clock.schedule_once(self._delayed_start, 0.5)
-
-        return root
-
-    def _delayed_start(self, dt):
+    def wait(self):
         """
-        Start streaming after a brief delay.
-        This avoids issues where Kivy hasn't fully initialized on some Android devices.
-        """
-        self._start_streaming()
+Czeka na zamknięcie (Ctrl+C)."""
+        try:
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+            while self._running:
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt — stopping...")
+            self.stop()
 
-    def _start_streaming(self, *args):
-        """Start the MJPEG streaming server."""
-        # Initialize global stream generator
-        global mjpeg_stream
-        mjpeg_stream = MjpegStream(CAMERA_W, CAMERA_H)
+    def _signal_handler(self, signum, frame):
+        """Obsługa sygnałów (Ctrl+C)."""
+        logger.info(f"Received signal {signum}")
+        self._running = False
 
-        # Start HTTP server in background thread
-        self.server = SztreamerrServer(SERVER_HOST, SERVER_PORT).start()
 
-        # Update UI to reflect running state
-        self.status_label.text = f'✅ Running at http://{SERVER_HOST}:{SERVER_PORT}'
-        self.start_button.disabled = True
-        self.stop_button.disabled = False
-        logger.info(f'Sztreamerr streaming started on port {SERVER_PORT}')
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+def main():
+    """Główny entry point aplikacji."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Sztreamerr IP Camera Streamer")
+    parser.add_argument("--host", default="0.0.0.0", help="Host do nasłuchiwania (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8080, help="Port HTTP (default: 8080)")
+    parser.add_argument("--fps", type=int, default=15, help="FPS streamu (default: 15)")
 
-    def _stop_streaming(self):
-        """Stop the MJPEG streaming server."""
-        if hasattr(self, 'server') and self.server:
-            self.server.stop()
-            del self.server
+    args = parser.parse_args()
 
-        # Reset UI state
-        self.status_label.text = 'Stopped'
-        self.start_button.disabled = False
-        self.stop_button.disabled = True
-        logger.info('Sztreamerr streaming stopped')
+    # Ustawienie FPS globalnie dla handlera
+    MjpegRequestHandler.fps_target = args.fps
 
-    def on_stop(self):
-        """
-        Clean up resources when app is closed.
-        Closes server and any open connections.
-        """
-        if hasattr(self, 'server') and self.server:
-            self.server.stop()
-            logger.info('Sztreamerr app stopped — resources cleaned up')
+    app = SztreamerrApp()
+    if not app.start(host=args.host, port=args.port):
+        sys.exit(1)
 
-# ─── Main Entry Point (Android) ──────────────────────────────
-if __name__ == '__main__':
-    # Create global stream instance for use across modules
-    mjpeg_stream = MjpegStream()
+    try:
+        app.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        app.stop()
 
-    # Run the Kivy app (blocks until app exits)
-    SztreamerrApp().run()
+
+if __name__ == "__main__":
+    main()
