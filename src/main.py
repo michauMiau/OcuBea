@@ -54,16 +54,14 @@ class FrameDistributor:
             return self._subscribers.get(viewer_id)
     
     def broadcast(self, jpeg_bytes: bytes):
-        """Push a frame to all subscribers."""
-        buf = io.BytesIO(jpeg_bytes)
-        buf.seek(0)
+        """Push a frame to all subscribers — each gets its own copy."""
         with self._lock:
             dead = []
             for vid, queue in self._subscribers.items():
                 try:
                     if len(queue) > 5:  # max pending frames
                         queue.pop(0)  # drop oldest
-                    queue.append(buf)
+                    queue.append(io.BytesIO(jpeg_bytes))
                 except (ValueError, OSError):
                     dead.append(vid)
             for vid in dead:
