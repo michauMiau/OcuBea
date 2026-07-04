@@ -312,7 +312,7 @@ def run_kivy_app():
                 font_size=32,
                 bold=True,
                 size_hint_y=0.15,
-                foreground_color=(1, 0.6, 0, 1),
+                color=(1, 0.6, 0, 1),
             )
             layout.add_widget(title_label)
             
@@ -320,7 +320,7 @@ def run_kivy_app():
             self.status_label = Label(
                 text='Starting...',
                 size_hint_y=0.05,
-                foreground_color=(0.7, 0.7, 0.7, 1),
+                color=(0.7, 0.7, 0.7, 1),
                 font_size=14,
             )
             layout.add_widget(self.status_label)
@@ -331,7 +331,7 @@ def run_kivy_app():
                 size_hint_y=0.25,
                 halign='center',
                 font_size=16,
-                foreground_color=(0.9, 0.9, 0.9, 1),
+                color=(0.9, 0.9, 0.9, 1),
             )
             layout.add_widget(info)
             
@@ -339,7 +339,7 @@ def run_kivy_app():
             self.server_label = Label(
                 text='Server: Starting...',
                 size_hint_y=0.05,
-                foreground_color=(0.7, 0.7, 0.7, 1),
+                color=(0.7, 0.7, 0.7, 1),
                 font_size=12,
             )
             layout.add_widget(self.server_label)
