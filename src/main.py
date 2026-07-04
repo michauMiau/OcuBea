@@ -52,7 +52,7 @@ class FrameDistributor:
     def get_subscriber_queue(self, viewer_id: str) -> list[io.BytesIO] | None:
         with self._lock:
             return self._subscribers.get(viewer_id)
-    
+
     def broadcast(self, jpeg_bytes: bytes):
         """Push a frame to all subscribers — each gets its own copy."""
         with self._lock:
