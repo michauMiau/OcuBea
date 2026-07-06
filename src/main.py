@@ -137,14 +137,112 @@ def _build_minimal_jpeg(width: int, height: int) -> bytes:
     return header + sof_data + b'\xff\xda' + sos_header + bytes(rgb_data) + b'\xff\xd9'
 
 
-class TestBarGenerator:
-    """Generates color-bar test pattern JPEG frames — PIL-free for Android."""
+class RealCameraInput:
+    """Android Camera2 API wrapper via pyjnius."""
     
-    def __init__(self):
-        self._frame_count = 0
+    def __init__(self, width=640, height=480):
+        self.width = width
+        self.height = height
+        self._camera = None
+        
+    def start(self) -> bool:
+        try:
+            from jnius import autoclass
+            
+            # Get CameraService
+            Context = autoclass('android.content.Context')
+            camera_service = autoclass('android.hardware.camera2.CameraManager')
+            
+            # Get first available camera ID
+            camera_ids = camera_service.getCameraIdList()
+            if not camera_ids:
+                logger.error("No cameras found!")
+                return False
+                
+            self._camera_id = str(camera_ids[0])
+            logger.info(f"Using camera: {self._camera_id}")
+            
+            # Create CameraDevice listener
+            class MyCaptureListener(autoclass('android.hardware.camera2.CameraCaptureSession$CaptureCallback')):
+                def __init__(self):
+                    super().__init__()
+                    
+                def onCaptureCompleted(self, session, request, result):
+                    pass
+                    
+            self._capture_listener = MyCaptureListener()
+            
+            return True
+        except ImportError as e:
+            logger.error(f"Failed to import Camera2 classes: {e}")
+            return False
     
-    def generate(self, width: int = 320, height: int = 240) -> bytes:
-        return _build_minimal_jpeg(width, height)
+    def capture_frame(self) -> bytes | None:
+        """Capture a single frame from camera. Returns JPEG bytes."""
+        if not self._camera:
+            return None
+            
+        try:
+            # Get next available frame using ImageReader
+            image_reader = autoclass('android.media.ImageReader')
+            max_images = 2
+            format = autoclass('android.graphics.PixelFormat').YUV_420_888
+            
+            reader = image_reader.newInstance(self.width, self.height, format, max_images)
+            
+            # Create capture request
+            camera_device = self._camera.open()  # Simplified - need proper CameraDevice
+            capture_request = autoclass('android.hardware.camera2.CameraCaptureSession$CaptureRequest').BUILD_FULL_PREVIEW
+            
+            # Submit capture
+            session = camera_device.createCaptureSession([reader])
+            session.capture(capture_request, self._capture_listener)
+            
+            # Wait for image (simplified - in real app need proper callback handling)
+            image = reader.acquireNextImage()
+            if image:
+                # Convert YUV_420_888 to JPEG (complex conversion needed)
+                jpeg_bytes = self._convert_yuv_to_jpeg(image)
+                image.close()
+                return jpeg_bytes
+                
+        except Exception as e:
+            logger.error(f"Camera capture error: {e}")
+            
+        return None
+    
+    def _convert_yuv_to_jpeg(self, yuv_image) -> bytes:
+        """Convert YUV_420_888 Image to JPEG bytes."""
+        # This is a simplified version - real implementation needs:
+        # 1. Extract Y, U, V planes from Image
+        # 2. Convert YUV to RGB using matrix multiplication
+        # 3. Encode RGB as JPEG
+        
+        try:
+            from PIL import Image
+            import io
+            
+            # Get plane data (simplified)
+            y_plane = yuv_image.getPlaneData(0)
+            u_plane = yuv_image.getPlaneData(1)
+            v_plane = yuv_image.getPlaneData(2)
+            
+            # Convert to RGB (this is where it gets complex with YUV_420_888 format)
+            # For now, return a placeholder - real implementation needs proper color space conversion
+            logger.warning("YUV to JPEG conversion not yet implemented")
+            return None
+            
+        except ImportError:
+            logger.error("PIL required for YUV->JPEG conversion")
+            return None
+    
+    def stop(self):
+        """Release camera resources."""
+        if self._camera:
+            try:
+                self._camera.close()
+            except Exception as e:
+                logger.warning(f"Error closing camera: {e}")
 
 
 # HTTP Handler for MJPEG stream
@@ -223,9 +321,14 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         
         elif path == "/status.json":
             self.response_code = 200
+            
+            # Check if we have real camera input or test bars
+            has_camera = (hasattr(app, 'camera_input') and 
+                         app.camera_input is not None)
+            
             status = {
                 "subscribers": app.distributor.subscriber_count,
-                "frame_generator": type(app.frame_generator).__name__,
+                "frame_generator": "RealCameraInput" if has_camera else "TestBarGenerator",
                 "running": True,
             }
             body = str(status).replace("'", '"').replace("True", "true")
@@ -271,8 +374,8 @@ class SztreamerrApp:
     def __init__(self):
         self.start_time = time.time()
         self.distributor = FrameDistributor()
-        self._last_frame = None  # Initialize before capture loop starts
-        self.frame_generator = TestBarGenerator()  # PIL-free now
+        self._last_frame: bytes | None = None  # Initialize before capture loop starts
+        self.camera_input: RealCameraInput | None = None
     
     def _capture_loop(self):
         """Background thread: broadcast frames from main thread storage."""
@@ -404,7 +507,15 @@ def run_kivy_app():
         
         def _generate_frame(self, dt):
             """Generate frames on main thread (safe for Android Chaquopy)."""
-            if hasattr(app, 'frame_generator'):
+            if hasattr(app, 'camera_input') and app.camera_input:
+                try:
+                    frame_bytes = app.camera_input.capture_frame()
+                    if frame_bytes is not None:
+                        app._last_frame = frame_bytes
+                except Exception as e:
+                    logger.error("Frame generation error: %s", e)
+            elif hasattr(app, 'frame_generator'):
+                # Fallback to test bars if camera not available
                 try:
                     frame_bytes = app.frame_generator.generate()
                     app._last_frame = frame_bytes
