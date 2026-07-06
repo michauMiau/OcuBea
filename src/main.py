@@ -41,6 +41,8 @@ class FrameDistributor:
     def __init__(self):
         self._lock = threading.Lock()
         self._subscribers: dict[str, list[io.BytesIO]] = {}
+        self.frame_count = 0
+        self.start_time = time.time()
     
     def subscribe(self) -> str:
         """Register a new subscriber. Returns viewer ID."""
@@ -61,6 +63,9 @@ class FrameDistributor:
     def broadcast(self, jpeg_bytes: bytes):
         """Push a frame to all subscribers — each gets its own copy."""
         with self._lock:
+            # Track FPS stats
+            self.frame_count += 1
+            
             dead = []
             for vid, queue in self._subscribers.items():
                 try:
@@ -306,13 +311,30 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         
         elif path == "/api/status":
             self.response_code = 200
+            
+            # Calculate actual FPS from distributor stats
+            elapsed_total = time.time() - app.distributor.start_time
+            fps_from_distro = (app.distributor.frame_count / elapsed_total) if elapsed_total > 0 else 0
+            
             status = {
                 "version": "0.3.1",
                 "subscribers": app.distributor.subscriber_count,
-                "resolution": f"{CAMERA_W}x{CAMERA_H}" if hasattr(app, '_last_frame') and app._last_frame is not None else "N/A",
+                "resolution": f"{CAMERA_W}x{CAMERA_H}",
                 "fps_target": FPS_TARGET,
+                "fps_actual": round(fps_from_distro, 1),
                 "uptime_seconds": int(time.time() - app.start_time),
+                "camera_status": getattr(app, 'camera_status', 'inactive'),
+                "has_camera_input": hasattr(app, 'camera_input') and app.camera_input is not None,
             }
+            
+            # Try to get memory info (works on Android)
+            try:
+                import resource
+                mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # Convert KB to MB
+                status["memory_mb"] = round(mem_usage, 1)
+            except (ImportError, AttributeError):
+                pass
+            
             body = json.dumps(status).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -376,20 +398,40 @@ class SztreamerrApp:
         self.distributor = FrameDistributor()
         self._last_frame: bytes | None = None  # Initialize before capture loop starts
         self.camera_input: RealCameraInput | None = None
+        self.fps_actual = 0.0
+        self.camera_status = "inactive"
+        self.ip_address = "N/A"
     
     def _capture_loop(self):
         """Background thread: broadcast frames from main thread storage."""
         interval = 1.0 / FPS_TARGET
+        last_fps_check = time.time()
+        
         while True:
             t0 = time.monotonic()
             try:
                 if self._last_frame is not None:
                     self.distributor.broadcast(self._last_frame)
+                    
+                    # Update camera status when we have frames
+                    if self.camera_status == "inactive":
+                        self.camera_status = "active"
+                        
             except Exception as e:
                 logger.error("Capture loop error: %s", e)
+                
             elapsed = time.monotonic() - t0
             sleep_time = max(0, interval - elapsed)
             time.sleep(sleep_time)
+            
+            # Calculate actual FPS every 5 seconds
+            now = time.time()
+            if now - last_fps_check >= 5:
+                dt = now - last_fps_check
+                self.fps_actual = self.distributor.frame_count / dt if dt > 0 else 0
+                self.distributor.frame_count = 0
+                logger.debug(f"Actual FPS: {self.fps_actual:.1f}")
+                last_fps_check = now
     
     def _server_thread(self):
         """Run HTTP server in background thread."""
