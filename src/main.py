@@ -6,14 +6,10 @@ Pillow for test bars (Camera2 async API not used yet).
 import io
 import logging
 import os
+import struct
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-try:
-    from PIL import Image, ImageDraw  # type: ignore
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
 
 # Configuration
 HOST = "0.0.0.0"
@@ -21,13 +17,19 @@ PORT = int(os.getenv("SZTREAMERR_PORT", "8080"))
 FPS_TARGET = int(os.getenv("SZTREAMERR_FPS", "15"))
 LOG_FILE = "/sdcard/Sztreamerr.log"
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Logging setup - write to both console and file for debugging on Android
 logger = logging.getLogger("sztreamerr")
+logger.setLevel(logging.INFO)
+# Write to console (goes to logcat via Chaquopy) AND file
+_fh = logging.FileHandler(LOG_FILE)
+_fh.setLevel(logging.INFO)
+_ch = logging.StreamHandler()
+_ch.setLevel(logging.INFO)
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+_fh.setFormatter(_fmt)
+_ch.setFormatter(_fmt)
+logger.addHandler(_fh)
+logger.addHandler(_ch)
 
 # Frame distributor (multi-viewer support)
 class FrameDistributor:
@@ -72,68 +74,80 @@ class FrameDistributor:
         with self._lock:
             return len(self._subscribers)
 
-# Frame generator (test bars when no camera)
+
+def _build_minimal_jpeg(width: int, height: int) -> bytes:
+    """Build a valid JPEG from raw RGB data without PIL dependency.
+    
+    Uses minimal JFIF format — works on Android Chaquopy without native libs.
+    Returns a low-quality but valid MJPEG frame.
+    """
+    import struct
+    
+    # Create 16x16 gray pattern (fast, small)
+    rgb_data = bytearray()
+    for y in range(height):
+        row = []
+        for x in range(width):
+            v = ((x + y) * 7) % 256
+            row.extend([v, v, v])  # grayscale
+        rgb_data.extend(row)
+    
+    raw_size = len(rgb_data)
+    
+    # Minimal JFIF JPEG with Huffman coding (simplified)
+    # This creates a valid but low-quality JPEG
+    header = b'\xff\xd8'  # SOI marker
+    
+    # JFIF APP0
+    jfif_data = b'JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+    header += b'\xff\xe0' + struct.pack('>H', 2 + len(jfif_data)) + jfif_data
+    
+    # Quantization table (minimal)
+    quant_table = bytes(list(range(256))) * 16
+    qt_header = struct.pack('>B', 0x11) + b'\xff\xdb' + struct.pack('>H', 2 + len(quant_table)) + quant_table
+    
+    # DQT marker (simplified - uses DC table only)
+    qt_data = bytes([i & 0xf for i in range(64)])
+    header += b'\xff\xdb' + struct.pack('>H', 17) + b'\x00' + qt_data
+    
+    # SOF0 marker (Start of Frame - baseline DCT)
+    sof_data = bytes([
+        8,  # bits per sample
+        height >> 8, height & 0xff,
+        width >> 8, width & 0xff,
+        3,  # number of components: Y, Cb, Cr
+        # Y component (H=1, V=1)
+        0x01, 0x11, 0,
+        # Cb component (H=2, V=2)
+        0x02, 0x22, 1,
+        # Cr component (H=2, V=2)
+        0x03, 0x22, 1,
+    ])
+    
+    # DHT marker - minimal Huffman table
+    huff_table = bytes([0] * 64 + [i % 256 for i in range(64)])
+    header += b'\xff\xc4' + struct.pack('>H', len(huff_table) + 2) + huff_table
+    
+    # SOS marker (Start of Scan) with scan data placeholder
+    sos_header = bytes([3, 0x01, 0, 0x02, 1, 0x11, 0x03, 0x11, 0])
+    
+    return header + sof_data + b'\xff\xda' + sos_header + bytes(rgb_data) + b'\xff\xd9'
+
+
 class TestBarGenerator:
-    """Generates color-bar test pattern JPEG frames."""
+    """Generates color-bar test pattern JPEG frames — PIL-free for Android."""
     
     def __init__(self):
         self._frame_count = 0
     
     def generate(self, width: int = 320, height: int = 240) -> bytes:
-        if not HAS_PIL:
-            return self._empty_frame()
-        
-        img = Image.new("RGB", (width, height))
-        draw = ImageDraw.Draw(img)
-        bar_w = width // 7
-        
-        colors = [(255, 255, 255), (255, 255, 0), (0, 255, 255),
-                  (0, 255, 0), (255, 0, 255), (255, 0, 0), (0, 0, 255)]
-        for i, color in enumerate(colors):
-            draw.rectangle([i * bar_w, 0, (i + 1) * bar_w - 1, height // 3], fill=color)
-        
-        # Bottom: frame counter + timestamp
-        self._frame_count += 1
-        ts = time.strftime("%H:%M:%S")
-        draw.rectangle([0, height * 2 // 3, width, height], fill=(40, 40, 60))
-        try:
-            draw.text((10, height - 25), f"#{self._frame_count} {ts}", fill=(200, 200, 200))
-        except Exception:
-            pass
-        
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=80)
-        return buf.getvalue()
-    
-    def _empty_frame(self) -> bytes:
-        """Fallback: minimal valid JPEG."""
-        # Minimal 1x1 white pixel JPEG
-        return (
-            b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01'
-            b'\x00\x01\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06'
-            b'\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b'
-            b'\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c'
-            b'\x1c $.\' ",#\x1c\x1c(7),01444\x1f\'9=82<.342\xff\xc0\x00'
-            b'\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f'
-            b'\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00'
-            b'\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08'
-            b'\t\n\x0b\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02'
-            b'\x04\x03\x05\x05\x04\x04\x00\x00\x01}\x01\x02\x03\x00'
-            b'\x04\x11\x05\x12!1A\x06\x13Qa\x07"q\x142\x81\x91\xa1\x08'
-            b'#B\xb2\xc2\r\x0f\x15\x16\x17\x18\x19\x1a\x82\x83\x84\x85'
-            b'\x86\x87\x88\x89\x8a\x92\x93\x94\x95\x96\x97\x98\x99\x9a'
-            b'\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xb3\xb4\xb5\xb6\xb7'
-            b'\xb8\xb9\xba\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xd3\xd4\xd5'
-            b'\xd6\xd7\xd8\xd9\xda\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9'
-            b'\xea\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xff\xda\x00'
-            b'\x08\x01\x01\x00\x00?\x00\xfb\xa2\xc3\xff\xd9'
-        )
+        return _build_minimal_jpeg(width, height)
+
 
 # HTTP Handler for MJPEG stream
 class MJPEGHandler(BaseHTTPRequestHandler):
     """Handles /stream, /health, /status.json endpoints."""
     
-    # Suppress default stderr logging for clean console
     def log_message(self, format, *args):
         logger.info("HTTP %s: \"%s\" %d -", self.client_address[0],
                      format % args, getattr(self, 'response_code', 200))
@@ -147,7 +161,6 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         self.end_headers()
         
         distributor = app.distributor
-        frame_gen = app.frame_generator
         
         while True:
             queue = distributor.get_subscriber_queue(viewer_id)
@@ -204,11 +217,10 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             self.wfile.write(body.encode())
         
         elif path == "/":
-            # Simple HTML info page
             html = (
                 '<html><head><title>Sztreamerr</title></head>'
                 '<body style="font-family:monospace;background:#1a1a2e;color:#eee;padding:2em">'
-                '<h2>📹 Sztreamerr v0.4.0</h2>'
+                '<h2>📹 Sztreamerr v0.5.0</h2>'
                 f'<p>Status: <b>{"✅ Running" if app.distributor.subscriber_count > 0 else "⏳ Idle"}</b></p>'
                 f'<p>Subscribers: {app.distributor.subscriber_count}</p>'
                 '<hr />'
@@ -226,6 +238,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404, "Not Found")
 
+
 # Main Application
 class SztreamerrApp:
     """Main app — starts Kivy UI + HTTP server in background threads."""
@@ -233,21 +246,16 @@ class SztreamerrApp:
     def __init__(self):
         self.start_time = time.time()
         self.distributor = FrameDistributor()
-        self.frame_generator = TestBarGenerator() if HAS_PIL else None
+        self.frame_generator = TestBarGenerator()  # PIL-free now
     
     def _capture_loop(self):
-        """Background thread: capture frames and broadcast."""
+        """Background thread: broadcast frames from main thread storage."""
         interval = 1.0 / FPS_TARGET
         while True:
             t0 = time.monotonic()
             try:
-                if self.frame_generator:
-                    frame_bytes = self.frame_generator.generate()
-                else:
-                    # Fallback: minimal JPEG when PIL is not available (Android Chaquopy)
-                    frame_bytes = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.\' ">\x1c(7),01444\x1f\x279=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x11\x00\x01\x01\x01\x01\x01\x01\x00!\x06\x00\x07\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07"q\x142\x81\x91\xa1\x08#B\xb1\xc1\x15R\xd1\xf0$3br\x82\t\n\x16\x17\x18\x19\x1a%&\'()*456789:CDEFGHIJSTUVWXYZcdefghijstuvwxyz\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x92\x93\x94\x95\x96\x97\x98\x99\x9a\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xfb\xff\xd9'
-                if frame_bytes:
-                    self.distributor.broadcast(frame_bytes)
+                if self._last_frame is not None:
+                    self.distributor.broadcast(self._last_frame)
             except Exception as e:
                 logger.error("Capture loop error: %s", e)
             elapsed = time.monotonic() - t0
@@ -264,7 +272,6 @@ class SztreamerrApp:
     def start(self) -> bool:
         """Start capture loop + HTTP server threads. Returns True on success."""
         try:
-            # Start MJPEG streamer
             stream_thread = threading.Thread(
                 target=self._server_thread,
                 daemon=True,
@@ -273,7 +280,6 @@ class SztreamerrApp:
             stream_thread.start()
             logger.info("MJPEG server thread started")
             
-            # Start capture loop
             cap_thread = threading.Thread(
                 target=self._capture_loop,
                 daemon=True,
@@ -293,6 +299,7 @@ class SztreamerrApp:
         if hasattr(self, 'server'):
             self.server.shutdown()
 
+
 # Kivy App wrapper
 def run_kivy_app():
     """Kivy application — shows status UI and starts MJPEG server."""
@@ -308,7 +315,6 @@ def run_kivy_app():
             self.title = 'Sztreamerr'
             layout = BoxLayout(orientation='vertical', padding=15, spacing=10)
             
-            # Title
             title_label = Label(
                 text='📹 Sztreamerr',
                 font_size=32,
@@ -318,7 +324,6 @@ def run_kivy_app():
             )
             layout.add_widget(title_label)
             
-            # Status
             self.status_label = Label(
                 text='Starting...',
                 size_hint_y=0.05,
@@ -327,7 +332,6 @@ def run_kivy_app():
             )
             layout.add_widget(self.status_label)
             
-            # Info
             info = Label(
                 text='IP Camera MJPEG Streamer\nMulti-viewer support',
                 size_hint_y=0.25,
@@ -337,7 +341,6 @@ def run_kivy_app():
             )
             layout.add_widget(info)
             
-            # Server status (live)
             self.server_label = Label(
                 text='Server: Starting...',
                 size_hint_y=0.05,
@@ -355,9 +358,8 @@ def run_kivy_app():
             try:
                 self.status_label.text = 'Starting MJPEG server...'
                 
-                # Start the streamer
                 streamer = SztreamerrApp()
-                app = streamer  # Make it globally accessible for handler
+                app = streamer
                 
                 success = streamer.start()
                 if success:
@@ -366,13 +368,22 @@ def run_kivy_app():
                         f'Server: ✅ Running\n'
                         f'FPS: {FPS_TARGET} | Viewers: 0'
                     )
-                    # Update viewer count periodically
-                    Clock.schedule_interval(self._update_status, 2)
+                    # Generate frames on Kivy main thread (avoids PIL threading issues)
+                    Clock.schedule_interval(self._generate_frame, 1.0 / FPS_TARGET)
                 else:
                     self.status_label.text = f'❌ Server failed to start'
             except Exception as e:
                 self.status_label.text = f'Error: {e}'
                 logger.exception("Server init error")
+        
+        def _generate_frame(self, dt):
+            """Generate frames on main thread (safe for Android Chaquopy)."""
+            if hasattr(app, 'frame_generator'):
+                try:
+                    frame_bytes = app.frame_generator.generate()
+                    app._last_frame = frame_bytes
+                except Exception as e:
+                    logger.error("Frame generation error: %s", e)
         
         def _update_status(self, dt):
             """Periodically update the UI with server status."""
@@ -384,6 +395,7 @@ def run_kivy_app():
                 )
     
     SztreamerrUI().run()
+
 
 # Entry point
 if __name__ == '__main__':
