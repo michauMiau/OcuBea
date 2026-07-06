@@ -7,10 +7,23 @@ import io
 import json
 import logging
 import os
+import ssl
 import struct
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Motion detection (optional)
+try:
+    from .detection.motion import MotionDetector
+except ImportError:
+    MotionDetector = None  # type: ignore[assignment,misc]
+
+# HTTPS support
+try:
+    from .ssl_helper import create_ssl_context
+except ImportError:
+    create_ssl_context = None  # type: ignore[assignment,misc]
 
 # Version constant — used in /api/status and HTML pages
 VERSION = "0.3.2"
@@ -188,132 +201,272 @@ class TestBarGenerator:
 
 
 class RealCameraInput:
-    """Android Camera2 API wrapper via pyjnius."""
+    """Android Camera2 API wrapper via pyjnius.
+
+    Properly uses CameraManager.openCamera() with StateCallback,
+    ImageReader for YUV capture, and frame buffering so the user
+    always gets the latest frame even if they call too fast.
+    """
 
     def __init__(self, width=640, height=480):
         self.width = width
         self.height = height
-        self._camera = None
-        
+        self._camera_manager = None
+        self._camera_id: str | None = None
+        self._camera_device = None  # CameraDevice Java object
+        self._capture_session = None  # CameraCaptureSession Java object
+        self._image_reader = None     # ImageReader Java object
+        self._last_frame_bytes: bytes | None = None
+
     def start(self) -> bool:
+        """Open camera with proper StateCallback. Returns True on success."""
         try:
             from jnius import autoclass
-            
-            # Get CameraService
+
             Context = autoclass('android.content.Context')
-            camera_service = autoclass('android.hardware.camera2.CameraManager')
-            
+            self._camera_manager = autoclass(
+                'android.hardware.camera2.CameraManager'
+            )
+
             # Get first available camera ID
-            camera_ids = camera_service.getCameraIdList()
-            if not camera_ids:
+            raw_ids = self._camera_manager.getCameraIdList()
+            if not raw_ids or len(raw_ids) == 0:
                 logger.error("No cameras found!")
                 return False
-                
-            self._camera_id = str(camera_ids[0])
+
+            self._camera_id = str(raw_ids[0])
             logger.info(f"Using camera: {self._camera_id}")
-            
-            # Create CameraDevice listener
-            class MyCaptureListener(autoclass('android.hardware.camera2.CameraCaptureSession$CaptureCallback')):
-                def __init__(self):
+
+            # ---- Open with StateCallback ----
+            CameraDevice_StateCallback = autoclass(
+                'android.hardware.camera2.CameraDevice$StateCallback'
+            )
+
+            class _CameraStateCb(CameraDevice_StateCallback):
+                def __init__(self, input_obj):
                     super().__init__()
-                    
-                def onCaptureCompleted(self, session, request, result):
-                    pass
-                    
-            self._capture_listener = MyCaptureListener()
-            
+                    self._input = input_obj
+
+                def onOpened(self, camera_device):
+                    logger.info(
+                        "Camera %s opened: %dx%d",
+                        self._input._camera_id,
+                        self._input.width,
+                        self._input.height,
+                    )
+                    self._input._camera_device = camera_device
+
+                def onDisconnected(self, camera_device):
+                    logger.warning("Camera disconnected")
+
+                def onError(self, camera_device, error_code):
+                    logger.error(
+                        "Camera error %d: %s", error_code, camera_device
+                    )
+
+            state_cb = _CameraStateCb(self)
+            handler = None  # main thread
+
+            try:
+                self._camera_manager.openCamera(
+                    self._camera_id, state_cb, handler
+                )
+            except Exception as e:
+                logger.error("openCamera failed: %s", e)
+                return False
+
+            # Wait up to 5 s for the callback to fire
+            import time
+            deadline = time.time() + 5.0
+            while self._camera_device is None and time.time() < deadline:
+                time.sleep(0.1)
+
+            if self._camera_device is None:
+                logger.error("Camera did not open within timeout")
+                return False
+
+            # ---- Create ImageReader for YUV capture ----
+            ImageReader = autoclass('android.media.ImageReader')
+            PixelFormat = autoclass('android.graphics.PixelFormat')
+            yuv_format = getattr(
+                PixelFormat, 'YUV_420_888', 35
+            )
+            self._image_reader = ImageReader.newInstance(
+                self.width, self.height, yuv_format, 2
+            )
+
+            # ---- Configure capture session with ImageReader as target ----
+            CameraCaptureSession_SetupCallback = autoclass(
+                'android.hardware.camera2.CameraCaptureSession$SetCaptureCallback'
+            )
+
+            class _SetupCb(CameraCaptureSession_SetupCallback):
+                def __init__(self, input_obj):
+                    super().__init__()
+                    self._input = input_obj
+
+                def onConfigured(self, session):
+                    logger.info("Capture session configured")
+                    self._input._capture_session = session
+
+                def onConfigureFailed(self, session):
+                    logger.error("Capture configuration failed")
+
+            setup_cb = _SetupCb(self)
+
+            try:
+                self._camera_device.createCaptureSession(
+                    [self._image_reader], setup_cb, None
+                )
+            except Exception as e:
+                logger.error(
+                    "createCaptureSession failed: %s", e
+                )
+                return False
+
+            # Wait for session to be configured
+            deadline = time.time() + 3.0
+            while self._capture_session is None and time.time() < deadline:
+                time.sleep(0.1)
+
+            if self._capture_session is None:
+                logger.error("Capture session not configured in timeout")
+                return False
+
+            # Start repeating capture
+            CameraCaptureSession = autoclass(
+                'android.hardware.camera2.CameraCaptureSession'
+            )
+            CaptureRequest = autoclass(
+                'android.hardware.camera2.CameraCaptureSession$CaptureRequest'
+            )
+            camera_device_builder = self._camera_device.createCaptureRequest(
+                CaptureRequest.TEMPLATE_PREVIEW
+            )
+            # Add ImageReader as target
+            camera_device_builder.addTarget(self._image_reader)
+            capture_request = camera_device_builder.build()
+
+            try:
+                self._capture_session.setRepeatingRequest(
+                    capture_request, None, None
+                )
+            except Exception as e:
+                logger.error("setRepeatingRequest failed: %s", e)
+
+            logger.info(
+                "Camera ready: %dx%d @ YUV_420", self.width, self.height
+            )
             return True
+
         except ImportError as e:
-            logger.error(f"Failed to import Camera2 classes: {e}")
+            logger.error("Failed to import Camera2 classes: %s", e)
             return False
-    
+        except Exception as e:
+            logger.error("Camera init error: %s", e)
+            return False
+
     def capture_frame(self) -> bytes | None:
         """Capture a single frame from camera. Returns JPEG bytes."""
-        if not self._camera:
+        if self._image_reader is None or self._camera_device is None:
             return None
-            
+
         try:
-            # Get next available frame using ImageReader
-            image_reader = autoclass('android.media.ImageReader')
-            max_images = 2
-            format = autoclass('android.graphics.PixelFormat').YUV_420_888
-            
-            reader = image_reader.newInstance(self.width, self.height, format, max_images)
-            
-            # Create capture request
-            camera_device = self._camera.open()  # Simplified - need proper CameraDevice
-            capture_request = autoclass('android.hardware.camera2.CameraCaptureSession$CaptureRequest').BUILD_FULL_PREVIEW
-            
-            # Submit capture
-            session = camera_device.createCaptureSession([reader])
-            session.capture(capture_request, self._capture_listener)
-            
-            # Wait for image (simplified - in real app need proper callback handling)
-            image = reader.acquireNextImage()
-            if image:
-                # Convert YUV_420_888 to JPEG (complex conversion needed)
-                jpeg_bytes = self._convert_yuv_to_jpeg(image)
-                image.close()
-                return jpeg_bytes
-                
+            import time
+            # Try to acquire an image with timeout (non-blocking fallback)
+            start = time.monotonic()
+            while time.monotonic() - start < 2.0:
+                image = self._image_reader.acquireNextImage()
+                if image is not None:
+                    break
+                time.sleep(0.05)
+
+            if image is None:
+                logger.debug("No image available within timeout")
+                # Return last cached frame if available
+                return self._last_frame_bytes
+
+            jpeg_bytes = self._convert_yuv_to_jpeg(image)
+            image.close()
+
+            if jpeg_bytes:
+                self._last_frame_bytes = jpeg_bytes  # cache for fallback
+
+            return jpeg_bytes
+
         except Exception as e:
-            logger.error(f"Camera capture error: {e}")
-            
-        return None
-    
+            logger.error("Camera capture error: %s", e)
+            return self._last_frame_bytes  # return cached frame
+
     def _convert_yuv_to_jpeg(self, yuv_image) -> bytes:
         """Convert YUV_420_888 Image to JPEG bytes using PIL."""
         try:
             from PIL import Image
-            
-            # Get plane data with stride/offset info
-            planes = []
-            for i in range(yuv_image.numPlanes):
-                buf = yuv_image.getPlaneData(i)
-                row_stride = yuv_image.getPlaneRowStride(i)
-                planes.append((buf, row_stride))
-            
-            # Reconstruct RGB from YUV_420_888 using PIL's built-in conversion
-            # pyjnius Image has getPlanes() which returns numpy-compatible data
-            if hasattr(yuv_image, 'toPy'):
-                yuv_rgb = yuv_image.toPy  # returns PIL Image in RGB mode
-            else:
-                # Fallback: use the Y plane as grayscale (acceptable for IP camera)
-                from jnius import autoclass
-                ByteBuffer = autoclass('java.nio.ByteBuffer')
-                y_buf, y_stride = planes[0]
-                if isinstance(y_buf, ByteBuffer):
-                    import array
-                    arr = array.array('B', bytes(y_buf))
-                else:
-                    arr = array.array('B', y_buf)
-                
-                # Pad/truncate to exact width*height
+
+            # pyjnius Image objects expose plane data via getPlanes()
+            if hasattr(yuv_image, 'getPlanes'):
+                planes = yuv_image.getPlanes()
+                # Build a proper YUV image from the three planes
+                y_plane = planes[0].getData()
+                u_plane = planes[1].getData()
+                v_plane = planes[2].getData()
+                y_row_stride = planes[0].getRowStride()
+                pixel_stride = planes[0].getPixelStride()
+
+                # Reconstruct full RGB from YUV_420_888 using PIL
+                # The simplest approach: let PIL handle it via numpy-like conversion
+                import array
+                y_data = bytes(y_plane) if hasattr(y_plane, '__bytes__') else bytes(array.array('B', y_plane))
+
+                # For simplicity and reliability on Android, use a direct
+                # Y-only grayscale image converted to RGB (acceptable for IP cam)
                 needed = self.width * self.height
-                if len(arr) >= needed:
-                    arr = arr[:needed]
+                if len(y_data) >= needed:
+                    img = Image.frombytes(
+                        'L', (self.width, self.height), y_data[:needed]
+                    )
                 else:
-                    arr.extend([0] * (needed - len(arr)))
-                
-                img = Image.frombytes('L', (self.width, self.height), bytes(arr))
+                    logger.warning("Y plane too short (%d < %d)", len(y_data), needed)
+                    return None
+
                 yuv_rgb = img.convert('RGB')
-            
+
+            elif hasattr(yuv_image, 'toPy'):
+                # pyjnius Image.toPy returns a PIL Image directly in RGB mode
+                yuv_rgb = yuv_image.toPy
+            else:
+                logger.error("Unsupported YUV image format")
+                return None
+
             # Encode as JPEG
             buf = io.BytesIO()
             yuv_rgb.save(buf, format="JPEG", quality=75)
             return buf.getvalue()
-            
+
         except ImportError:
             logger.error("PIL required for YUV->JPEG conversion")
             return None
-    
+        except Exception as e:
+            logger.error("YUV conversion error: %s", e)
+            return None
+
     def stop(self):
         """Release camera resources."""
-        if self._camera:
+        if self._capture_session is not None:
             try:
-                self._camera.close()
+                self._capture_session.stopRepeating()
+            except Exception:
+                pass
+        if self._camera_device is not None:
+            try:
+                self._camera_device.close()
             except Exception as e:
-                logger.warning(f"Error closing camera: {e}")
+                logger.warning("Error closing camera: %s", e)
+
+        # Reset state
+        self._capture_session = None
+        self._camera_device = None
+        self._image_reader = None
 
 
 # HTTP Handler for MJPEG stream
@@ -467,6 +620,14 @@ class SztreamerrApp:
         self.fps_actual = 0.0
         self.camera_status = "inactive"
         self.ip_address = "N/A"
+        
+        # Optional features (Phase 3)
+        self._motion_detector = None
+        if MotionDetector is not None:
+            try:
+                self._motion_detector = MotionDetector(threshold=50, area_threshold=200)
+            except Exception as e:
+                logger.warning("Failed to init motion detection: %s", e)
     
     def _capture_loop(self):
         """Background thread: broadcast frames from main thread storage."""
@@ -479,6 +640,12 @@ class SztreamerrApp:
             try:
                 if self._last_frame is not None:
                     self.distributor.broadcast(self._last_frame)
+                    
+                    # Motion detection (Phase 3.1)
+                    if self._motion_detector and self._motion_detector.running:
+                        result = self._motion_detector.analyze_frame(self._last_frame)
+                        if result.detected:
+                            logger.info("Motion detected! confidence=%.2f", result.confidence)
                     
                     # Update camera status when we have frames
                     if self.camera_status == "inactive":
@@ -501,11 +668,25 @@ class SztreamerrApp:
                 last_fps_check = now
     
     def _server_thread(self):
-        """Run HTTP server in background thread."""
-        self.server = ThreadingHTTPServer((HOST, PORT), MJPEGHandler)
-        self.server.timeout = 1.0  # allows graceful shutdown
-        logger.info("MJPEG server started on %s:%d", HOST, PORT)
-        self.server.serve_forever()
+        """Run HTTP server in background thread with optional HTTPS."""
+        try:
+            ssl_context = None
+            if create_ssl_context is not None:
+                ssl_context = create_ssl_context()
+
+            self.server = ThreadingHTTPServer((HOST, PORT), MJPEGHandler)
+            if ssl_context:
+                self.server.socket = ssl_context.wrap_socket(
+                    self.server.socket, server_side=True
+                )
+                logger.info("HTTPS enabled — %s:%d", HOST, PORT)
+            else:
+                logger.info("HTTP fallback — %s:%d", HOST, PORT)
+
+            self.server.timeout = 1.0
+            self.server.serve_forever()
+        except Exception as e:
+            logger.error("Server thread error: %s", e)
     
     def start(self) -> bool:
         """Start capture loop + HTTP server threads. Returns True on success."""
