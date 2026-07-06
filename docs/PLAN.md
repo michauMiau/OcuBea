@@ -1,128 +1,122 @@
-# Sztreamerr — Implementation Plan
+# Sztreamerr — Implementation Plan (v0.3.x)
 
 ## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    Sztreamerr App                   │
+│                    main.py (entry point)            │
 ├─────────────────────────────────────────────────────┤
 │  ┌──────────┐    ┌──────────┐    ┌──────────────┐  │
-│  │ Capture  ├──►  │ Encode   ├──►  │   Stream     │ │
-│  │ (FFmpeg) │    │  Module  │    │ (aiohttp)    │  │
-│  └──────────┘    └──────────┘    └──────────────┘  │
-│       ▲                    │             │          │
-│       │               ┌─────────┐    ┌──────────┐   │
-│       └──────────────  │ Web UI  ├───►│  API     │  │
-│                        └─────────┘    └──────────┘  │
+│  │ Camera2  ├──►  │ Frame    ├──►  │ Threading    │  │
+│  │ (pyjnius)│    │ Distrib. │    │ HTTP Server  │  │
+│  └──────────┘    └──────────┘    │ (stdlib)     │  │
+│                                  ├──────────────┤  │
+│  ┌──────────┐                   │ /            │  │
+│  │ Motion   ├──► (background)  │ /stream      │  │
+│  │ Detector │                   │ /api/status  │  │
+│  └──────────┘                   └──────────────┘  │
 ├─────────────────────────────────────────────────────┤
-│  Platform Layer (Android / Linux / Windows)         │
-│  - Briefcase (Kivy → Android APK + native apps)     │
+│  Platform: Android only (Chaquopy + pyjnius)       │
+│  - RealCameraInput wraps Camera2 API via pyjnius   │
 └─────────────────────────────────────────────────────┘
 ```
 
-#### 1. Capture Module (`src/capture/`)
-- **FFmpeg subprocess** — `subprocess.run(['ffmpeg', '-f v4l2 -i /dev/video0'])` for cross-platform capture (Linux V4L2, Android Camera2 via FFmpeg wrapper). Lightweight — no OpenCV ML models bundled
-- **Android fallback**: native Camera2 API via Java bridge (pyjnius) — planned but not yet implemented
-- Frame format: raw frames passed to FFmpeg for encoding
-- Backend abstraction: `src/capture/backend.py` ABC with `read_frame()` returning bytes + resolution metadata
-- **CameraInfo** class for camera device enumeration and configuration
-- **VideoFrame** frozen dataclass (`pixels`, `width`, `height`, auto-generated `timestamp_ms`) — represents a single captured frame
-- `ffmpeg_capture.py` — FFmpeg subprocess implementation wrapping raw V4L2 → MJPEG output
+## What's ACTUALLY Implemented (v0.3.x)
 
-### 2. Encode Module (`src/encode/`)
-- FFmpeg bindings via `subprocess.run(['ffmpeg', ...], capture_output=True)` for encoding frames to H.264/H.265
-- Codec selection by device capability (hardware vs software fallback)
-- Two-pass where needed: raw snapshot → encoded stream
+### ✅ Working Features
+- [x] **Camera capture** — `RealCameraInput` class in `src/main.py` (Camera2 via pyjnius)
+- [x] **Frame distribution** — `FrameDistributor` class in `src/main.py` (thread-safe broadcaster)
+- [x] **MJPEG streaming** — Direct JPEG bytes → multipart/x-mixed-replace (`MJPEGHandler`)
+- [x] **HTTP server** — stdlib `ThreadingHTTPServer` with `/`, `/stream`, `/api/status` endpoints
+- [x] **SSL support** — Self-signed cert generation at startup (`src/ssl_helper.py`)
+- [x] **Motion detection** — Background frame differencing (`src/detection/motion.py`)
+- [x] **Status API** — `/api/status` returns version, resolution, subscribers count
 
-### 3. Stream Module (`src/stream/`)
-- **Web server**: aiohttp — serves static HTML/CSS/JS frontend and video streams
-- **Streaming protocol**: HTTP streaming with multipart/x-mixed-replace (MJPEG) for lowest latency
-- **HLS support** (optional, future): ffmpeg live segmenter (~10-30s latency due to 2-6s segments + buffer; acceptable for security camera use, not suitable for robotics feed where MJPEG <200ms is needed)
-- Connection management: concurrent viewer count limit, bandwidth throttling
-
-### 4. Web UI (`src/ui/`)
-- Single-page HTML/CSS/JS — camera preview + settings panel
-- Controls: stream resolution toggle, codec selection, stream start/stop
-- API endpoints for remote control (endpoint spec to be finalized by user after research)
-
-## Implementation Phases
-
-### Phase 1 — Foundation (Days 1–4) ✅
-- [x] **1.1** Project scaffolding: `pyproject.toml`, src layout, config management (`src/core/__init__.py`)
-- [x] **1.2** Capture module with FFmpeg subprocess backend + camera enumeration
-- [x] **1.3** Static web UI (camera preview page)
-- [x] **1.4** aiohttp server serving the UI and MJPEG stream endpoint
-
-### Phase 2 — Core Features (Days 5–8) ✅
-- [x] **2.1** FFmpeg H.264/H.265 encoding integration (`engine.py` + `pipeline.py`) — continuous streaming via subprocess
-- [x] **2.2** Multi-viewer streaming support with concurrent connections (`multi_viewer.py`) — independent frame queues per viewer
-- [x] **2.3** Settings persistence — per-device defaults, config file save/load (`settings.py`)
-- [x] **2.4** Basic API endpoints for remote control (10 endpoints defined in `endpoints.py` registry)
-
-### Phase 3 — Polish (Days 9–10) 🚧
-- [ ] **3.1** Motion detection via background pyav frame analysis
-- [ ] **3.2** Android packaging with Briefcase + buildozer
-- [ ] **3.3** Desktop app builds (Linux AppImage, Windows installer)
-- [ ] **3.4** HTTPS support with self-signed certificate generation
+### ❌ NOT Implemented (Dead Code / Stubs)
+- [ ] `stream/server.py` — aiohttp server (NOT USED — main.py has own HTTP implementation)
+- [ ] `encode/engine.py`, `encode/pipeline.py` — FFmpeg H.264/H.265 encoder (NOT USED)
+- [ ] `capture/android_camera.py` — Camera2 wrapper stub (Camera2 is in main.py directly)
+- [ ] `stream/distributor.py` — FrameDistributor (main.py has its own implementation)
+- [ ] `stream/multi_viewer.py` — MultiViewerManager (NOT USED)
+- [ ] `kivy_app.py` — Kivy UI wrapper (references old StreamServer, broken)
+- [ ] Desktop builds — No AppImage/Windows exe scripts
 
 ## Technology Choices
 
 | Concern | Choice | Rationale |
 |---------|--------|-----------|
-| Language | Python 3.10+ | User's existing expertise; mature ecosystem for all required capabilities |
-| UI Framework | HTML5/CSS3/JS (web) + Kivy wrapper | Web UI is lightweight, responsive on any phone browser. Kivy only as native app shell (not heavy UI framework). User already uses Kivy in xTRAP so it's a familiar tool. |
-| Camera Capture | pyav (FFmpeg Python bindings) + native fallbacks | Lightweight — no OpenCV ML models bundled. FFmpeg has hardware acceleration on Linux, Android, Windows |
-| Web Server | aiohttp (async) | Low overhead, handles concurrent viewers efficiently |
-| Android Deploy | buildozer (Kivy) → APK | One toolchain covers both desktop and mobile from one codebase |
+| Language | Python 3.10+ (Chaquopy) | Android deployment without NDK complications |
+| Camera Capture | pyjnius + Camera2 API | Native hardware acceleration on Android |
+| Web Server | stdlib `http.server` | No external deps, works with Chaquopy |
+| Streaming Format | MJPEG (multipart/x-mixed-replace) | Lowest latency (<100ms), browser-compatible |
+| Motion Detection | Pixel differencing (simplified) | Lightweight, no OpenCV needed on device |
+| HTTPS | Self-signed cert + stdlib ssl | Zero-config encryption for LAN use |
 
-## Key Risks & Mitigations
+## Source Layout (v0.3.x — ACTUAL)
 
-1. **pyav on Android**: pyav packages FFmpeg binaries — check if the bundled version includes Camera2 support or if we need a separate native camera module.
-2. **Hardware acceleration varies by device**: Detect encoder availability at runtime; fall back to software encoding when needed (document in settings).
-3. **MJPEG latency under load**: Implement connection pooling and bandwidth throttling per viewer.
-
-## Dependencies (pyproject.toml)
-```toml
-[tool.poetry.dependencies]
-python = ">=3.10,<4.0"
-pyav = "^12.0.0"
-aiohttp = "^3.9.0"
-pydantic-settings = "^2.1.0"
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.4.0"
-ruff = "^0.1.6"
-
-[project.optional-dependencies]
-desktop = ["kivy", "briefcase"]
-android = ["buildozer"]
-```
-
-## Source Layout
 ```
 src/
-├── main.py              # Entry point — app lifecycle + aiohttp server loop
-├── core/__init__.py     # Settings, CameraConfig, ServerConfig (pydantic)
+├── main.py              # Entry point — ALL logic in one file
+│   ├── RealCameraInput  # Camera2 via pyjnius (line 203-453)
+│   ├── FrameDistributor # Thread-safe broadcaster (line 54-97)
+│   ├── MJPEGHandler     # stdlib HTTP handler (line 473-613)
+│   └── TestBarGenerator # Pattern generator for testing (line 161-201)
+├── ssl_helper.py        # Self-signed cert generation (standalone)
+├── detection/
+│   ├── motion.py        # MotionDetector with pixel differencing
+│   └── __pycache__/
 ├── capture/
-│   ├── __init__.py
-│   ├── backend.py       # ABC for camera backends + VideoFrame frozen dataclass + CameraInfo
-│   └── ffmpeg_capture.py  # FFmpeg subprocess implementation (V4L2 → MJPEG)
-├── encode/
-│   ├── __init__.py
-│   ├── engine.py        # H.264/H.265 encoding via FFmpeg subprocess
-│   └── pipeline.py      # Frame processing pipeline
+│   └── android_camera.py  # STUB — NOT USED (Camera2 in main.py)
 ├── stream/
-│   ├── __init__.py
-│   ├── server.py        # aiohttp HTTP/MJPEG streaming server + FrameSource
-│   └── mjpeg.py         # MJPEG boundary/header generation utilities
-├── api/
-│   ├── __init__.py
-│   ├── config.py        # API configuration endpoints
-│   └── endpoints.py     # Camera control & status API endpoints
-└── ui/
-    ├── index.html       # Web UI (camera preview + settings)
-    ├── style.css        # Stylesheet
-    └── static/
-        ├── app.js       # Main application logic
-        └── feed.js      # MJPEG video feed handling
+│   ├── distributor.py     # STUB — NOT USED (FrameDistributor in main.py)
+│   ├── multi_viewer.py    # STUB — NOT USED
+│   └── server.py          # STUB — NOT USED (stdlib HTTP in main.py)
+├── encode/
+│   ├── engine.py          # STUB — NOT USED
+│   └── pipeline.py        # STUB — NOT USED
+└── core/
+    └── settings.py        # Settings persistence (standalone)
+
+docs/
+└── PLAN.md              # This file
+
+sitecustomize.py         # Chaquopy site customization for Android
 ```
+
+## Key Implementation Notes
+
+1. **Single-file architecture**: `main.py` contains ALL production code (~884 lines). No separate modules imported except `ssl_helper` and `motion.py`.
+
+2. **No aiohttp**: Despite `stream/server.py` existing, the app uses stdlib `ThreadingHTTPServer` for compatibility with Chaquopy's limited dependency support.
+
+3. **Camera2 directly in main.py**: The `RealCameraInput` class (line 203-453) contains full Camera2 implementation — NOT using `capture/android_camera.py`.
+
+4. **FrameDistributor inline**: Thread-safe broadcaster implemented inside `main.py` (line 54-97), not in separate module.
+
+5. **Motion detection optional**: Falls back gracefully if `detection/motion.py` fails to import (line 18-20).
+
+## Known Issues & Fixes Applied
+
+### Camera crash fix (`src/main.py`, line 368-390)
+**Problem**: Camera2 callback crashes due to pyjnius class hierarchy mismatch.
+
+**Fix**: Added explicit `CameraDevice` parameter type in `_CameraStateCb.onOpened()` method:
+```python
+def onOpened(self, camera_device):  # Explicit CameraDevice type
+    self._camera = camera_device
+```
+
+### ADB keepalive
+Phone requires manual intervention to re-enable WiFi ADB after screen off. Keepalive process runs every 30s but cannot reconnect without user approval on device.
+
+## Future Roadmap (NOT IMPLEMENTED)
+
+### Phase 4 — FFmpeg Pipeline (Planned, NOT DONE)
+- Integrate H.264/H.265 encoding via subprocess
+- Replace MJPEG with adaptive codec selection
+- HLS fallback for low-bandwidth clients
+
+### Phase 5 — Desktop Builds (Planned, NOT DONE)
+- Linux AppImage via briefcase or PyInstaller
+- Windows installer with embedded Python runtime
+- Cross-platform Camera abstraction layer
