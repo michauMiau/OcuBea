@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = "0.0.0.0"
 PORT = int(os.getenv("SZTREAMERR_PORT", "8080"))
 FPS_TARGET = int(os.getenv("SZTREAMERR_FPS", "15"))
-LOG_FILE = "/sdcard/Sztreamerr.log"
+LOG_FILE = os.path.join(os.environ.get("HOME", "/data/data/io.michaumiau.sztreamerr/files"), "Sztreamerr.log")
 
 # Logging setup - write to both console and file for debugging on Android
 logger = logging.getLogger("sztreamerr")
