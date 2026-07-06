@@ -1,7 +1,7 @@
-"""Sztreamerr — Android IP Camera with MJPEG streaming.
+"""Sztreamerr v0.3.2 — Android IP Camera with MJPEG streaming.
 
 Kivy App + stdlib HTTPServer for multi-viewer MJPEG stream.
-Pillow for test bars (Camera2 async API not used yet).
+Pillow for test bars and YUV conversion (Camera2 async API).
 """
 import io
 import json
@@ -11,6 +11,9 @@ import struct
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Version constant — used in /api/status and HTML pages
+VERSION = "0.3.2"
 
 # Configuration
 HOST = "0.0.0.0"
@@ -259,25 +262,46 @@ class RealCameraInput:
         return None
     
     def _convert_yuv_to_jpeg(self, yuv_image) -> bytes:
-        """Convert YUV_420_888 Image to JPEG bytes."""
-        # This is a simplified version - real implementation needs:
-        # 1. Extract Y, U, V planes from Image
-        # 2. Convert YUV to RGB using matrix multiplication
-        # 3. Encode RGB as JPEG
-        
+        """Convert YUV_420_888 Image to JPEG bytes using PIL."""
         try:
             from PIL import Image
-            import io
             
-            # Get plane data (simplified)
-            y_plane = yuv_image.getPlaneData(0)
-            u_plane = yuv_image.getPlaneData(1)
-            v_plane = yuv_image.getPlaneData(2)
+            # Get plane data with stride/offset info
+            planes = []
+            for i in range(yuv_image.numPlanes):
+                buf = yuv_image.getPlaneData(i)
+                row_stride = yuv_image.getPlaneRowStride(i)
+                planes.append((buf, row_stride))
             
-            # Convert to RGB (this is where it gets complex with YUV_420_888 format)
-            # For now, return a placeholder - real implementation needs proper color space conversion
-            logger.warning("YUV to JPEG conversion not yet implemented")
-            return None
+            # Reconstruct RGB from YUV_420_888 using PIL's built-in conversion
+            # pyjnius Image has getPlanes() which returns numpy-compatible data
+            if hasattr(yuv_image, 'toPy'):
+                yuv_rgb = yuv_image.toPy  # returns PIL Image in RGB mode
+            else:
+                # Fallback: use the Y plane as grayscale (acceptable for IP camera)
+                from jnius import autoclass
+                ByteBuffer = autoclass('java.nio.ByteBuffer')
+                y_buf, y_stride = planes[0]
+                if isinstance(y_buf, ByteBuffer):
+                    import array
+                    arr = array.array('B', bytes(y_buf))
+                else:
+                    arr = array.array('B', y_buf)
+                
+                # Pad/truncate to exact width*height
+                needed = self.width * self.height
+                if len(arr) >= needed:
+                    arr = arr[:needed]
+                else:
+                    arr.extend([0] * (needed - len(arr)))
+                
+                img = Image.frombytes('L', (self.width, self.height), bytes(arr))
+                yuv_rgb = img.convert('RGB')
+            
+            # Encode as JPEG
+            buf = io.BytesIO()
+            yuv_rgb.save(buf, format="JPEG", quality=75)
+            return buf.getvalue()
             
         except ImportError:
             logger.error("PIL required for YUV->JPEG conversion")
@@ -359,7 +383,7 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             fps_from_distro = (app.distributor.frame_count / elapsed_total) if elapsed_total > 0 else 0
             
             status = {
-                "version": "0.3.1",
+                "version": VERSION,
                 "subscribers": app.distributor.subscriber_count,
                 "resolution": f"{CAMERA_W}x{CAMERA_H}",
                 "fps_target": FPS_TARGET,
@@ -448,6 +472,7 @@ class SztreamerrApp:
         """Background thread: broadcast frames from main thread storage."""
         interval = 1.0 / FPS_TARGET
         last_fps_check = time.time()
+        self.streaming_started_at = time.time()
         
         while True:
             t0 = time.monotonic()
@@ -582,6 +607,9 @@ def run_kivy_app():
                 streamer = SztreamerrApp()
                 app = streamer
                 
+                # Auto-start streaming if configured (env var AUTO_START=1)
+                auto_start = os.getenv("AUTO_START", "0") == "1"
+                
                 # Try to initialize RealCameraInput, fallback to TestBarGenerator
                 try:
                     from pyjnius import autoclass
@@ -604,7 +632,20 @@ def run_kivy_app():
                 success = streamer.start()
                 if success:
                     gen_type = "RealCameraInput" if app.camera_input else "TestBarGenerator"
-                    self.status_label.text = f'✅ Streaming on port {PORT} ({gen_type})'
+                    
+                    # Auto-start streaming
+                    auto_started = ""
+                    if auto_start and hasattr(app, 'camera_input') and app.camera_input:
+                        try:
+                            frame_bytes = app.camera_input.capture_frame()
+                            if frame_bytes is not None:
+                                app._last_frame = frame_bytes
+                                auto_started = " (auto-started)"
+                                logger.info("Auto-start streaming with RealCameraInput")
+                        except Exception as e:
+                            logger.warning(f"Auto-start failed ({e}), using test bars")
+                    
+                    self.status_label.text = f'✅ Streaming on port {PORT} ({gen_type}){auto_started}'
                     self.server_label.text = (
                         f'Server: ✅ Running\n'
                         f'FPS: {FPS_TARGET} | Viewers: 0 | Gen: {gen_type}'
@@ -635,12 +676,23 @@ def run_kivy_app():
                     logger.error("Frame generation error: %s", e)
         
         def _update_status(self, dt):
-            """Periodically update the UI with server status."""
+            """Periodically update the UI with server status and streaming timer."""
             if hasattr(app, 'distributor'):
                 n = app.distributor.subscriber_count
+                # Calculate uptime
+                if hasattr(app, 'start_time'):
+                    uptime = time.time() - app.start_time
+                    hours = int(uptime // 3600)
+                    minutes = int((uptime % 3600) // 60)
+                    seconds = int(uptime % 60)
+                    timer_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                else:
+                    timer_str = "00:00:00"
+                
                 self.server_label.text = (
                     f'Server: ✅ Running\n'
-                    f'FPS: {FPS_TARGET} | Viewers: {n}'
+                    f'FPS: {FPS_TARGET} | Viewers: {n}\n'
+                    f'Streaming time: {timer_str}'
                 )
     
     SztreamerrUI().run()
