@@ -52,7 +52,7 @@ jobs:
         export ANDROID_HOME=$HOME/android-sdk
         yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses || true
         $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME \
-          "platforms;android-34" "build-tools;37.0.0"
+          "platforms;android-34" "build-tools;37.0.0" "ndk;23.1.7779620"
     
     - name: Set up Python
       uses: actions/setup-python@v5
