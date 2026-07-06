@@ -4,6 +4,7 @@ Kivy App + stdlib HTTPServer for multi-viewer MJPEG stream.
 Pillow for test bars (Camera2 async API not used yet).
 """
 import io
+import json
 import logging
 import os
 import struct
@@ -15,6 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = "0.0.0.0"
 PORT = int(os.getenv("SZTREAMERR_PORT", "8080"))
 FPS_TARGET = int(os.getenv("SZTREAMERR_FPS", "15"))
+CAMERA_W = int(os.getenv("CAMERA_W", "640"))
+CAMERA_H = int(os.getenv("CAMERA_H", "480"))
 LOG_FILE = os.path.join(os.environ.get("HOME", "/data/data/io.michaumiau.sztreamerr/files"), "Sztreamerr.log")
 
 # Logging setup - write to both console and file for debugging on Android
@@ -203,6 +206,21 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         
+        elif path == "/api/status":
+            self.response_code = 200
+            status = {
+                "version": "0.3.1",
+                "subscribers": app.distributor.subscriber_count,
+                "resolution": f"{CAMERA_W}x{CAMERA_H}" if hasattr(app, '_last_frame') and app._last_frame is not None else "N/A",
+                "fps_target": FPS_TARGET,
+                "uptime_seconds": int(time.time() - app.start_time),
+            }
+            body = json.dumps(status).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        
         elif path == "/status.json":
             self.response_code = 200
             status = {
@@ -217,16 +235,23 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             self.wfile.write(body.encode())
         
         elif path == "/":
+            n = app.distributor.subscriber_count
             html = (
-                '<html><head><title>Sztreamerr</title></head>'
-                '<body style="font-family:monospace;background:#1a1a2e;color:#eee;padding:2em">'
-                '<h2>📹 Sztreamerr v0.5.0</h2>'
-                f'<p>Status: <b>{"✅ Running" if app.distributor.subscriber_count > 0 else "⏳ Idle"}</b></p>'
-                f'<p>Subscribers: {app.distributor.subscriber_count}</p>'
-                '<hr />'
-                '<p><a href="/stream">MJPEG Stream</a></p>'
-                '<p><a href="/status.json">JSON Status</a></p>'
-                '<p><a href="/health">Health Check</a></p>'
+                '<!DOCTYPE html><html lang="pl"><head>'
+                '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+                f'<title>Sztreamerr v{"0.3.1"}</title>'
+                '<style>body{margin:0;padding:16px;background:#0f0f23;color:#eee;font-family:sans-serif}'
+                'h2{color:#ff9800;margin-top:0}img{max-width:100%;border-radius:8px}'
+                '.stats{display:flex;gap:16px;flex-wrap:wrap;font-size:.9em;color:#aaa}</style>'
+                '</head><body>'
+                '<h2>📹 Sztreamerr</h2>'
+                '<div class="stats">'
+                f'<span>Status: <b>{"✅ Running" if n > 0 else "⏳ Idle"}</b></span>'
+                f'<span>Subskrybenci: {n}</span>'
+                '</div>'
+                '<hr style="border-color:#333">'
+                '<p><a href="/stream">MJPEG Stream</a> · <a href="/api/status">API Status</a></p>'
+                '<img src="/stream" alt="Stream" loading="lazy">'
                 '</body></html>'
             )
             self.response_code = 200
@@ -246,6 +271,7 @@ class SztreamerrApp:
     def __init__(self):
         self.start_time = time.time()
         self.distributor = FrameDistributor()
+        self._last_frame = None  # Initialize before capture loop starts
         self.frame_generator = TestBarGenerator()  # PIL-free now
     
     def _capture_loop(self):
