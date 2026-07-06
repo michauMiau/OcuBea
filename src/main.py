@@ -562,6 +562,14 @@ def run_kivy_app():
             )
             layout.add_widget(self.server_label)
             
+            self.ip_label = Label(
+                text='IP: Detecting...',
+                size_hint_y=0.05,
+                color=(0.7, 0.7, 0.7, 1),
+                font_size=12,
+            )
+            layout.add_widget(self.ip_label)
+            
             Clock.schedule_once(lambda dt: self._init_server(), 1)
             return layout
         
