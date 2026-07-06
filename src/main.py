@@ -142,9 +142,51 @@ def _build_minimal_jpeg(width: int, height: int) -> bytes:
     return header + sof_data + b'\xff\xda' + sos_header + bytes(rgb_data) + b'\xff\xd9'
 
 
+class TestBarGenerator:
+    """Generates a test pattern frame with FPS counter (fallback when camera unavailable)."""
+
+    def __init__(self, width=640, height=480):
+        self.width = width
+        self.height = height
+        self._frame_count = 0
+        self._start_time = time.time()
+
+    def generate(self) -> bytes:
+        """Generate a test pattern with FPS counter."""
+        from PIL import Image, ImageDraw, ImageFont
+
+        img = Image.new("RGB", (self.width, self.height), "black")
+        draw = ImageDraw.Draw(img)
+
+        # Draw colored bars at top
+        colors = ["red", "green", "blue"]
+        bar_h = 60
+        for i, color in enumerate(colors):
+            x1 = i * (self.width // len(colors))
+            x2 = x1 + self.width // len(colors)
+            draw.rectangle([x1, 0, x2, bar_h], fill=color)
+
+        # Draw FPS text
+        elapsed = time.time() - self._start_time
+        fps = self._frame_count / elapsed if elapsed > 0 else 0
+        fps_text = f"FPS: {fps:.1f} | Frame: {self._frame_count}"
+
+        try:
+            font = ImageFont.truetype("/system/fonts/DroidSansFallback.ttf", 24)
+        except (IOError, OSError):
+            font = ImageFont.load_default()
+
+        draw.text((20, self.height // 2), fps_text, fill="white", font=font)
+        self._frame_count += 1
+
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+
 class RealCameraInput:
     """Android Camera2 API wrapper via pyjnius."""
-    
+
     def __init__(self, width=640, height=480):
         self.width = width
         self.height = height
@@ -532,12 +574,32 @@ def run_kivy_app():
                 streamer = SztreamerrApp()
                 app = streamer
                 
+                # Try to initialize RealCameraInput, fallback to TestBarGenerator
+                try:
+                    from pyjnius import autoclass
+                    camera_input = RealCameraInput()
+                    if camera_input.start():
+                        app.camera_input = camera_input
+                        self.status_label.text = '✅ Camera2 initialized'
+                        logger.info("RealCameraInput initialized successfully")
+                    else:
+                        raise RuntimeError("camera start failed")
+                except ImportError as e:
+                    logger.warning(f"pyjnius not available ({e}), using TestBarGenerator fallback")
+                    app.frame_generator = TestBarGenerator()
+                    self.status_label.text = '⚠️ Camera2 unavailable, using test bars'
+                except Exception as e:
+                    logger.warning(f"Camera init failed ({e}), falling back to TestBarGenerator")
+                    app.frame_generator = TestBarGenerator()
+                    self.status_label.text = f'⚠️ Using fallback generator'
+                
                 success = streamer.start()
                 if success:
-                    self.status_label.text = f'✅ Streaming on port {PORT}'
+                    gen_type = "RealCameraInput" if app.camera_input else "TestBarGenerator"
+                    self.status_label.text = f'✅ Streaming on port {PORT} ({gen_type})'
                     self.server_label.text = (
                         f'Server: ✅ Running\n'
-                        f'FPS: {FPS_TARGET} | Viewers: 0'
+                        f'FPS: {FPS_TARGET} | Viewers: 0 | Gen: {gen_type}'
                     )
                     # Generate frames on Kivy main thread (avoids PIL threading issues)
                     Clock.schedule_interval(self._generate_frame, 1.0 / FPS_TARGET)
