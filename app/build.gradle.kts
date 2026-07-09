@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.ocubea"
-        minSdk = 26 // Android 8.0 Oreo (API 26)
+        minSdk = 23 // Android 6.0 Marshmallow (API 23)
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0-alpha"

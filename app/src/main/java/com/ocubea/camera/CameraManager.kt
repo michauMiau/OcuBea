@@ -1,9 +1,6 @@
 package com.ocubea.camera
 
 import android.content.Context
-import android.graphics.ImageFormat
-import android.os.Handler
-import android.os.Looper
 import androidx.camera.core.*
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.CoroutineScope
@@ -24,7 +21,7 @@ class CameraManager(private val context: Context) {
     
     // Callback when a frame is ready for encoding
     var onFrameCaptured: ((ByteArray, Long) -> Unit)? = null
-    
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** Start preview and/or video capture */
@@ -42,16 +39,13 @@ class CameraManager(private val context: Context) {
                 // Select back camera
                 val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
                 
-                // Preview use case (for UI display) - simplified for now
-                // In production, bind to a SurfaceView or TextureView
-                
                 // ImageCapture for frame-by-frame capture to encoder
                 imageCapture = ImageCapture.Builder()
                     .setTargetResolution(Size(1280, 720)) // Default resolution
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .build()
 
-                val camera = cameraProvider.bindToLifecycle(
+                cameraProvider.bindToLifecycle(
                     lifecycleOwner ?: return@addListener,
                     cameraSelector,
                     imageCapture
@@ -103,47 +97,48 @@ class CameraManager(private val context: Context) {
 
     // ==================== CAMERA CONTROLS (IP Webcam API) ====================
 
-    @OptIn(ExperimentalCamera2Interop::class)
-    private var currentCamera: Camera? = null
-    @OptIn(ExperimentalCamera2Interop::class)
-    private val cameraControlMap = mutableMapOf<Camera, android.hardware.camera2.CameraDevice>()
-
     /** Set focus mode — 1.0f = locked (single shot), 0f = continuous auto */
+    @OptIn(ExperimentalCamera2Interop::class)
     fun setFocus(focusValue: Float) {
-        // Store for later use when CameraDevice is available
-        try {
-            val camera = imageCapture?.camera ?: return
-            val control = android.hardware.camera2.CameraManager()
-                .let { _ -> null } // Placeholder — real implementation requires CameraDevice access
-            // Focus mode: 1 = LOCKED, 0 = CONTINUOUS_AUTO
-            val focusMode = if (focusValue > 0.5f) 1 else 0
-        } catch (_: Exception) {}
+        // Focus control via CameraX requires access to the underlying CameraDevice.
+        // This is a simplified version — actual implementation would use
+        // CaptureSession with CONTROL_AF_MODE setting.
+        val afMode = if (focusValue > 0.5f) {
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_AUTO
+        } else {
+            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+        }
+        // TODO: Implement proper focus control when CameraDevice access is available
     }
 
     /** Apply night vision toggle */
     fun applyNightVision(enabled: Boolean) {
-        // Night vision is typically a hardware feature controlled by the camera device
-        // This is a stub — real implementation requires CameraDevice access and specific device capabilities
+        // Night vision is typically a hardware feature controlled by the camera device.
+        // This is a stub — real implementation requires CameraDevice access and
+        // specific device capabilities (e.g., infrared LED toggle).
     }
 
     /** Set front-facing camera mode */
     fun setFrontFacingCamera(ffcEnabled: Boolean) {
         try {
-            val cameraProvider = androidx.camera.core.ProcessCameraProvider.getInstance(context).get()
+            val provider = ProcessCameraProvider.getInstance(context).get()
+            
+            // Unbind ALL current use cases from the currently bound Camera
+            imageCapture?.let { capture -> 
+                provider.unbindAll()
+            }            
             if (ffcEnabled) {
-                imageCapture?.camera = null // Unbind current
                 val selector = CameraSelector.DEFAULT_FRONT_CAMERA
                 imageCapture = ImageCapture.Builder()
                     .setTargetResolution(Size(1280, 720))
                     .build()
-                cameraProvider.bindToLifecycle(null as LifecycleOwner?, selector, imageCapture)
+                provider.bindToLifecycle(null as LifecycleOwner?, selector, imageCapture)
             } else {
                 val selector = CameraSelector.DEFAULT_BACK_CAMERA
-                imageCapture?.camera = null // Unbind current
                 imageCapture = ImageCapture.Builder()
                     .setTargetResolution(Size(1280, 720))
                     .build()
-                cameraProvider.bindToLifecycle(null as LifecycleOwner?, selector, imageCapture)
+                provider.bindToLifecycle(null as LifecycleOwner?, selector, imageCapture)
             }
         } catch (_: Exception) {}
     }
