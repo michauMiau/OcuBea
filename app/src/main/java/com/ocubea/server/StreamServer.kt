@@ -13,7 +13,7 @@ import kotlinx.coroutines.*
  */
 class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
 
-    var streamUrl: String = "" // e.g., "http://192.168.1.5"
+    var streamUrl: String = ""
 
     private lateinit var cameraManager: com.ocubea.camera.CameraManager
     private lateinit var videoEncoder: com.ocubea.stream.VideoEncoder
