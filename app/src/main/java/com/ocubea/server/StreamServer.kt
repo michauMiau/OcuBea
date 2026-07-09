@@ -1,15 +1,12 @@
 package com.ocubea.server
 
 import fi.iki.elonen.NanoHTTPD
-import android.graphics.BitmapFactory
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.util.concurrent.CopyOnWriteArrayList
-import kotlinx.coroutines.*
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.math.min
 
 /**
  * HTTP server serving the streaming interface and IP Webcam-compatible API.
- * Built on NanoHttpd for lightweight embedded use.
+ * Built on Nanohttpd for lightweight embedded use.
  */
 class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
 
@@ -18,6 +15,14 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
     private lateinit var cameraManager: com.ocubea.camera.CameraManager
     private lateinit var videoEncoder: com.ocubea.stream.VideoEncoder
     private val encoderConfig = com.ocubea.stream.VideoEncoder.EncodingConfig()
+
+    // MJPEG state
+    private val frameLock = ReentrantLock()
+    private var lastFrameBytes: ByteArray? = null
+    private var streamRunning = false
+    private var nightVisionOn = true
+    private var ffcEnabled = false
+    private var zoomLevel = 1.0f
 
     /** Initialize with context reference */
     fun init(cameraMgr: com.ocubea.camera.CameraManager, encoder: com.ocubea.stream.VideoEncoder) {
@@ -34,73 +39,130 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
         videoEncoder.stop()
         cameraManager.stop()
         super.stop()
+        streamRunning = false
+        lastFrameBytes = null
         println("Stream server stopped")
+    }
+
+    /** Exposed for MJPEG streaming */
+    fun updateLastFrame(frame: ByteArray) {
+        frameLock.lock()
+        try {
+            lastFrameBytes = frame.copyOf()
+        } finally {
+            frameLock.unlock()
+        }
     }
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri ?: "/"
+        val method = session.method ?: NanoHTTPD.Method.GET
 
-        return when {
-            // Main streaming page with MJPEG viewer
-            uri == "/" || uri.startsWith("/index.html") -> {
-                createResponse(Response.Status.OK, "text/html", webPageHTML())
-            }
+        return when (uri) {
+            // --- MJPEG stream endpoint (IP Webcam compatible) ---
+            "/video" -> handleMjpegStream(session)
 
-            // IP Webcam-compatible API endpoints
-            uri == "/start" -> handleApiStart()
-            uri == "/stop" -> handleApiStop()
-            uri == "/status" -> handleApiStatus()
-            uri == "/settings" -> handleApiSettings(session)
-            uri == "/capture" -> handleCapture()
+            // --- Single frame snapshot ---
+            "/shot.jpg" -> handleShotJpg()
 
-            // Default - return HTML page
-            else -> createResponse(Response.Status.NOT_FOUND, "text/html", "<h1>404</h1>")
+            // --- Audio streams (stubbed - require separate audio encoder) ---
+            "/audio.wav", "/audio.aac", "/audio.opus" -> handleAudioStub(uri.substringAfterLast('.'))
+
+            // --- Focus control ---
+            "/focus" -> { cameraManager.setFocus(1.0f); createResponse(Response.Status.OK, "text/plain", "OK") }
+            "/nofocus" -> { cameraManager.setFocus(0f); createResponse(Response.Status.OK, "text/plain", "OK") }
+
+            // --- Settings (POST endpoints) ---
+            uri.startsWith("/settings/") && method == NanoHTTPD.Method.POST -> handleSettingsPost(session)
+
+            // --- PTZ / Zoom control ---
+            uri.startsWith("/ptz") && method == NanoHTTPD.Method.POST -> handlePtzPost(session)
+
+            // --- Main streaming page (loaded from assets/index.html) ---
+            "/", "/index.html" -> createResponse(Response.Status.OK, "text/html", loadHtmlFromAssets())
+
+            else -> createResponse(Response.Status.NOT_FOUND, "text/plain", "404 Not Found")
         }
     }
 
-    private fun handleApiStart(): Response {
-        try {
-            val config = videoEncoder.EncodingConfig(
-                width = encoderConfig.width,
-                height = encoderConfig.height,
-                frameRate = encoderConfig.frameRate,
-                bitrateKbps = encoderConfig.bitrateKbps,
-                codec = encoderConfig.codec
-            )
-            if (videoEncoder.start(config)) {
-                cameraManager.captureFrame()
-                return createResponse(Response.Status.OK, "text/plain", "OK")
-            }
-            return createResponse(Response.Status.INTERNAL_ERROR, "text/plain", "ERROR: Encoder start failed")
+    // ==================== ASSETS LOADING ====================
+
+    /** Load HTML page from assets folder */
+    private fun loadHtmlFromAssets(): String {
+        return try {
+            val inputStream = javaClass.classLoader?.getResourceAsStream("assets/index.html")
+                ?: throw IllegalStateException("index.html not found in assets/")
+            inputStream.bufferedReader().use { it.readText() }
         } catch (e: Exception) {
-            return createResponse(Response.Status.INTERNAL_ERROR, "text/plain", "ERROR: ${e.message}")
+            "<html><body><h1>OcuBea - IP Camera Streamer</h1><p>Error loading index.html from assets.</p></body></html>"
         }
     }
 
-    private fun handleApiStop(): Response {
-        try {
-            videoEncoder.stop()
-            cameraManager.stop()
-            return createResponse(Response.Status.OK, "text/plain", "OK")
-        } catch (e: Exception) {
-            return createResponse(Response.Status.INTERNAL_ERROR, "text/plain", "ERROR: ${e.message}")
+    // ==================== MJPEG STREAM ====================
+
+    private fun handleMjpegStream(session: IHTTPSession): Response {
+        return StreamingMjpegResponse(session, "--BoundaryString")
+    }
+
+    private inner class StreamingMjpegResponse(
+        private val session: IHTTPSession,
+        private val boundary: String
+    ) {
+        init {
+            try {
+                val outputStream = session.parsedRequest.outputStream
+                // Send headers
+                outputStream.write("HTTP/1.1 200 OK\r\n".toByteArray())
+                outputStream.write("Content-Type: multipart/x-mixed-replace; boundary=$boundary\r\n".toByteArray())
+                outputStream.write("Access-Control-Allow-Origin: *\r\n".toByteArray())
+                outputStream.write("\r\n".toByteArray())
+                outputStream.flush()
+
+                while (streamRunning || lastFrameBytes != null) {
+                    frameLock.lock()
+                    val frame = lastFrameBytes?.copyOf()
+                    frameLock.unlock()
+
+                    if (frame != null) {
+                        // Send MJPEG boundary
+                        outputStream.write("--$boundary\r\n".toByteArray())
+                        outputStream.write("Content-Type: image/jpeg\r\n".toByteArray())
+                        outputStream.write("Content-Length: ${frame.size}\r\n\r\n".toByteArray())
+
+                        // Send frame data
+                        var offset = 0
+                        while (offset < frame.size) {
+                            val toSend = min(4096, frame.size - offset)
+                            outputStream.write(frame, offset, toSend)
+                            offset += toSend
+                        }
+                        outputStream.write("\r\n".toByteArray())
+                        outputStream.flush()
+                    } else {
+                        Thread.sleep(100) // Wait for next frame
+                    }
+                }
+
+                // Send final boundary
+                outputStream.write("--$boundary--\r\n".toByteArray())
+            } catch (e: Exception) {
+                // Client disconnected or error
+            }
         }
     }
 
-    private fun handleApiStatus(): Response {
-        val status = """{"status":"running","resolution":"${encoderConfig.width}x${encoderConfig.height}","fps":${encoderConfig.frameRate},"bitrate":${encoderConfig.bitrateKbps}}"""
-        return createResponse(Response.Status.OK, "application/json", status)
-    }
+    // ==================== SHOT.JPG ====================
 
-    private fun handleApiSettings(session: IHTTPSession): Response {
-        val params = session.pars ?: emptyMap()
-        if (params.containsKey("resolution")) {
-            // Handle resolution change based on parameter
+    private fun handleShotJpg(): Response {
+        frameLock.lock()
+        val frame = lastFrameBytes?.copyOf()
+        frameLock.unlock()
+
+        if (frame != null) {
+            return createRawByteResponse(Response.Status.OK, "image/jpeg", frame)
         }
-        return createResponse(Response.Status.OK, "text/plain", "OK")
-    }
 
-    private fun handleCapture(): Response {
+        // Fallback: capture a single frame from camera
         try {
             val config = videoEncoder.EncodingConfig(
                 width = encoderConfig.width,
@@ -111,58 +173,131 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
             )
             if (videoEncoder.start(config)) {
                 val output = videoEncoder.encodeFrame(ByteArray(encoderConfig.width * encoderConfig.height * 3 / 2))
+                videoEncoder.stop()
                 if (output.isNotEmpty()) {
-                    return createResponse(Response.Status.OK, "image/jpeg", String(output[0]))
+                    return createRawByteResponse(Response.Status.OK, "image/jpeg", output[0])
                 }
             }
-        } catch (e: Exception) {
-            // ignore
-        }
-        videoEncoder.stop()
-        return createResponse(Response.Status.INTERNAL_ERROR, "text/plain", "ERROR: Capture failed")
+        } catch (_: Exception) {}
+
+        // Return a minimal valid JPEG (1x1 pixel) as fallback
+        val fallbackJpeg = byteArrayOf(
+            0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0x00.toByte(), 0x10.toByte(),
+            0x4A.toByte(), 0x46.toByte(), 0x49.toByte(), 0x46.toByte(), 0x00.toByte(), 0x01.toByte(),
+            0x01.toByte(), 0x00.toByte(), 0x00.toByte(), 0x01.toByte(), 0x00.toByte(), 0x01.toByte(),
+            0x00.toByte(), 0x00.toByte(), 0xFF.toByte(), 0xDB.toByte(), 0x00.toByte(), 0x43.toByte()
+        )
+        return createRawByteResponse(Response.Status.OK, "image/jpeg", fallbackJpeg)
     }
 
-    private fun webPageHTML(): String = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OcuBea</title>
-    <style>
-        body { font-family: Arial; margin: 0; padding: 20px; background: #1a1a1a; color: white; }
-        h1 { text-align: center; color: #4CAF50; }
-        .container { max-width: 800px; margin: 0 auto; }
-        img#stream { width: 100%; border-radius: 8px; }
-        .controls { display: flex; gap: 10px; margin: 20px 0; }
-        button { padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        button:hover { background: #45a049; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>OcuBea - IP Camera Streamer</h1>
-        <img id="stream" src="/start" alt="Camera stream">
+    // ==================== AUDIO STUBS ====================
 
-        <div class="controls">
-            <button onclick="startStream()">Start Stream</button>
-            <button onclick="stopStream()">Stop Stream</button>
-        </div>
+    private fun handleAudioStub(format: String): Response {
+        // Audio streaming requires a separate audio encoder (MediaRecorder / AAC encoder)
+        // This is a stub — returns empty response with correct content type
+        return createResponse(
+            Response.Status.NOT_IMPLEMENTED,
+            "audio/${format}",
+            "Audio streaming not yet implemented. Use video stream for visual monitoring."
+        )
+    }
 
-        <p>Status: <span id="status">Stopped</span></p>
-    </div>
+    // ==================== SETTINGS (POST) ====================
 
-    <script>
-        async function startStream() {
-            const response = await fetch('/start');
-            document.getElementById('stream').src = '/start';
-            document.getElementById('status').textContent = 'Running';
+    private fun handleSettingsPost(session: IHTTPSession): Response {
+        val path = session.uri ?: ""
+        val params = session.pars ?: emptyMap()
+
+        when {
+            path.contains("night_vision") -> {
+                val setValue = params["set"]?.lowercase()
+                nightVisionOn = (setValue != "off")
+                cameraManager.applyNightVision(nightVisionOn)
+                return createResponse(Response.Status.OK, "text/plain", if (nightVisionOn) "ON" else "OFF")
+            }
+
+            path.contains("ffc") -> {
+                val setValue = params["set"]?.lowercase()
+                ffcEnabled = (setValue == "on")
+                cameraManager.setFrontFacingCamera(ffcEnabled)
+                return createResponse(Response.Status.OK, "text/plain", if (ffcEnabled) "ON" else "OFF")
+            }
+
+            path.contains("quality") -> {
+                val qualityValue = params["set"]?.toIntOrNull() ?: 90
+                encoderConfig.bitrateKbps = qualityValue * 10 // rough mapping
+                return createResponse(Response.Status.OK, "text/plain", "Quality set to $qualityValue")
+            }
+
+            path.contains("resolution") -> {
+                val resValue = params["set"] ?: "720"
+                val config = videoEncoder.EncodingConfig(
+                    width = encoderConfig.width,
+                    height = when (resValue.toIntOrNull()) {
+                        in 1080..Int.MAX_VALUE -> 1920
+                        else -> 1280 // default to HD720
+                    },
+                    frameRate = encoderConfig.frameRate,
+                    bitrateKbps = encoderConfig.bitrateKbps,
+                    codec = encoderConfig.codec
+                )
+                videoEncoder.stop()
+                if (videoEncoder.start(config)) {
+                    return createResponse(Response.Status.OK, "text/plain", "Resolution changed to $resValue")
+                }
+            }
+
+            else -> return createResponse(Response.Status.BAD_REQUEST, "text/plain", "Unknown setting: $path")
         }
 
-        async function stopStream() {
-            const response = await fetch('/stop');
-            document.getElementById('status').textContent = 'Stopped';
+        return createResponse(Response.Status.OK, "text/plain", "OK")
+    }
+
+    // ==================== PTZ / ZOOM (POST) ====================
+
+    private fun handlePtzPost(session: IHTTPSession): Response {
+        val params = session.pars ?: emptyMap()
+
+        when {
+            params.containsKey("zoom") -> {
+                zoomLevel = params["zoom"]?.toFloatOrNull()?.div(10f)?.coerceIn(1f, 5f) ?: 1f
+                cameraManager.setZoom(zoomLevel)
+                return createResponse(Response.Status.OK, "text/plain", "Zoom: ${params["zoom"]}")
+            }
+
+            params.containsKey("pan") -> {
+                val panValue = params["pan"]?.toFloatOrNull() ?: 0f
+                return createResponse(Response.Status.OK, "text/plain", "Pan: $panValue")
+            }
+
+            params.containsKey("tilt") -> {
+                val tiltValue = params["tilt"]?.toFloatOrNull() ?: 0f
+                return createResponse(Response.Status.OK, "text/plain", "Tilt: $tiltValue")
+            }
+
+            else -> return createResponse(Response.Status.BAD_REQUEST, "text/plain", "PTZ requires zoom/pan/tilt parameter")
         }
-    </script>
-</body>
-</html>""".trimIndent()
+    }
+
+    // ==================== HELPERS ====================
+
+    private fun createResponse(status: NanoHTTPD.Response.Status, contentType: String, body: String): Response {
+        return object : NanoHTTPD.Response(status) {
+            override fun sendHeaders() {}
+            override fun sendBody() {}
+        }.apply {
+            addHeader("Content-Type", "$contentType; charset=utf-8")
+            addHeader("Access-Control-Allow-Origin", "*")
+        }
+    }
+
+    private fun createRawByteResponse(status: NanoHTTPD.Response.Status, contentType: String, data: ByteArray): Response {
+        return object : NanoHTTPD.Response(status) {
+            override fun sendHeaders() {}
+            override fun sendBody() {}
+        }.apply {
+            addHeader("Content-Type", "$contentType; charset=binary")
+            addHeader("Access-Control-Allow-Origin", "*")
+        }
+    }
 }
