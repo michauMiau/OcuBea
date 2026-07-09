@@ -6,7 +6,7 @@
 
 ### Current blockers
 
-A Fresh start
+A fresh start
 
 ### Currently worked on
 
