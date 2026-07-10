@@ -1,6 +1,8 @@
 package com.ocubea.stream
 
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import java.nio.ByteBuffer
 import kotlin.math.max
@@ -11,19 +13,17 @@ import kotlin.math.max
 class VideoEncoder {
 
     data class EncodingConfig(
-        val width: Int = 1920,
-        val height: Int = 1080,
+        val width: Int = 1280,
+        val height: Int = 720,
         val frameRate: Int = 30,
-        val bitrateKbps: Int = 5000,
+        val bitrateKbps: Int = 4000,
         val codec: CodecType = CodecType.H264
     )
 
     enum class CodecType { H264 }
 
     private var mediaCodec: MediaCodec? = null
-    private val inputBuffers: Array<ByteBuffer> by lazy { emptyArray() }
-    private val outputBuffers: Array<ByteBuffer> by lazy { emptyArray() }
-    private val codecLock = Object()
+    @Volatile
     private var isRunning = false
 
     /** Start the encoder */
@@ -32,26 +32,20 @@ class VideoEncoder {
             val mime = "video/avc" // H.264
             val format = MediaFormat.createVideoFormat(mime, config.width, config.height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-                setInteger(MediaFormat.KEY_BIT_RATE, config.bitrateKbps * 1000) // convert kbps to bps
+                setInteger(MediaFormat.KEY_BIT_RATE, config.bitrateKbps * 1000) // kbps -> bps
                 setInteger(MediaFormat.KEY_FRAME_RATE, config.frameRate)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10) // I-frame every 10s
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // I-frame every second
             }
 
-            val codecName = getCodecForMime(mime)
-            if (codecName != null) {
-                println("Using hardware codec: $codecName")
-            } else {
-                println("No specific codec found, using default decoder for $mime")
-            }
+            val codecName = findCodecForMime(mime) ?: "OMX.google.h264.encoder"
+            println("Using codec: $codecName")
 
-            mediaCodec = MediaCodec.createByCodecName(codecName ?: "OMX.google.h264.encoder")
+            mediaCodec = MediaCodec.createByCodecName(codecName)
             mediaCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            
-            // Start the encoder
             mediaCodec?.start()
+
             isRunning = true
-            
-            println("Video encoder started with config: ${config.width}x${config.height}, ${config.frameRate}fps, ${config.bitrateKbps}kbps")
+            println("Video encoder started: ${config.width}x${config.height}, ${config.frameRate}fps, ${config.bitrateKbps}kbps")
             true
         } catch (e: Exception) {
             println("Failed to start video encoder: ${e.message}")
@@ -60,109 +54,174 @@ class VideoEncoder {
         }
     }
 
-    /** Encode a single frame */
+    /** Encode a single YUV frame into H.264 NAL units */
     fun encodeFrame(inputData: ByteArray): List<ByteArray> {
         val encodedFrames = mutableListOf<ByteArray>()
-        
+
         try {
             mediaCodec?.let { codec ->
-                // Get input buffer (if available)
-                val inputBufferIndex = codec.dequeueInputBuffer(10000)
+                if (!isRunning) return emptyList()
+
+                // Get input buffer
+                val inputBufferIndex = codec.dequeueInputBuffer(10_000)
                 if (inputBufferIndex >= 0) {
-                    // Copy data to input buffer
                     val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return@let
                     inputBuffer.clear()
-                    
-                    // Ensure we don't exceed buffer size
-                    val availableSpace = inputBuffer.remaining()
-                    val copyLength = minOf(availableSpace, inputData.size)
-                    inputBuffer.put(inputData, 0, copyLength)
-                    inputBuffer.flip()
-                    
-                    // Send to encoder with presentation timestamp (PTS)
-                    val ptsUs = System.currentTimeMillis() * 1000 // convert ms to us
+
+                    val copyLength = minOf(inputBuffer.remaining(), inputData.size)
+                    if (copyLength > 0) {
+                        inputBuffer.put(inputData, 0, copyLength)
+                    }
+
+                    // Queue with presentation timestamp in microseconds
+                    val ptsUs = System.nanoTime() / 1_000
                     codec.queueInputBuffer(inputBufferIndex, 0, copyLength, ptsUs, 0)
                 }
 
-                // Process output buffers
+                // Drain output
                 val bufferInfo = MediaCodec.BufferInfo()
-                
-                while (true) {
-                    // Dequeue output buffer with timeout
-                    val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 16_000) // 16ms timeout
-                    
-                    when (outputBufferIndex) {
-                        MediaCodec.INFO_TRY_AGAIN_LATER -> break
-                        MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> {
-                            outputBuffers.clear()
-                            // Get new output buffers from codec
-                        }
-                        MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                var iterations = 0
+                while (iterations < 5 && isRunning) {
+                    val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 16_000)
+
+                    when {
+                        outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> break
+                        outputBufferIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> println("Output buffers changed")
+                        outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                             val format = codec.outputFormat
-                            println("Output format changed: ${format.mimeType} - ${format.width}x${format.height}")
+                            println("Output format: ${format.mimeType} ${format.width}x${format.height}")
                         }
                         else -> if (outputBufferIndex >= 0) {
-                            // Get output buffer content as byte array
                             val outputBuffer = codec.getOutputBuffer(outputBufferIndex) ?: continue
-                            
-                            // Create a new byte array for the frame data
-                            val frameData = ByteArray(bufferInfo.size)
-                            
-                            // Copy from ByteBuffer to byte array using get(byte[])
-                            outputBuffer.position(bufferInfo.offset + bufferInfo.flags)
+
+                            // Create NAL-URAF encoded frame with SPS/PPS header
+                            val frameData = buildFrameWithHeader(
+                                bufferInfo.size,
+                                isKeyframe = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                            )
+
+                            outputBuffer.position(bufferInfo.offset)
                             outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
-                            outputBuffer.get(frameData, 0, bufferInfo.size)
-                            
+                            outputBuffer.get(frameData, frameData.size - bufferInfo.size, bufferInfo.size)
+
                             encodedFrames.add(frameData)
-                            
-                            // Release the output buffer
+
                             codec.releaseOutputBuffer(outputBufferIndex, false)
                         }
                     }
-                    
-                    // Check if we've processed enough frames or timed out
-                    if (bufferInfo.presentationTimeUs == 0L && outputBufferIndex < 0) {
-                        break // No more data to process
-                    }
+                    iterations++
                 }
             }
         } catch (e: Exception) {
             println("Error encoding frame: ${e.message}")
             e.printStackTrace()
         }
-        
+
         return encodedFrames
+    }
+
+    /** Build a NAL-URAF frame with SPS/PPS headers */
+    private fun buildFrameWithHeader(payloadSize: Int, isKeyframe: Boolean): ByteArray {
+        // H.264 NAL unit types: 7=SPS, 8=PPS, 5=IDR, 1=non-IDR
+        val nalType = if (isKeyframe) 0x65 else 0x01
+        val headerSize = if (isKeyframe) 24 else 0
+
+        return ByteArray(payloadSize + headerSize).also { buf ->
+            var offset = 0
+
+            // Start code: 0x00 0x00 0x00 0x01
+            buf[offset++] = 0x00.toByte()
+            buf[offset++] = 0x00.toByte()
+            buf[offset++] = 0x00.toByte()
+            buf[offset++] = 0x01.toByte()
+
+            // NAL unit header: forbidden_zero_bit(1) | nal_ref_idc(2) | nal_unit_type(5)
+            if (isKeyframe) {
+                // IDR slice with high priority
+                val refIdc = 0x60 // highest reference level
+                buf[offset++] = (refIdc or nalType).toByte()
+            } else {
+                // Non-IDR slice
+                buf[offset++] = nalType.toByte()
+            }
+
+            if (isKeyframe) {
+                // SPS NAL unit: 0x00 0x00 0x00 0x01 | nal_unit_type=7
+                offset += writeSp nal(
+                    buf, offset, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
+                    MediaCodecInfo.CodecProfileLevel.AVCLevel31
+                )
+
+                // PPS NAL unit: 0x00 0x00 0x00 0x01 | nal_unit_type=8
+                offset += writeSps(
+                    buf, offset,
+                    MediaCodecInfo.CodecProfileLevel.AVCLevel31
+                )
+
+                // IDR slice NAL unit: 0x00 0x00 0x00 0x01 | nal_unit_type=5
+                val refIdc = 0x60
+                buf[offset++] = (refIdc or 0x65).toByte()
+            } else {
+                // Non-IDR slice NAL unit: 0x00 0x00 0x00 0x01 | nal_unit_type=1
+                buf[offset++] = nalType.toByte()
+            }
+        }
+    }
+
+    /** Write SPS data */
+    private fun writeSps(
+        buffer: ByteArray,
+        offset: Int,
+        profileIdc: Int,
+        levelIdc: Int
+    ): Int {
+        val sps = byteArrayOf(
+            0x67.toByte(), // SPS NAL type
+            (profileIdc and 0xFF).toByte(), // profile_idc
+            0x42.toByte(), // constraint flags
+            0xA0.toByte(), // level_idc
+            0x01.toByte(), // lengthSizeMinusOne
+            0xE9.toByte(), // avc30
+            (0x4D.toByte()),
+            (0x40).toByte()
+        )
+
+        val copyLength = minOf(sps.size, buffer.size - offset)
+        if (copyLength > 0) {
+            System.arraycopy(sps, 0, buffer, offset, copyLength)
+        }
+        return copyLength
     }
 
     /** Stop the encoder */
     fun stop() {
         try {
             mediaCodec?.let { codec ->
-                // Signal end of stream
                 codec.signalEndOfInputStream()
-                
-                // Wait for remaining output
+
                 val bufferInfo = MediaCodec.BufferInfo()
-                while (true) {
-                    val index = codec.dequeueOutputBuffer(bufferInfo, 10_000) // 10s timeout
-                    
+                var iterations = 0
+                while (iterations < 10 && isRunning) {
+                    val index = codec.dequeueOutputBuffer(bufferInfo, 10_000)
+
                     if (index >= 0) {
                         codec.releaseOutputBuffer(index, false)
-                        
+
                         // Stop when we receive EOS or buffer is empty
-                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0 || 
-                            bufferInfo.size == 0) break
+                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0 ||
+                            bufferInfo.size == 0
+                        ) break
                     } else if (index == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        break // No more output available
+                        break
                     }
+                    iterations++
                 }
-                
+
                 codec.stop()
             }
-            
+
             mediaCodec?.release()
             mediaCodec = null
-            
             isRunning = false
             println("Video encoder stopped")
         } catch (e: Exception) {
@@ -171,24 +230,23 @@ class VideoEncoder {
         }
     }
 
-    /** Get available codecs for a given mime type */
-    private fun getCodecForMime(mime: String): String? {
-        val codecCount = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.size
-        
-        // Iterate through available codecs
-        for (i in 0 until codecCount) {
-            val codecInfo = MediaCodecList(MediaCodecList.ALL_CODECS).getCodecInfoAt(i) ?: continue
-            
+    /** Find available codec for MIME type */
+    private fun findCodecForMime(mime: String): String? {
+        val mediaCodecList = MediaCodecList(MediaCodecList.ALL_CODECS)
+
+        for (codecInfo in mediaCodecList.codecInfos) {
+            if (!codecInfo.isEncoder) continue
+
             try {
                 if (mime in codecInfo.supportedTypes) {
                     return codecInfo.name
                 }
             } catch (_: Exception) {}
         }
-        
+
         return null
     }
 
-    /** Check if the encoder is currently running */
-    fun isEncoderRunning(): Boolean = isRunning
+    /** Check if encoder is running */
+    fun isRunning(): Boolean = isRunning
 }
