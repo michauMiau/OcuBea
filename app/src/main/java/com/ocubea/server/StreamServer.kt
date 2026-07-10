@@ -1,12 +1,14 @@
 package com.ocubea.server
 
+import android.content.Context
+import com.ocubea.stream.VideoEncoder.EncodingConfig
 import fi.iki.elonen.NanoHTTPD
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.math.min
 
 /**
  * HTTP server serving the streaming interface and IP Webcam-compatible API.
- * Built on Nanohttpd for lightweight embedded use.
+ * Built on Nanohttpd v3.x for lightweight embedded use.
  */
 class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
 
@@ -14,7 +16,7 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
 
     private lateinit var cameraManager: com.ocubea.camera.CameraManager
     private lateinit var videoEncoder: com.ocubea.stream.VideoEncoder
-    private val encoderConfig = com.ocubea.stream.VideoEncoder.EncodingConfig()
+    private val encoderConfig = EncodingConfig()
 
     // MJPEG state
     private val frameLock = ReentrantLock()
@@ -73,10 +75,10 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
             "/nofocus" -> { cameraManager.setFocus(0f); createResponse(Response.Status.OK, "text/plain", "OK") }
 
             // --- Settings (POST endpoints) ---
-            uri.startsWith("/settings/") && method == NanoHTTPD.Method.POST -> handleSettingsPost(session)
+            inUriAndMethod(uri, NanoHTTPD.Method.POST, "/settings/") -> handleSettingsPost(session)
 
             // --- PTZ / Zoom control ---
-            uri.startsWith("/ptz") && method == NanoHTTPD.Method.POST -> handlePtzPost(session)
+            inUriAndMethod(uri, NanoHTTPD.Method.POST, "/ptz") -> handlePtzPost(session)
 
             // --- Main streaming page (loaded from assets/index.html) ---
             "/", "/index.html" -> createResponse(Response.Status.OK, "text/html", loadHtmlFromAssets())
@@ -100,55 +102,60 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
 
     // ==================== MJPEG STREAM ====================
 
-    private fun handleMjpegStream(session: IHTTPSession): Response {
+    private fun handleMjpegStream(session: IHTTPSession): NanoHTTPD.Response {
         return StreamingMjpegResponse(session, "--BoundaryString")
     }
 
     private inner class StreamingMjpegResponse(
         private val session: IHTTPSession,
         private val boundary: String
-    ) {
+    ) : Response(NanoHTTPD.Status.OK) {
+
         init {
-            try {
-                val outputStream = session.parsedRequest.outputStream
-                // Send headers
-                outputStream.write("HTTP/1.1 200 OK\r\n".toByteArray())
-                outputStream.write("Content-Type: multipart/x-mixed-replace; boundary=$boundary\r\n".toByteArray())
-                outputStream.write("Access-Control-Allow-Origin: *\r\n".toByteArray())
-                outputStream.write("\r\n".toByteArray())
-                outputStream.flush()
+            addHeader("Content-Type", "multipart/x-mixed-replace; boundary=$boundary")
+            addHeader("Access-Control-Allow-Origin", "*")
 
-                while (streamRunning || lastFrameBytes != null) {
-                    frameLock.lock()
-                    val frame = lastFrameBytes?.copyOf()
-                    frameLock.unlock()
+            // Stream MJPEG frames in a background thread
+            Thread({
+                try {
+                    while (streamRunning || lastFrameBytes != null) {
+                        frameLock.lock()
+                        val frame = lastFrameBytes?.copyOf()
+                        frameLock.unlock()
 
-                    if (frame != null) {
-                        // Send MJPEG boundary
-                        outputStream.write("--$boundary\r\n".toByteArray())
-                        outputStream.write("Content-Type: image/jpeg\r\n".toByteArray())
-                        outputStream.write("Content-Length: ${frame.size}\r\n\r\n".toByteArray())
+                        if (frame != null) {
+                            // Write MJPEG boundary and headers directly to output stream
+                            bodyOutputStream.write("--$boundary\r\n".toByteArray())
+                            bodyOutputStream.write("Content-Type: image/jpeg\r\n".toByteArray())
+                            bodyOutputStream.write("Content-Length: ${frame.size}\r\n\r\n".toByteArray())
 
-                        // Send frame data
-                        var offset = 0
-                        while (offset < frame.size) {
-                            val toSend = min(4096, frame.size - offset)
-                            outputStream.write(frame, offset, toSend)
-                            offset += toSend
+                            // Write frame data in chunks
+                            var offset = 0
+                            while (offset < frame.size) {
+                                val toSend = min(8192, frame.size - offset)
+                                bodyOutputStream.write(frame, offset, toSend)
+                                offset += toSend
+                            }
+                            bodyOutputStream.flush()
+                        } else {
+                            Thread.sleep(50) // Wait for next frame
                         }
-                        outputStream.write("\r\n".toByteArray())
-                        outputStream.flush()
-                    } else {
-                        Thread.sleep(100) // Wait for next frame
                     }
-                }
 
-                // Send final boundary
-                outputStream.write("--$boundary--\r\n".toByteArray())
-            } catch (e: Exception) {
-                // Client disconnected or error
-            }
+                    // Send final boundary
+                    bodyOutputStream.write("--$boundary--\r\n".toByteArray())
+                    bodyOutputStream.flush()
+                } catch (e: Exception) {
+                    // Client disconnected or error — normal during streaming
+                } finally {
+                    try { bodyOutputStream.close() } catch (_: Exception) {}
+                }
+            }, "mjpeg-stream").start()
         }
+    }
+
+    private fun inUriAndMethod(uri: String, method: NanoHTTPD.Method, prefix: String): Boolean {
+        return uri.startsWith(prefix) && method == NanoHTTPD.Method.POST
     }
 
     // ==================== SHOT.JPG ====================
@@ -161,24 +168,6 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
         if (frame != null) {
             return createRawByteResponse(Response.Status.OK, "image/jpeg", frame)
         }
-
-        // Fallback: capture a single frame from camera
-        try {
-            val config = videoEncoder.EncodingConfig(
-                width = encoderConfig.width,
-                height = encoderConfig.height,
-                frameRate = encoderConfig.frameRate,
-                bitrateKbps = encoderConfig.bitrateKbps,
-                codec = encoderConfig.codec
-            )
-            if (videoEncoder.start(config)) {
-                val output = videoEncoder.encodeFrame(ByteArray(encoderConfig.width * encoderConfig.height * 3 / 2))
-                videoEncoder.stop()
-                if (output.isNotEmpty()) {
-                    return createRawByteResponse(Response.Status.OK, "image/jpeg", output[0])
-                }
-            }
-        } catch (_: Exception) {}
 
         // Return a minimal valid JPEG (1x1 pixel) as fallback
         val fallbackJpeg = byteArrayOf(
@@ -206,7 +195,7 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
 
     private fun handleSettingsPost(session: IHTTPSession): Response {
         val path = session.uri ?: ""
-        val params = session.pars ?: emptyMap()
+        val params = session.queryParameterMap ?: emptyMap()
 
         when {
             path.contains("night_vision") -> {
@@ -231,7 +220,7 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
 
             path.contains("resolution") -> {
                 val resValue = params["set"] ?: "720"
-                val config = videoEncoder.EncodingConfig(
+                val config = EncodingConfig(
                     width = encoderConfig.width,
                     height = when (resValue.toIntOrNull()) {
                         in 1080..Int.MAX_VALUE -> 1920
@@ -256,7 +245,7 @@ class StreamServer(private val port: Int = 8080) : NanoHTTPD(port) {
     // ==================== PTZ / ZOOM (POST) ====================
 
     private fun handlePtzPost(session: IHTTPSession): Response {
-        val params = session.pars ?: emptyMap()
+        val params = session.queryParameterMap ?: emptyMap()
 
         when {
             params.containsKey("zoom") -> {
