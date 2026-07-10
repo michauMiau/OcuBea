@@ -89,7 +89,7 @@ class VideoEncoder {
                         outputBufferIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> println("Output buffers changed")
                         outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                             val format = codec.outputFormat
-                            println("Output format: ${format.mimeType} ${format.width}x${format.height}")
+                            println("Output format: ${format.getString("mime")} ${format.getInteger(MediaFormat.KEY_WIDTH)}x${format.getInteger(MediaFormat.KEY_HEIGHT)}")
                         }
                         else -> if (outputBufferIndex >= 0) {
                             val outputBuffer = codec.getOutputBuffer(outputBufferIndex) ?: continue
@@ -147,7 +147,7 @@ class VideoEncoder {
 
             if (isKeyframe) {
                 // SPS NAL unit: 0x00 0x00 0x00 0x01 | nal_unit_type=7
-                offset += writeSp nal(
+                offset += writeSps(
                     buf, offset, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
                     MediaCodecInfo.CodecProfileLevel.AVCLevel31
                 )
@@ -155,6 +155,7 @@ class VideoEncoder {
                 // PPS NAL unit: 0x00 0x00 0x00 0x01 | nal_unit_type=8
                 offset += writeSps(
                     buf, offset,
+                    MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
                     MediaCodecInfo.CodecProfileLevel.AVCLevel31
                 )
 

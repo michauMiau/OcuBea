@@ -26,6 +26,6 @@ class OcuBeaApplication : Application() {
         // Initialize components
         cameraManager = CameraManager(this)
         videoEncoder = VideoEncoder()
-        streamServer = StreamServer()
+        streamServer = StreamServer(this)
     }
 }
