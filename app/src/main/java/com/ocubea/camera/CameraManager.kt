@@ -1,7 +1,14 @@
 package com.ocubea.camera
 
 import android.content.Context
-import androidx.camera.core.*
+import android.os.Handler
+import android.os.Looper
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalCamera2Interop
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageProxy
+import androidx.camera.processing.ProcessCameraProvider
+import android.util.Size
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
