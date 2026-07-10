@@ -62,10 +62,7 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             fi.iki.elonen.NanoHTTPD.Response.IStatus.HTTP_OK,
             "multipart/x-mixed-replace; boundary=frame",
             object : OutputStream() {
-                override fun write(b: Int) {
-                    // MJPEG streaming uses continuous writes — not used for chunked
-                }
-
+                override fun write(b: Int) {}
                 override fun write(bytes: ByteArray?, off: Int, len: Int) {
                     if (bytes == null || !isStreaming || cameraManager == null) return
 
@@ -73,7 +70,6 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
                     if (frameData.isEmpty()) return
 
                     try {
-                        // Send boundary + JPEG frame headers
                         sendMjpegFrame(bytes, off, len, frameData)
                     } catch (e: Exception) {
                         println("Error sending MJPEG frame: ${e.message}")
