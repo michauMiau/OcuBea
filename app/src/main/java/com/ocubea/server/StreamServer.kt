@@ -126,7 +126,7 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
     /** Serve single snapshot JPEG — returns raw binary bytes */
     private fun handleShot(): Response {
         val frameData = cameraManager?.getLatestFrame() ?: return newFixedLengthResponse(
-            Response.Status.INTERNAL_ERROR, "image/jpeg", ""
+            Response.Status.NOT_FOUND, "image/jpeg", ""
         )
 
         if (frameData.isEmpty()) {
