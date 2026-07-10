@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Background circle -->
+    <path
+        android:pathData="M0,0h108v108h-108z"
+        android:fillColor="#4CAF50"/>
+    
+    <!-- Letter "O" representing OcuBea -->
+    <path
+        android:pathData="M54,32m-16,0a16,16 0,1 1,32 0a16,16 0,1 1,-32 0"
+        android:fillColor="#FFFFFF"/>
+    <path
+        android:pathData="M54,46m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0"
+        android:fillColor="#4CAF50"/>
+</vector>
