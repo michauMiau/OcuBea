@@ -2,8 +2,10 @@ package com.ocubea.server
 
 import android.content.Context
 import fi.iki.elonen.NanoHTTPD
+import java.io.ByteArrayInputStream
 import java.io.OutputStream
 import java.net.URLDecoder
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * HTTP server for MJPEG streaming, snapshots, and torch control.
@@ -12,7 +14,6 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
 
     private var cameraManager: com.ocubea.camera.CameraManager? = null
     private var isStreaming = false
-    private var frameCounter = 0L
 
     fun setCameraManager(cm: com.ocubea.camera.CameraManager) {
         this.cameraManager = cm
@@ -47,65 +48,21 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             uri == "/shot.jpg" -> handleShot()
             uri == "/api/torch" && session.method == Method.POST -> handleTorch(session)
             else -> newFixedLengthResponse(
-                Response.Status.NOT_FOUND, "text/plain", "Not found"
+                NanoHTTPD.Response.Status.NOT_FOUND, "text/plain", "Not found"
             )
         }
     }
 
-    /** Handle MJPEG streaming via multipart/x-mixed-replace */
+    /** Handle MJPEG streaming — returns a response with multipart/x-mixed-replace content type.
+     *  The actual frame streaming is done in send() which writes to the output stream continuously. */
     private fun handleMjpegStream(): Response {
         if (!isStreaming && cameraManager != null) {
             startVideoStream()
         }
 
-        return newChunkedResponse(
-            fi.iki.elonen.NanoHTTPD.Response.IStatus.HTTP_OK,
-            "multipart/x-mixed-replace; boundary=frame",
-            object : OutputStream() {
-                override fun write(b: Int) {}
-                override fun write(bytes: ByteArray?, off: Int, len: Int) {
-                    if (bytes == null || !isStreaming || cameraManager == null) return
-
-                    val frameData = cameraManager?.getLatestFrame() ?: return
-                    if (frameData.isEmpty()) return
-
-                    try {
-                        sendMjpegFrame(bytes, off, len, frameData)
-                    } catch (e: Exception) {
-                        println("Error sending MJPEG frame: ${e.message}")
-                    }
-                }
-            }.let { output ->
-                // Start streaming in background thread
-                Thread({
-                    while (isStreaming && cameraManager != null) {
-                        try {
-                            val frameData = cameraManager!!.getLatestFrame() ?: break
-                            if (frameData.isNotEmpty()) {
-                                sendMjpegFrame(output, 0, frameData.size, frameData)
-                            }
-                        } catch (_: Exception) {
-                            Thread.sleep(50) // brief pause on error
-                        }
-                    }
-                }, "mjpeg-streamer").apply { isDaemon = true; start() }
-
-                output
-            }
-        )
-    }
-
-    /** Send a single MJPEG frame with proper boundaries */
-    private fun sendMjpegFrame(output: OutputStream, offset: Int, length: Int, frameData: ByteArray) {
-        val boundary = "--frame\r\n".toByteArray(Charsets.UTF_8)
-        val contentType = "Content-Type: image/jpeg\r\n".toByteArray(Charsets.UTF_8)
-        val contentLength = "Content-Length: ${frameData.size}\r\n\r\n".toByteArray(Charsets.UTF_8)
-
-        output.write(boundary)
-        output.write(contentType)
-        output.write(contentLength)
-        output.write(frameData, offset, length)
-        output.flush()
+        // Return a response with empty body — real data streamed via send()
+        val boundary = "--frame".toByteArray(Charsets.UTF_8)
+        return StreamingMjpegResponse(boundary)
     }
 
     /** Start MJPEG video stream from camera */
@@ -126,21 +83,20 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
     /** Serve single snapshot JPEG — returns raw binary bytes */
     private fun handleShot(): Response {
         val frameData = cameraManager?.getLatestFrame() ?: return newFixedLengthResponse(
-            Response.Status.NOT_FOUND, "image/jpeg", ""
+            NanoHTTPD.Response.Status.NOT_FOUND, "image/jpeg", ""
         )
 
         if (frameData.isEmpty()) {
             return newFixedLengthResponse(
-                Response.Status.NO_CONTENT, "image/jpeg", ""
+                NanoHTTPD.Response.Status.NO_CONTENT, "image/jpeg", ""
             )
         }
 
-        // Return raw bytes directly — do NOT wrap in String!
-        return newFixedLengthResponse(
-            Response.Status.OK,
+        // Return raw bytes directly via ChunkedResponse with InputStream — binary-safe in NanoHTTPD 2.3.1
+        return newChunkedResponse(
+            NanoHTTPD.Response.Status.OK,
             "image/jpeg",
-            frameData.size.toLong(),
-            frameData
+            ByteArrayInputStream(frameData)
         )
     }
 
@@ -148,31 +104,27 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
     private fun handleTorch(session: IHTTPSession): Response {
         val params = parseQueryParameters(session)
         return try {
-            // Check camera permission using ContextCompat for API 33+ safety
             if (context.checkSelfPermission(android.Manifest.permission.CAMERA) !=
                 android.content.pm.PackageManager.PERMISSION_GRANTED
             ) {
                 return newFixedLengthResponse(
-                    Response.Status.FORBIDDEN, "application/json",
+                    NanoHTTPD.Response.Status.FORBIDDEN, "application/json",
                     """{"status": "error", "message": "Camera permission required"}"""
                 )
             }
 
             val cm = context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
 
-            // Find the first back camera with torch support
             var foundCameraId: String? = null
             for (cameraId in cm.cameraIdList) {
                 val chars = cm.getCameraCharacteristics(cameraId)
 
-                // Check flash available — use toBoolean() since API level varies
                 val hasFlash = try {
                     chars.get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
                 } catch (_: Exception) { continue }
 
                 if (!hasFlash) continue
 
-                // Check it's a back camera (1 = LENS_FACING_BACK)
                 val facing = try {
                     chars.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING)
                 } catch (_: Exception) { continue }
@@ -185,7 +137,7 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
 
             if (foundCameraId == null) {
                 return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST, "application/json",
+                    NanoHTTPD.Response.Status.BAD_REQUEST, "application/json",
                     """{"status": "error", "message": "No torch available on back camera"}"""
                 )
             }
@@ -194,12 +146,12 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             cm.setTorchMode(foundCameraId, shouldEnable)
 
             newFixedLengthResponse(
-                Response.Status.OK, "application/json",
+                NanoHTTPD.Response.Status.OK, "application/json",
                 """{"status": "ok", "torch": ${if (shouldEnable) "true" else "false"}, "camera_id": "$foundCameraId"}"""
             )
         } catch (e: Exception) {
             newFixedLengthResponse(
-                Response.Status.INTERNAL_ERROR, "application/json",
+                NanoHTTPD.Response.Status.INTERNAL_ERROR, "application/json",
                 """{"status": "error", "message": "${e.message}"}"""
             )
         }
@@ -211,11 +163,11 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             val inputStream = context.assets.open("index.html")
             val bytes = inputStream.readBytes()
             newFixedLengthResponse(
-                Response.Status.OK, "text/html", String(bytes)
+                NanoHTTPD.Response.Status.OK, "text/html", String(bytes)
             )
         } catch (e: Exception) {
             newFixedLengthResponse(
-                Response.Status.INTERNAL_ERROR, "text/plain", "Error serving webpage"
+                NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", "Error serving webpage"
             )
         }
     }
@@ -234,6 +186,41 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             }
         }
         return params
+    }
+
+    /** Custom streaming response for MJPEG — overrides send() to write multipart frames continuously */
+    private inner class StreamingMjpegResponse(
+        private val boundary: ByteArray
+    ) : NanoHTTPD.Response(NanoHTTPD.Response.Status.OK, "multipart/x-mixed-replace; boundary=frame") {
+
+        override fun send(outputStream: OutputStream) {
+            try {
+                // Initial boundary (no leading CRLF, per RFC 2046)
+                outputStream.write(boundary)
+                outputStream.write("\r\n".toByteArray())
+                outputStream.flush()
+
+                while (isStreaming && cameraManager != null) {
+                    val frameData = cameraManager!!.getLatestFrame() ?: break
+                    if (frameData.isEmpty()) continue
+
+                    // Boundary + headers for each frame
+                    outputStream.write("\r\n".toByteArray())
+                    outputStream.write(boundary)
+                    outputStream.write("\r\n".toByteArray())
+                    outputStream.write("Content-Type: image/jpeg\r\n".toByteArray())
+                    outputStream.write("Content-Length: ${frameData.size}\r\n\r\n".toByteArray())
+
+                    // Write the JPEG frame bytes directly (binary, not String!)
+                    outputStream.write(frameData)
+                    outputStream.flush()
+                }
+            } catch (_: Exception) {
+                // Connection closed or client disconnected — normal
+            } finally {
+                try { outputStream.close() } catch (_: Exception) {}
+            }
+        }
     }
 
     companion object {
