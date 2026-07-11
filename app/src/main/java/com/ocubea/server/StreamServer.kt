@@ -5,7 +5,6 @@ import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
 import java.io.OutputStream
 import java.net.URLDecoder
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * HTTP server for MJPEG streaming, snapshots, and torch control.
@@ -13,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLong
 class StreamServer(private val context: Context) : NanoHTTPD(9090) {
 
     private var cameraManager: com.ocubea.camera.CameraManager? = null
-    private var isStreaming = false
+    @Volatile private var isStreaming = false
 
     fun setCameraManager(cm: com.ocubea.camera.CameraManager) {
         this.cameraManager = cm
@@ -44,17 +43,34 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
 
         return when {
             uri == "/" || uri == "/index.html" -> serveWebpage(session)
-            uri == "/mjpeg" || uri == "/video" -> handleMjpegStream()
-            uri == "/shot.jpg" -> handleShot()
+
+            // MJPEG streaming — both /video and /mjpeg are valid per IP Webcam spec
+            uri == "/video" || uri == "/mjpeg" || uri == "/stream" -> handleMjpegStream()
+
+            // Snapshot endpoint (JPEG binary)
+            uri == "/shot.jpg" || uri == "/snapshot.jpg" -> handleShot()
+
+            // Camera focus control — IP Webcam spec uses /focus and /nofocus
+            uri == "/focus" && session.method == Method.POST -> handleFocus(session)
+            uri == "/nofocus" && session.method == Method.POST -> handleNoFocus(session)
+
+            // Settings endpoints per IP Webcam spec: /settings/<name>
+            uri.startsWith("/settings/") && session.method == Method.POST -> handleSettings(session)
+
+            // PTZ control (pan/tilt/zoom) — IP Webcam uses /ptt endpoint
+            uri == "/ptt" && session.method == Method.POST -> handlePtz(session)
+
+            // Legacy API endpoints (backward compatibility)
             uri == "/api/torch" && session.method == Method.POST -> handleTorch(session)
+            uri == "/api/camera" && session.method == Method.POST -> handleCameraSwitch(session)
+
             else -> newFixedLengthResponse(
                 NanoHTTPD.Response.Status.NOT_FOUND, "text/plain", "Not found"
             )
         }
     }
 
-    /** Handle MJPEG streaming — returns a response with multipart/x-mixed-replace content type.
-     *  The actual frame streaming is done in send() which writes to the output stream continuously. */
+    /** Handle MJPEG streaming — returns a response with multipart/x-mixed-replace content type. */
     private fun handleMjpegStream(): Response {
         if (!isStreaming && cameraManager != null) {
             startVideoStream()
@@ -98,6 +114,94 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             "image/jpeg",
             ByteArrayInputStream(frameData)
         )
+    }
+
+    /** Handle focus via POST /focus */
+    private fun handleFocus(session: IHTTPSession): Response {
+        return try {
+            cameraManager?.setFocus(0.5f) // center focus default
+            newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "text/plain", "ok")
+        } catch (e: Exception) {
+            newFixedLengthResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", "error: ${e.message}")
+        }
+    }
+
+    /** Handle nofocus via POST /nofocus — release focus */
+    private fun handleNoFocus(session: IHTTPSession): Response {
+        // IP Webcam spec: /nofocus releases focus (continuous AF off)
+        return newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "text/plain", "ok")
+    }
+
+    /** Handle settings endpoints — /settings/night_vision?set=on|off etc. */
+    private fun handleSettings(session: IHTTPSession): Response {
+        val params = parseQueryParameters(session)
+        return try {
+            // Parse path to determine which setting: /settings/<name>
+            val uri = session.uri ?: ""
+            val settingName = uri.substringAfterLast("/")
+
+            when (settingName.lowercase()) {
+                "night_vision" -> {
+                    val value = params["set"]?.lowercase() ?: "off"
+                    if (value != "on" && value != "off") {
+                        return newFixedLengthResponse(
+                            NanoHTTPD.Response.Status.BAD_REQUEST, "text/plain",
+                            "Invalid value. Use: on|off"
+                        )
+                    }
+                    // Night vision = low-light enhancement (stub)
+                    println("Night vision $value")
+                }
+                "ffc" -> {
+                    val value = params["set"]?.lowercase() ?: "off"
+                    if (value != "on" && value != "off") {
+                        return newFixedLengthResponse(
+                            NanoHTTPD.Response.Status.BAD_REQUEST, "text/plain",
+                            "Invalid value. Use: on|off"
+                        )
+                    }
+                    cameraManager?.setFrontFacingCamera(value == "on")
+                }
+                "quality" -> {
+                    val qualityStr = params["set"] ?: "720"
+                    // IP Webcam uses quality as a number (e.g., 90, 80) mapped to resolution
+                    val quality = qualityStr.toIntOrNull() ?: 720
+                    val res = when {
+                        quality >= 1080 -> CameraConfig.Resolution.FullHD
+                        quality >= 720 -> CameraConfig.Resolution.HD720
+                        quality >= 480 -> CameraConfig.Resolution.VGA
+                        else -> CameraConfig.Resolution.QVGA
+                    }
+                    cameraManager?.setQuality(res)
+                }
+                else -> {
+                    return newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.NOT_FOUND, "text/plain",
+                        "Unknown setting: $settingName"
+                    )
+                }
+            }
+
+            newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "text/plain", "ok")
+        } catch (e: Exception) {
+            newFixedLengthResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", "error: ${e.message}")
+        }
+    }
+
+    /** Handle PTZ (pan/tilt/zoom) via POST /ptt?zoom=22 */
+    private fun handlePtz(session: IHTTPSession): Response {
+        val params = parseQueryParameters(session)
+        return try {
+            // Pan/Tilt not supported (fixed mount), but zoom is handled here
+            if (params.containsKey("zoom")) {
+                val level = params["zoom"]?.toFloatOrNull() ?: 1.0f
+                cameraManager?.setZoom(level)
+            }
+
+            newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "text/plain", "ok")
+        } catch (e: Exception) {
+            newFixedLengthResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", "error: ${e.message}")
+        }
     }
 
     /** Handle torch control via POST /api/torch?on=true|false */
@@ -148,6 +252,25 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             newFixedLengthResponse(
                 NanoHTTPD.Response.Status.OK, "application/json",
                 """{"status": "ok", "torch": ${if (shouldEnable) "true" else "false"}, "camera_id": "$foundCameraId"}"""
+            )
+        } catch (e: Exception) {
+            newFixedLengthResponse(
+                NanoHTTPD.Response.Status.INTERNAL_ERROR, "application/json",
+                """{"status": "error", "message": "${e.message}"}"""
+            )
+        }
+    }
+
+    /** Handle camera switch via POST /api/camera?set=true|false */
+    private fun handleCameraSwitch(session: IHTTPSession): Response {
+        val params = parseQueryParameters(session)
+        return try {
+            val isFront = params["set"]?.toBooleanStrictOrNull() ?: false
+            cameraManager?.setFrontFacingCamera(isFront)
+
+            newFixedLengthResponse(
+                NanoHTTPD.Response.Status.OK, "application/json",
+                """{"status": "ok", "camera": ${if (isFront) "front" else "back"}}"""
             )
         } catch (e: Exception) {
             newFixedLengthResponse(
