@@ -1,14 +1,13 @@
 package com.ocubea.camera
 
 import android.content.Context
-import android.graphics.ImageFormat
-import android.hardware.camera2.CameraManager
-import android.os.Environment
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.core.FocusMeteringAction
 import androidx.core.content.ContextCompat
+import com.ocubea.model.CameraConfig
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -23,8 +22,8 @@ class CameraManager(private val context: Context) {
     private var currentTargetWidth = 1280
     private var currentTargetHeight = 720
 
-    // Streaming state
-    private var isStreaming = false
+    // Streaming state — volatile so worker threads see updates from main thread
+    @Volatile private var isStreaming = false
     private val streamDirectory = File(context.cacheDir, "mjpeg_stream")
     private var latestFrameFile: File? = null
     private var frameCounter = 0L
@@ -35,6 +34,8 @@ class CameraManager(private val context: Context) {
     init {
         streamDirectory.mkdirs()
     }
+
+    // ─── Public API ──────────────────────────────────────────────
 
     /** Start camera with streaming enabled */
     fun startPreview(
@@ -75,14 +76,17 @@ class CameraManager(private val context: Context) {
                 cameraExecutor,
                 object : ImageCapture.OnImageCapturedCallback() {
                     override fun onCaptureSuccess(imageProxy: ImageProxy) {
-                        val frameFile = saveFrameAsJpeg(imageProxy)
-                        latestFrameFile = frameFile
-                        frameCounter++
+                        try {
+                            val frameFile = saveFrameAsJpeg(imageProxy)
+                            latestFrameFile = frameFile
+                            frameCounter++
 
-                        // Re-trigger next frame
-                        if (isStreaming) {
-                            imageCapture?.takePicture(cameraExecutor, this)
-                        } else {
+                            // Re-trigger next frame only if still streaming and camera is bound
+                            if (isStreaming && imageCapture != null) {
+                                imageCapture?.takePicture(cameraExecutor, this)
+                            }
+                        } finally {
+                            // ALWAYS close ImageProxy — CameraX requires it to release resources
                             imageProxy.close()
                         }
                     }
@@ -111,55 +115,137 @@ class CameraManager(private val context: Context) {
         return file.readBytes()
     }
 
-    /** Stop camera and release resources */
+    // ─── Camera switching & quality control ──────────────────────
+
+    /** Switch between front and back camera — stops streaming, rebinds with new selector */
+    fun setFrontFacingCamera(enabled: Boolean) {
+        val wasStreaming = isStreaming
+        stopStreaming()
+
+        try {
+            val newSelector = if (enabled) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+            cameraSelector = newSelector
+        } catch (e: Exception) {
+            println("Error switching camera selector: ${e.message}")
+            return
+        }
+
+        // Rebind with the new camera selector and restart streaming if needed
+        rebindWithCallback(null, object : RebindCallback {
+            override fun onReady(provider: ProcessCameraProvider) {
+                if (wasStreaming) startStreaming()
+            }
+        })
+    }
+
+    /** Set target resolution/quality — stops streaming, rebinding with new config */
+    fun setQuality(resolution: CameraConfig.Resolution) {
+        currentTargetWidth = resolution.width
+        currentTargetHeight = resolution.height
+
+        val wasStreaming = isStreaming
+        stopStreaming()
+
+        rebindWithCallback(null, object : RebindCallback {
+            override fun onReady(provider: ProcessCameraProvider) {
+                if (wasStreaming) startStreaming()
+            }
+        })
+    }
+
+    /** Set zoom level using CameraX ZoomState */
+    fun setZoom(zoomLevel: Float) {
+        try {
+            val future = ProcessCameraProvider.getInstance(context)
+            val provider = future.get()
+            if (provider.hasActiveCamera(cameraSelector)) {
+                val camera = provider.getCamera(cameraSelector)
+                val zoomState = camera?.cameraInfo?.zoomState?.value
+                if (zoomState != null) {
+                    // CameraX zoom is 1.0x = 1:1, max is device-dependent
+                    val clampedZoom = zoomLevel.coerceIn(1f, zoomState.maxZoomRatio)
+                    camera.cameraControl.setZoomRatio(clampedZoom)
+                }
+            }
+        } catch (e: Exception) {
+            println("Error setting zoom: ${e.message}")
+        }
+    }
+
+    /** Set focus using CameraX FocusMeteringAction */
+    fun setFocus(focusValue: Float) {
+        try {
+            val future = ProcessCameraProvider.getInstance(context)
+            val provider = future.get()
+            if (provider.hasActiveCamera(cameraSelector)) {
+                val camera = provider.getCamera(cameraSelector)
+                // Use MeteringPointFactory for distance-based focus
+                val meteringPoint = camera?.cameraInfo?.meteringPointFactory?.createPoint(0.5f, 0.5f) ?: return
+                val action = FocusMeteringAction.Builder(meteringPoint)
+                    .setAutoCancelDuration(3, java.util.concurrent.TimeUnit.SECONDS)
+                    .build()
+                camera?.cameraControl?.startFocusAndMetering(action)
+            }
+        } catch (e: Exception) {
+            println("Error setting focus: ${e.message}")
+        }
+    }
+
+    /** Get current camera configuration */
+    fun getCameraConfiguration(): Map<String, Any> {
+        return mapOf(
+            "resolution" to "${currentTargetWidth}x$currentTargetHeight",
+            "zoomLevel" to 1.0,
+            "focusDistance" to 0f
+        )
+    }
+
+    /** Check if camera is active */
+    fun isCameraActive(): Boolean = imageCapture != null
+
+    /** Get total number of captured frames */
+    fun getFrameCount(): Long = frameCounter
+
+    // ─── Internal helpers ────────────────────────────────────────
+
+    /** Stop camera and release resources, clean up temp files */
     fun stopPreview() {
         try {
             val future = ProcessCameraProvider.getInstance(context)
             future.get()?.unbindAll()
         } catch (_: Exception) {}
         stopStreaming()
-        // Clean up temp files
-        streamDirectory.listFiles()?.forEach { it.delete() }
+        cleanupOldFrames()
     }
 
-    /** Set zoom level */
-    fun setZoom(zoomLevel: Float) {
-        println("setZoom($zoomLevel) - stub")
-    }
-
-    /** Set focus distance */
-    fun setFocus(focusValue: Float) {
-        println("setFocus($focusValue) - stub")
-    }
-
-    /** Switch between front and back camera */
-    fun setFrontFacingCamera(enabled: Boolean) {
-        try {
-            val newSelector = if (enabled) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
-            cameraSelector = newSelector
-        } catch (e: Exception) {
-            println("Error switching camera: ${e.message}")
-        }
-    }
-
-    /** Rebind camera with current selector and lifecycle owner */
-    fun rebind(lifecycleOwner: androidx.lifecycle.LifecycleOwner?) {
+    /** Rebind camera with current selector and lifecycle, invoking callback when ready */
+    private fun rebindWithCallback(
+        lifecycleOwner: androidx.lifecycle.LifecycleOwner?,
+        callback: RebindCallback? = null
+    ) {
         try {
             val future = ProcessCameraProvider.getInstance(context)
-            future.get()?.let { provider ->
-                provider.unbindAll()
+            future.addListener({
+                try {
+                    val provider = future.get()
+                    provider.unbindAll()
 
-                imageCapture = ImageCapture.Builder()
-                    .setTargetResolution(android.util.Size(currentTargetWidth, currentTargetHeight))
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                    .build()
+                    imageCapture = ImageCapture.Builder()
+                        .setTargetResolution(android.util.Size(currentTargetWidth, currentTargetHeight))
+                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                        .build()
 
-                provider.bindToLifecycle(
-                    lifecycleOwner ?: return@let,
-                    cameraSelector,
-                    imageCapture
-                )
-            }
+                    provider.bindToLifecycle(
+                        lifecycleOwner ?: return@addListener,
+                        cameraSelector,
+                        imageCapture
+                    )
+
+                    callback?.onReady(provider)
+                } catch (e: Exception) {
+                    println("Error in rebind callback: ${e.message}")
+                }
+            }, ContextCompat.getMainExecutor(context))
         } catch (e: Exception) {
             println("Error rebinding camera: ${e.message}")
         }
@@ -215,39 +301,37 @@ class CameraManager(private val context: Context) {
         }
     }
 
-    /** Save ImageProxy as JPEG file for streaming */
+    /** Save ImageProxy as JPEG file for streaming — bitmap.recycle() always in finally */
     private fun saveFrameAsJpeg(imageProxy: ImageProxy): File {
         val fileName = "frame_%06d.jpg".format(frameCounter)
         val file = File(streamDirectory, fileName)
 
-        // Use Android's built-in JPEG encoding via MediaStore or direct conversion
+        val bitmap = imageProxy.toBitmap()
         try {
-            val bitmap = imageProxy.toBitmap()
             file.outputStream().use { out ->
                 bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
             }
-            bitmap.recycle()
         } catch (e: Exception) {
             println("Error saving frame as JPEG: ${e.message}")
             // Fallback: return empty file
             file.writeBytes(ByteArray(0))
+        } finally {
+            bitmap.recycle()
         }
 
-        imageProxy.close()
         return file
     }
 
-    /** Get current camera configuration */
-    fun getCameraConfiguration(): Map<String, Any> {
-        return mapOf(
-            "resolution" to "${currentTargetWidth}x$currentTargetHeight",
-            "zoomLevel" to 1.0,
-            "focusDistance" to 0f
-        )
+    /** Limit streaming directory to prevent disk exhaustion */
+    private fun cleanupOldFrames() {
+        val files = streamDirectory.listFiles()?.sortedBy { it.lastModified() } ?: return
+        if (files.size <= 10) return
+        // Delete oldest frames, keep newest 10
+        files.take(files.size - 10).forEach { it.delete() }
     }
 
-    /** Check if camera is active */
-    fun isCameraActive(): Boolean {
-        return imageCapture != null
+    /** Callback interface for rebind operations */
+    private interface RebindCallback {
+        fun onReady(provider: ProcessCameraProvider)
     }
 }

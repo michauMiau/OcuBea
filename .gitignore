@@ -6,3 +6,10 @@ __pycache__/
 dist/
 *.apk
 copilot*
+
+# Android / Gradle build artifacts
+.gradle/
+app/build/
+app/.cxx/
+build/
+local.properties
