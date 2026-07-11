@@ -1,54 +1,88 @@
-# API
+# OcuBea IP Webcam Compatible API
 
-<http://192.168.1.149:8080/video> to URL dla MJPEG.
-<http://192.168.1.149:8080/shot.jpg> pobiera ostatnią klatkę.
-<http://192.168.1.149:8080/audio.wav> to strumień audio w formacie Wav.
-<http://192.168.1.149:8080/audio.aac> to strumień audio w formacie AAC (jeśli jest obsługiwany przez urządzenie).
-<http://192.168.1.149:8080/audio.opus> to strumień audio w formacie Opus.
-<http://192.168.1.149:8080/focus> ustawia ostrość w kamerze.
-<http://192.168.1.149:8080/nofocus> zwalnia ostrość.
+Base URL: `http://<device-ip>:9090`
 
-## Night vision
+## Streaming & Snapshots
 
-POST
- <http://192.168.1.149:8080/settings/night_vision?set=off>
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/video` or `/mjpeg` or `/stream` | GET | MJPEG streaming (multipart/x-mixed-replace) |
+| `/shot.jpg` or `/snapshot.jpg` | GET | Single snapshot as JPEG binary |
 
-## front facing camera
+## Camera Control
 
-scheme
- http
-host
- 192.168.1.149:8080
-filename
- /settings/ffc
-set
- off
-Adres
- 192.168.1.149:8080
+### Focus
 
-## Zoom
+```
+POST /focus
+```
+Trigger autofocus at center. Returns `text/plain: ok`.
 
-POST
+```
+POST /nofocus
+```
+Release focus (disable continuous AF). Returns `text/plain: ok`.
 
-scheme
- http
-host
- 192.168.1.149:8080
-filename
- /ptz
-zoom
- 22
+### Front/Back Camera Switch
 
-## Stream quality
+```
+POST /api/camera?set=true  # front camera
+POST /api/camera?set=false # back camera
+```
+Returns JSON: `{"status": "ok", "camera": "front"}` or `"back"`.
 
-POST
+Alternatively via settings endpoint (IP Webcam compatible):
+```
+POST /settings/ffc?set=on   # front
+POST /settings/ffc?set=off  # back
+```
 
-scheme
- http
-host
- 192.168.1.149:8080
-filename
- /settings/quality
-set
- 90
-k
+### Zoom (PTZ)
+
+```
+POST /ptt?zoom=2.0
+```
+Set zoom level (1.0 = native, higher = digital zoom). Pan/Tilt not supported (fixed mount).
+
+## Settings
+
+```
+POST /settings/<name>?set=<value>
+```
+
+Supported settings:
+
+| Name | Values | Description |
+|------|--------|-------------|
+| `night_vision` | `on`, `off` | Low-light enhancement (stub) |
+| `ffc` | `on`, `off` | Front-facing camera toggle |
+| `quality` | number (480, 720, 1080) | Resolution: QVGA (≤480), HD720 (720-1079), FullHD (≥1080) |
+
+## Torch/Lantern
+
+```
+POST /api/torch?on=true   # enable flashlight
+POST /api/torch?on=false  # disable flashlight
+```
+Returns JSON with camera_id and torch state.
+
+---
+
+## Example Usage
+
+```bash
+# Start streaming
+curl http://192.168.1.10:9090/video
+
+# Take snapshot
+curl -o shot.jpg "http://192.168.1.10:9090/shot.jpg"
+
+# Switch to front camera
+curl -X POST "http://192.168.1.10:9090/api/camera?set=true"
+
+# Set quality to 1080p
+curl -X POST "http://192.168.1.10:9090/settings/quality?set=1080"
+
+# Enable torch
+curl -X POST "http://192.168.1.10:9090/api/torch?on=true"
+```
