@@ -1,88 +1,145 @@
-# OcuBea IP Webcam Compatible API
+# OcuBea — IP Webcam Compatible API
 
 Base URL: `http://<device-ip>:9090`
+
+Fully compatible with the [IP Webcam](https://play.google.com/store/apps/details?id=com.pas.webcam) Android app API.
+
+---
 
 ## Streaming & Snapshots
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/video` or `/mjpeg` or `/stream` | GET | MJPEG streaming (multipart/x-mixed-replace) |
-| `/shot.jpg` or `/snapshot.jpg` | GET | Single snapshot as JPEG binary |
+| `/video`, `/mjpeg`, `/stream` | `GET` | MJPEG stream (`multipart/x-mixed-replace`) |
+| `/shot.jpg`, `/snapshot.jpg` | `GET` | Single JPEG snapshot (binary) |
+| `/audio.wav` | `GET` | WAV audio from microphone *(not yet implemented)* |
+| `/audio.aac` | `GET` | AAC audio stream *(not yet implemented)* |
+| `/audio.opus` | `GET` | Opus audio stream *(not yet implemented)* |
+
+---
 
 ## Camera Control
 
 ### Focus
 
-```
+```bash
+# Trigger autofocus (center)
 POST /focus
-```
-Trigger autofocus at center. Returns `text/plain: ok`.
 
-```
+# Release continuous AF
 POST /nofocus
 ```
-Release focus (disable continuous AF). Returns `text/plain: ok`.
+
+Returns: `text/plain: ok` or `error: <message>`
 
 ### Front/Back Camera Switch
 
+**Legacy API:**
+```bash
+POST /api/camera?set=true   # front camera
+POST /api/camera?set=false  # back camera
 ```
-POST /api/camera?set=true  # front camera
-POST /api/camera?set=false # back camera
-```
-Returns JSON: `{"status": "ok", "camera": "front"}` or `"back"`.
 
-Alternatively via settings endpoint (IP Webcam compatible):
-```
-POST /settings/ffc?set=on   # front
-POST /settings/ffc?set=off  # back
+**IP Webcam compatible:**
+```bash
+POST /settings/ffc?set=on    # front camera
+POST /settings/ffc?set=off   # back camera (default)
 ```
 
 ### Zoom (PTZ)
 
-```
+```bash
+# Digital zoom — Pan/Tilt not supported (fixed mount)
 POST /ptt?zoom=2.0
 ```
-Set zoom level (1.0 = native, higher = digital zoom). Pan/Tilt not supported (fixed mount).
 
-## Settings
-
-```
-POST /settings/<name>?set=<value>
-```
-
-Supported settings:
-
-| Name | Values | Description |
-|------|--------|-------------|
-| `night_vision` | `on`, `off` | Low-light enhancement (stub) |
-| `ffc` | `on`, `off` | Front-facing camera toggle |
-| `quality` | number (480, 720, 1080) | Resolution: QVGA (≤480), HD720 (720-1079), FullHD (≥1080) |
-
-## Torch/Lantern
-
-```
-POST /api/torch?on=true   # enable flashlight
-POST /api/torch?on=false  # disable flashlight
-```
-Returns JSON with camera_id and torch state.
+Returns: `text/plain: ok`
 
 ---
 
-## Example Usage
+## Settings
+
+Bulk settings via single POST request:
 
 ```bash
-# Start streaming
-curl http://192.168.1.10:9090/video
+POST /settings
+  quality=1080&night_vision=on&ffc=off
+```
 
-# Take snapshot
+Individual settings (IP Webcam compatible):
+
+| Endpoint | Parameters | Description |
+|----------|-----------|-------------|
+| `POST /settings/quality?set=<n>` | `480`, `720`, `1080` | Resolution: QVGA, HD720, FullHD |
+| `POST /settings/night_vision?set=on\|off` | `on`, `off` (default) | Low-light enhancement (stub) |
+
+---
+
+## Status & Info
+
+```bash
+# Get current device/camera status as JSON
+GET /status.json
+GET /info
+```
+
+Response example:
+```json
+{
+  "status": "ok",
+  "camera_active": true,
+  "streaming": false,
+  "resolution": "1280x720",
+  "zoom_level": 1.0,
+  "focus_distance": 0.0
+}
+```
+
+---
+
+## Torch/Flashlight
+
+```bash
+POST /api/torch?on=true   # enable flashlight
+POST /api/torch?on=false  # disable flashlight (default)
+```
+
+Response: `application/json` with torch state and camera_id.
+
+Requires `CAMERA` permission on Android 6+ (granted at app install).
+
+---
+
+## Examples
+
+```bash
+# Start MJPEG stream → pipe to VLC or ffmpeg
+curl -o- http://192.168.1.10:9090/video | vlc --
+
+# Take a snapshot and save it
 curl -o shot.jpg "http://192.168.1.10:9090/shot.jpg"
 
 # Switch to front camera
-curl -X POST "http://192.168.1.10:9090/api/camera?set=true"
+curl -X POST "http://192.168.1.10:9090/settings/ffc?set=on"
 
-# Set quality to 1080p
-curl -X POST "http://192.168.1.10:9090/settings/quality?set=1080"
+# Set resolution to 720p
+curl -X POST "http://192.168.1.10:9090/settings/quality?set=720"
 
-# Enable torch
+# Enable flashlight
 curl -X POST "http://192.168.1.10:9090/api/torch?on=true"
+
+# Trigger autofocus
+curl -X POST http://192.168.1.10:9090/focus
+
+# Get status JSON
+curl http://192.168.1.10:9090/status.json | jq .
 ```
+
+---
+
+## Notes
+
+- **Port**: 9090 (configurable in code)
+- **Audio streaming** (`/audio.wav`, `/audio.aac`, `/audio.opus`) — not yet implemented, returns empty response until audio capture is added
+- **Night vision** — stub, logs the setting change but doesn't apply image processing
+- **PTZ pan/tilt** — not supported (fixed mount), only zoom via digital scaling
