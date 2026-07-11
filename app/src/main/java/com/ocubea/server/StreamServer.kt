@@ -60,7 +60,14 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             // PTZ control (pan/tilt/zoom) — IP Webcam uses /ptt endpoint
             uri == "/ptt" && session.method == Method.POST -> handlePtz(session)
 
-            // Legacy API endpoints (backward compatibility)
+            // Audio streaming endpoints — wav, aac, opus formats
+            uri.startsWith("/audio/") && session.method == Method.GET -> handleAudioStream(session)
+
+            // Settings endpoint for various IP Webcam features
+            uri == "/settings" && session.method == Method.POST -> handleSettingsBulk(session)
+
+            // Status/info endpoint (commonly used by clients)
+            uri == "/status.json" || uri == "/info" -> handleStatus()
             uri == "/api/torch" && session.method == Method.POST -> handleTorch(session)
             uri == "/api/camera" && session.method == Method.POST -> handleCameraSwitch(session)
 
@@ -278,6 +285,82 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
                 """{"status": "error", "message": "${e.message}"}"""
             )
         }
+    }
+
+    /** Handle audio streaming endpoints — /audio.wav, /audio.aac, /audio.opus */
+    private fun handleAudioStream(session: IHTTPSession): Response {
+        val uri = session.uri ?: ""
+        val format = uri.substringAfterLast("/") // "wav", "aac", or "opus"
+
+        return try {
+            // Audio capture not yet implemented — return placeholder silence
+            // IP Webcam spec expects raw PCM/WAV data from microphone
+            println("Audio stream requested: $format (not yet implemented)")
+
+            newFixedLengthResponse(
+                NanoHTTPD.Response.Status.NOT_IMPLEMENTED, "audio/x-wav",
+                ""  // Empty response until audio capture is added
+            )
+        } catch (e: Exception) {
+            newFixedLengthResponse(
+                NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain",
+                "error: ${e.message}"
+            )
+        }
+    }
+
+    /** Handle bulk settings via POST /settings */
+    private fun handleSettingsBulk(session: IHTTPSession): Response {
+        val params = parseQueryParameters(session)
+        return try {
+            // IP Webcam uses this for multiple settings at once
+            // e.g., POST /settings with body parameters like quality=720&night_vision=on
+            if (params.containsKey("quality")) {
+                val qualityStr = params["quality"] ?: "720"
+                val quality = qualityStr.toIntOrNull() ?: 720
+                val res = when {
+                    quality >= 1080 -> CameraConfig.Resolution.FullHD
+                    quality >= 720 -> CameraConfig.Resolution.HD720
+                    quality >= 480 -> CameraConfig.Resolution.VGA
+                    else -> CameraConfig.Resolution.QVGA
+                }
+                cameraManager?.setQuality(res)
+            }
+
+            if (params.containsKey("night_vision")) {
+                val value = params["night_vision"]?.lowercase() ?: "off"
+                println("Night vision $value")
+            }
+
+            newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "text/plain", "ok")
+        } catch (e: Exception) {
+            newFixedLengthResponse(
+                NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain",
+                "error: ${e.message}"
+            )
+        }
+    }
+
+    /** Handle status/info endpoint — returns device info as JSON */
+    private fun handleStatus(): Response {
+        val config = cameraManager?.getCameraConfiguration() ?: mapOf(
+            "resolution" to "unknown",
+            "zoomLevel" to 1.0,
+            "focusDistance" to 0f
+        )
+
+        val statusJson = """{
+            "status": "ok",
+            "camera_active": ${cameraManager?.isCameraActive() ?: false},
+            "streaming": $isStreaming,
+            "resolution": "${config["resolution"]}",
+            "zoom_level": ${config["zoomLevel"]},
+            "focus_distance": ${config["focusDistance"]}
+        }""".replace("\n", "").replace(" ", "")
+
+        return newFixedLengthResponse(
+            NanoHTTPD.Response.Status.OK, "application/json", statusJson
+        )
     }
 
     /** Serve index.html */
