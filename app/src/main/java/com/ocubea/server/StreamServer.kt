@@ -47,14 +47,14 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             // MJPEG streaming — both /video and /mjpeg are valid per IP Webcam spec
             uri == "/video" || uri == "/mjpeg" || uri == "/stream" -> handleMjpegStream()
 
-            // Snapshot endpoint (JPEG binary)
-            uri == "/shot.jpg" || uri == "/snapshot.jpg" -> handleShot()
+            // Snapshot endpoint (JPEG binary) with optional quality parameter
+            uri.startsWith("/shot.jpg") || uri == "/snapshot.jpg" -> handleShot(session)
 
             // Camera focus control — IP Webcam spec uses /focus and /nofocus
-            uri == "/focus" && session.method == Method.POST -> handleFocus(session)
-            uri == "/nofocus" && session.method == Method.POST -> handleNoFocus(session)
+            uri == "/focus" && session.method == Method.POST -> handleFocus()
+            uri == "/nofocus" && session.method == Method.POST -> handleNoFocus()
 
-            // Settings endpoints per IP Webcam spec: /settings/<name>
+            // Settings endpoints per IP Webcam spec: /settings/<name>?set=<value>
             uri.startsWith("/settings/") && session.method == Method.POST -> handleSettings(session)
 
             // PTZ control (pan/tilt/zoom) — IP Webcam uses /ptt endpoint
@@ -103,24 +103,47 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
         }
     }
 
-    /** Serve single snapshot JPEG — returns raw binary bytes */
-    private fun handleShot(): Response {
-        val frameData = cameraManager?.getLatestFrame() ?: return newFixedLengthResponse(
-            NanoHTTPD.Response.Status.NOT_FOUND, "image/jpeg", ""
-        )
-
-        if (frameData.isEmpty()) {
-            return newFixedLengthResponse(
-                NanoHTTPD.Response.Status.NO_CONTENT, "image/jpeg", ""
-            )
+    /** Serve single snapshot JPEG with optional quality/rotation parameters */
+    private fun handleShot(session: IHTTPSession): Response {
+        val params = parseQueryParameters(session)
+        
+        // IP Webcam supports ?quality=N (JPEG quality 1-100, default 85) and ?rotation=90|180|270
+        // For now we just acknowledge these parameters; actual implementation would apply them
+        if (params.containsKey("quality")) {
+            val quality = params["quality"]?.toIntOrNull() ?: 85
+            println("Shot quality requested: $quality% (using default JPEG encoding)")
+        }
+        
+        if (params.containsKey("rotation")) {
+            val rotation = params["rotation"]?.toIntOrNull() ?: 0
+            println("Shot rotation requested: ${rotation}° (not yet implemented — returning unrotated)")
         }
 
-        // Return raw bytes directly via ChunkedResponse with InputStream — binary-safe in NanoHTTPD 2.3.1
-        return newChunkedResponse(
-            NanoHTTPD.Response.Status.OK,
-            "image/jpeg",
-            ByteArrayInputStream(frameData)
-        )
+        return try {
+            val frameData = cameraManager?.getLatestFrame() ?: run {
+                newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.NOT_FOUND, "image/jpeg", ""
+                )
+            }
+
+            if (frameData.isEmpty()) {
+                newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.NO_CONTENT, "image/jpeg", ""
+                )
+            } else {
+                // Return raw bytes via ChunkedResponse — binary-safe in NanoHTTPD 2.3.1
+                newChunkedResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    "image/jpeg",
+                    ByteArrayInputStream(frameData)
+                )
+            }
+        } catch (e: Exception) {
+            newFixedLengthResponse(
+                NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain",
+                "error: ${e.message}"
+            )
+        }
     }
 
     /** Handle focus via POST /focus */
@@ -156,8 +179,8 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
                             "Invalid value. Use: on|off"
                         )
                     }
-                    // Night vision = low-light enhancement (stub)
-                    println("Night vision $value")
+                    val enabled = value == "on"
+                    cameraManager?.setNightVision(enabled)
                 }
                 "ffc" -> {
                     val value = params["set"]?.lowercase() ?: "off"
@@ -353,6 +376,7 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             "status": "ok",
             "camera_active": ${cameraManager?.isCameraActive() ?: false},
             "streaming": $isStreaming,
+            "night_vision": ${cameraManager?.nightVisionEnabled ?: false},
             "resolution": "${config["resolution"]}",
             "zoom_level": ${config["zoomLevel"]},
             "focus_distance": ${config["focusDistance"]}
