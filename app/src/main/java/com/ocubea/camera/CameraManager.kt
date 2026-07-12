@@ -24,6 +24,13 @@ class CameraManager(private val context: Context) {
 
     // Streaming state — volatile so worker threads see updates from main thread
     @Volatile private var isStreaming = false
+    
+    /** Night vision software enhancement toggle */
+    @Volatile var nightVisionEnabled: Boolean = false
+        set(value) {
+            field = value
+            println("Night vision ${if (value) "enabled" else "disabled"}")
+        }
     private val streamDirectory = File(context.cacheDir, "mjpeg_stream")
     private var latestFrameFile: File? = null
     private var frameCounter = 0L
@@ -205,7 +212,13 @@ class CameraManager(private val context: Context) {
 
     /** Get total number of captured frames */
     fun getFrameCount(): Long = frameCounter
-
+    
+    // ─── Settings ──────────────────────────────────────────────
+    
+    /** Enable/disable software night vision enhancement */
+    fun setNightVision(enabled: Boolean) {
+        nightVisionEnabled = enabled
+    }
     // ─── Internal helpers ────────────────────────────────────────
 
     /** Stop camera and release resources, clean up temp files */
@@ -300,28 +313,110 @@ class CameraManager(private val context: Context) {
             null
         }
     }
-
-    /** Save ImageProxy as JPEG file for streaming — bitmap.recycle() always in finally */
+    /** Save ImageProxy as JPEG file for streaming — applies night vision enhancement if enabled */
     private fun saveFrameAsJpeg(imageProxy: ImageProxy): File {
         val fileName = "frame_%06d.jpg".format(frameCounter)
         val file = File(streamDirectory, fileName)
 
         val bitmap = imageProxy.toBitmap()
         try {
+            // Apply night vision enhancement if enabled
+            val processedBitmap = if (nightVisionEnabled) {
+                applyNightVisionEnhancement(bitmap)
+            } else {
+                bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: bitmap
+            }
+
             file.outputStream().use { out ->
-                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+                // Use higher quality for night vision to preserve detail
+                val quality = if (nightVisionEnabled) 90 else 85
+                processedBitmap.compress(
+                    android.graphics.Bitmap.CompressFormat.JPEG,
+                    quality,
+                    out
+                )
+            }
+
+            // Recycle the original bitmap we copied from
+            if (processedBitmap !== bitmap) {
+                bitmap.recycle()
             }
         } catch (e: Exception) {
             println("Error saving frame as JPEG: ${e.message}")
             // Fallback: return empty file
             file.writeBytes(ByteArray(0))
         } finally {
-            bitmap.recycle()
+            if (processedBitmap !== bitmap) {
+                processedBitmap.recycle()
+            } else {
+                bitmap.recycle()
+            }
         }
 
+        imageProxy.close()
         return file
     }
 
+    /** Apply software-based night vision enhancement to a bitmap */
+    private fun applyNightVisionEnhancement(source: Bitmap): Bitmap {
+        val width = source.width
+        val height = source.height
+        
+        // Create output bitmap for processing
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        
+        // Get pixel data arrays for faster processing than getPixel/setPixel
+        val pixels = IntArray(width * height)
+        source.getPixels(pixels, 0, width, 0, 0, width, height)
+        
+        // Night vision parameters - tune these based on preference
+        val brightnessBoost = 2.5f      // Boost brightness significantly
+        val contrastFactor = 1.3f       // Increase contrast slightly
+        val gamma = 0.7f                // Gamma correction (lower = brighter shadows)
+        val greenTintStrength = 0.6f    // Classic night vision green tint
+        
+        for (i in pixels.indices) {
+            val pixel = pixels[i]
+            
+            // Extract RGB components
+            var r = Color.red(pixel).toFloat()
+            var g = Color.green(pixel).toFloat()
+            var b = Color.blue(pixel).toFloat()
+            
+            // Step 1: Brightness boost
+            r *= brightnessBoost
+            g *= brightnessBoost
+            b *= brightnessBoost
+            
+            // Step 2: Gamma correction (non-linear brightening)
+            r = Math.pow(r / 255.0, gamma.toDouble()) * 255
+            g = Math.pow(g / 255.0, gamma.toDouble()) * 255
+            b = Math.pow(b / 255.0, gamma.toDouble()) * 255
+            
+            // Step 3: Contrast enhancement
+            val grayScale = (r + g + b) / 3f
+            r = contrastFactor * (r - grayScale) + grayScale
+            g = contrastFactor * (g - grayScale) + grayScale
+            b = contrastFactor * (b - grayScale) + grayScale
+            
+            // Step 4: Green tint for night vision look
+            if (greenTintStrength > 0.1f) {
+                r *= (1.0f - greenTintStrength * 0.3f)
+                g *= (1.0f + greenTintStrength * 0.7f)
+                b *= (1.0f - greenTintStrength * 0.8f)
+            }
+            
+            // Clamp values to valid range [0, 255]
+            r = Math.max(0.0, Math.min(255.0, r)).toFloat()
+            g = Math.max(0.0, Math.min(255.0, g)).toFloat()
+            b = Math.max(0.0, Math.min(255.0, b)).toFloat()
+            
+            pixels[i] = Color.argb(255, r.toInt(), g.toInt(), b.toInt())
+        }
+        
+        output.setPixels(pixels, 0, width, 0, 0, width, height)
+        return output
+    }
     /** Limit streaming directory to prevent disk exhaustion */
     private fun cleanupOldFrames() {
         val files = streamDirectory.listFiles()?.sortedBy { it.lastModified() } ?: return
