@@ -13,6 +13,7 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
 
     private var cameraManager: com.ocubea.camera.CameraManager? = null
     @Volatile private var isStreaming = false
+    private val audioManager = AudioStreamManager(context)
 
     fun setCameraManager(cm: com.ocubea.camera.CameraManager) {
         this.cameraManager = cm
@@ -316,19 +317,49 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
         val format = uri.substringAfterLast("/") // "wav", "aac", or "opus"
 
         return try {
-            // Audio capture not yet implemented — return placeholder silence
-            // IP Webcam spec expects raw PCM/WAV data from microphone
-            println("Audio stream requested: $format (not yet implemented)")
+            if (!audioManager.canRecord()) {
+                return newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.FORBIDDEN, "text/plain",
+                    "Microphone permission required — grant RECORD_AUDIO in app settings"
+                )
+            }
 
-            newFixedLengthResponse(
-                NanoHTTPD.Response.Status.NOT_IMPLEMENTED, "audio/x-wav",
-                ""  // Empty response until audio capture is added
-            )
+            // Start streaming and let the response body be written by AudioStreamManager
+            val response = StreamingAudioResponse(format)
+            
+            if (format == "aac") {
+                // AAC requires encoder — fall back to WAV with note
+                println("AAC format requested but PCM/WAV is used for compatibility")
+            }
+            
+            return response
         } catch (e: Exception) {
             newFixedLengthResponse(
                 NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain",
                 "error: ${e.message}"
             )
+        }
+    }
+
+    /** Custom streaming response for audio — overrides send() to write PCM WAV continuously */
+    private inner class StreamingAudioResponse(
+        private val format: String
+    ) : NanoHTTPD.Response(NanoHTTPD.Response.Status.OK, "audio/x-wav") {
+
+        override fun send(outputStream: java.io.OutputStream) {
+            try {
+                // Start the real audio capture stream to this output
+                audioManager.startStream(outputStream)
+                
+                // Keep connection open until client disconnects or we stop
+                while (audioManager.isStreaming()) {
+                    Thread.sleep(1000) // Check periodically for disconnection
+                }
+            } catch (_: Exception) {
+                // Client disconnected — normal
+            } finally {
+                try { outputStream.close() } catch (_: Exception) {}
+            }
         }
     }
 
