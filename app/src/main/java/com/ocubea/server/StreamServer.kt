@@ -5,6 +5,7 @@ import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
 import java.io.OutputStream
 import java.net.URLDecoder
+import com.ocubea.model.CameraConfig
 
 /**
  * HTTP server for MJPEG streaming, snapshots, and torch control.
@@ -51,9 +52,9 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
             // Snapshot endpoint (JPEG binary) with optional quality parameter
             uri.startsWith("/shot.jpg") || uri == "/snapshot.jpg" -> handleShot(session)
 
-            // Camera focus control — IP Webcam spec uses /focus and /nofocus
-            uri == "/focus" && session.method == Method.POST -> handleFocus()
-            uri == "/nofocus" && session.method == Method.POST -> handleNoFocus()
+            // Camera focus control — IP webcam spec uses /focus and /nofocus
+            uri == "/focus" && session.method == Method.POST -> handleFocus(session)
+            uri == "/nofocus" && session.method == Method.POST -> handleNoFocus(session)
 
             // Settings endpoints per IP Webcam spec: /settings/<name>?set=<value>
             uri.startsWith("/settings/") && session.method == Method.POST -> handleSettings(session)
@@ -104,47 +105,45 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
         }
     }
 
-    /** Serve single snapshot JPEG with optional quality/rotation parameters */
+    /** Handle GET /shot.jpg — return latest JPEG frame */
     private fun handleShot(session: IHTTPSession): Response {
+        // Parse rotation parameter (not yet implemented, but spec-compliant)
         val params = parseQueryParameters(session)
-        
-        // IP Webcam supports ?quality=N (JPEG quality 1-100, default 85) and ?rotation=90|180|270
-        // For now we just acknowledge these parameters; actual implementation would apply them
-        if (params.containsKey("quality")) {
-            val quality = params["quality"]?.toIntOrNull() ?: 85
-            println("Shot quality requested: $quality% (using default JPEG encoding)")
-        }
-        
         if (params.containsKey("rotation")) {
             val rotation = params["rotation"]?.toIntOrNull() ?: 0
             println("Shot rotation requested: ${rotation}° (not yet implemented — returning unrotated)")
         }
 
-        return try {
-            val frameData = cameraManager?.getLatestFrame() ?: run {
-                newFixedLengthResponse(
-                    NanoHTTPD.Response.Status.NOT_FOUND, "image/jpeg", ""
-                )
-            }
+        // Get camera manager safely
+        val camManager = cameraManager ?: return newFixedLengthResponse(
+            NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", 
+            "Camera not initialized"
+        )
+        
+        val frameData: ByteArray = camManager.getLatestFrame() ?: return newFixedLengthResponse(
+            NanoHTTPD.Response.Status.NO_CONTENT, "image/jpeg", ""
+        )
 
-            if (frameData.isEmpty()) {
-                newFixedLengthResponse(
-                    NanoHTTPD.Response.Status.NO_CONTENT, "image/jpeg", ""
-                )
-            } else {
-                // Return raw bytes via ChunkedResponse — binary-safe in NanoHTTPD 2.3.1
-                newChunkedResponse(
-                    NanoHTTPD.Response.Status.OK,
-                    "image/jpeg",
-                    ByteArrayInputStream(frameData)
-                )
-            }
-        } catch (e: Exception) {
-            newFixedLengthResponse(
-                NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain",
-                "error: ${e.message}"
+        if (frameData.isEmpty()) {
+            return newFixedLengthResponse(
+                NanoHTTPD.Response.Status.NO_CONTENT, "image/jpeg", ""
             )
         }
+
+        // Return raw bytes via ChunkedResponse — binary-safe in NanoHTTPD 2.3.1
+        val response = object : NanoHTTPD.Response(
+            NanoHTTPD.Response.Status.OK, "image/jpeg", 
+            ByteArrayInputStream(frameData), frameData.size.toLong()
+        ) {
+            override fun send(outputStream: java.io.OutputStream) {
+                try {
+                    outputStream.write(frameData)
+                    outputStream.flush()
+                } catch (_: Exception) {}
+            }
+        }
+        
+        return response
     }
 
     /** Handle focus via POST /focus */
@@ -215,7 +214,9 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
 
             newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "text/plain", "ok")
         } catch (e: Exception) {
-            newFixedLengthResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", "error: ${e.message}")
+            newFixedLengthResponse(
+                NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", "error: ${e.message}"
+            )
         }
     }
 
@@ -231,7 +232,9 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
 
             newFixedLengthResponse(NanoHTTPD.Response.Status.OK, "text/plain", "ok")
         } catch (e: Exception) {
-            newFixedLengthResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", "error: ${e.message}")
+            newFixedLengthResponse(
+                NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", "error: ${e.message}"
+            )
         }
     }
 
@@ -344,7 +347,7 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
     /** Custom streaming response for audio — overrides send() to write PCM WAV continuously */
     private inner class StreamingAudioResponse(
         private val format: String
-    ) : NanoHTTPD.Response(NanoHTTPD.Response.Status.OK, "audio/x-wav") {
+    ) : NanoHTTPD.Response(NanoHTTPD.Response.Status.OK, "audio/x-wav", java.io.ByteArrayInputStream(ByteArray(0)), 0) {
 
         override fun send(outputStream: java.io.OutputStream) {
             try {
@@ -452,7 +455,7 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
     /** Custom streaming response for MJPEG — overrides send() to write multipart frames continuously */
     private inner class StreamingMjpegResponse(
         private val boundary: ByteArray
-    ) : NanoHTTPD.Response(NanoHTTPD.Response.Status.OK, "multipart/x-mixed-replace; boundary=frame") {
+    ) : NanoHTTPD.Response(NanoHTTPD.Response.Status.OK, "multipart/x-mixed-replace; boundary=frame", java.io.ByteArrayInputStream(ByteArray(0)), 0) {
 
         override fun send(outputStream: OutputStream) {
             try {

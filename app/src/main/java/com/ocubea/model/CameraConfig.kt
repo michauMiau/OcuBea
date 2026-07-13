@@ -1,24 +1,17 @@
 package com.ocubea.model
 
-/**
- * Camera and streaming configuration for OcuBea.
- */
-data class CameraConfig(
-    val resolution: Resolution = Resolution.HD720,
-    val fps: Int = 30,
-    val bitrateKbps: Int = 4000,
-    val codec: VideoCodec = VideoCodec.H264,
-    val httpPort: Int = 8080
-) {
+/** Camera configuration model. */
+object CameraConfig {
+    /** Supported resolutions mapped to width×height. */
     enum class Resolution(val width: Int, val height: Int) {
-        HD720(1280, 720),
-        FullHD(1920, 1080),
         QVGA(320, 240),
-        VGA(640, 480)
-    }
+        VGA(640, 480),
+        HD720(1280, 720),
+        FullHD(1920, 1080);
 
-    enum class VideoCodec(val mime: String) {
-        H264("video/avc"),
-        H265("video/hevc")
+        companion object {
+            /** Default resolution. */
+            val DEFAULT: Resolution = HD720
+        }
     }
 }
