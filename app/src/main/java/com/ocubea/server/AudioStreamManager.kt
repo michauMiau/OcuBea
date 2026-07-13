@@ -19,14 +19,10 @@ class AudioStreamManager(private val context: Context) {
         const val SAMPLE_RATE = 44100
         const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-        const val BUFFER_SIZE = AudioRecord.getMinBufferSize(
+
+        fun getMinBufferSize(): Int = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT
         )
-
-        // WAV header fields
-        private const val RIFF_HEADER = "RIFF"
-        private const val WAVE_FORMAT = "WAVEfmt "
-        private const val DATA_CHUNK = "data"
     }
 
     @Volatile private var isRecording = false
@@ -63,13 +59,17 @@ class AudioStreamManager(private val context: Context) {
             return
         }
 
+        val bufferSize = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT
+        )
+        
         isRecording = true
         audioRecord = AudioRecord(
             MediaRecorder.AudioSource.MIC,
             SAMPLE_RATE,
             CHANNEL_CONFIG,
             AUDIO_FORMAT,
-            BUFFER_SIZE.coerceAtLeast(4096)
+            bufferSize.coerceAtLeast(4096)
         )
 
         val record = audioRecord ?: run {
@@ -87,7 +87,7 @@ class AudioStreamManager(private val context: Context) {
         }
 
         executor.execute {
-            val buffer = ShortArray(BUFFER_SIZE.coerceAtLeast(4096))
+            val buffer = ShortArray(bufferSize.coerceAtLeast(4096))
             var totalSamplesWritten = 0L
 
             try {
@@ -102,11 +102,11 @@ class AudioStreamManager(private val context: Context) {
 
                     writeWavHeader(outputStream, fileSize, SAMPLE_RATE, 1)
 
-                    // Write PCM samples as little-endian shorts
+                    // Write PCM samples as little-endian shorts (write() takes Int, not Byte)
                     for (i in 0 until read) {
                         val sample = buffer[i]
-                        outputStream.write(sample.toInt().toByte())
-                        outputStream.write((sample.toInt() shr 8).toByte())
+                        outputStream.write(sample.toInt() and 0xFF)
+                        outputStream.write((sample.toInt() shr 8) and 0xFF)
                     }
                     totalSamplesWritten += read
 
@@ -128,20 +128,20 @@ class AudioStreamManager(private val context: Context) {
         val byteRate = sampleRate * channels * 2 // PCM16 = 2 bytes per sample
         val blockAlign = channels * 2
 
-        outputStream.write(RIFF_HEADER.toByteArray())                          // "RIFF"
-        writeIntLE(outputStream, fileSize - 8)                                 // file size - 8
-        outputStream.write("WAVE".toByteArray())                               // "WAVE"
-        outputStream.write(WAVE_FORMAT.toByteArray())                           // "fmt " (with trailing space)
-        writeIntLE(outputStream, 16)                                           // PCM format chunk size = 16
-        writeShortLE(outputStream, 1)                                          // PCM format tag = 1 (uncompressed)
-        writeShortLE(outputStream, channels.toShort())                         // number of channels
-        writeIntLE(outputStream, sampleRate)                                   // sample rate
-        writeIntLE(outputStream, byteRate)                                     // byte rate
-        writeShortLE(outputStream, blockAlign.toShort())                       // block align
-        writeShortLE(outputStream, 16)                                         // bits per sample = 16
-        outputStream.write(DATA_CHUNK.toByteArray())                            // "data"
-        val dataChunkSize = fileSize - 44                                      // remaining bytes after header
-        writeIntLE(outputStream, dataChunkSize)                                // data chunk size
+        outputStream.write("RIFF".toByteArray())                          // "RIFF"
+        writeIntLE(outputStream, fileSize - 8)                             // file size - 8
+        outputStream.write("WAVE".toByteArray())                           // "WAVE"
+        outputStream.write("fmt ".toByteArray())                            // "fmt " (with trailing space)
+        writeIntLE(outputStream, 16)                                       // PCM format chunk size = 16
+        writeShortLE(outputStream, 1)                                      // PCM format tag = 1 (uncompressed)
+        writeShortLE(outputStream, channels.toShort())                     // number of channels
+        writeIntLE(outputStream, sampleRate)                               // sample rate
+        writeIntLE(outputStream, byteRate)                                 // byte rate
+        writeShortLE(outputStream, blockAlign.toShort())                   // block align
+        writeShortLE(outputStream, 16)                                     // bits per sample = 16
+        outputStream.write("data".toByteArray())                            // "data"
+        val dataChunkSize = fileSize - 44                                  // remaining bytes after header
+        writeIntLE(outputStream, dataChunkSize)                            // data chunk size
     }
 
     private fun writeIntLE(os: OutputStream, value: Int) {
