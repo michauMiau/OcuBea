@@ -4,13 +4,23 @@
 
 ## Progress
 
-### Current blockers
+### Current status
 
-A fresh start
-
-### Currently worked on
-
-A fresh start
+- [x] Basic MJPEG Streaming (/video)
+- [x] WebUI — full dark theme with controls (torch, night vision, camera switch, zoom, quality, focus)
+- [x] App UI — SettingsActivity with port, resolution, FPS, night vision, mic toggles
+- [x] IP Webcam compatible API (status.json, /info, /shot.jpg, /focus, /ptz, /api/torch, /api/camera)
+- [x] Audio streaming (WAV)
+- [x] Software Night Vision Enhancement
+- [x] Configurable HTTP server port (default 8080, stored in SharedPreferences)
+- [ ] Motion Detection Recording
+- [ ] Bidirectional Audio
+- [ ] HTTPS Support
+- [ ] Alternative codecs (H265, AVIF)
+- [ ] Background service / Foreground Service
+- [ ] Auto screen dim / keep screen on
+- [ ] ONVIF Support
+- [x] Full API Parity (core IP Webcam endpoints)
 
 ## The Goal
 

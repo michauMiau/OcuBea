@@ -10,7 +10,7 @@ import com.ocubea.model.CameraConfig
 /**
  * HTTP server for MJPEG streaming, snapshots, and torch control.
  */
-class StreamServer(private val context: Context) : NanoHTTPD(9090) {
+class StreamServer(private val context: Context, private val port: Int = 8080) : NanoHTTPD(port) {
 
     private var cameraManager: com.ocubea.camera.CameraManager? = null
     @Volatile private var isStreaming = false
@@ -23,7 +23,7 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
     override fun start() {
         try {
             super.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
-            println("Stream server started on port 9090")
+            println("Stream server started on port $port")
         } catch (e: Exception) {
             println("Failed to start stream server: ${e.message}")
         }
@@ -488,6 +488,6 @@ class StreamServer(private val context: Context) : NanoHTTPD(9090) {
     }
 
     companion object {
-        const val DEFAULT_PORT = 9090
+        const val DEFAULT_PORT = 8080
     }
 }

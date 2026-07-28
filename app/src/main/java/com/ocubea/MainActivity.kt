@@ -10,6 +10,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.ocubea.camera.CameraManager
 import com.ocubea.server.StreamServer
+import android.content.Intent
 
 class MainActivity : AppCompatActivity() {
 
@@ -31,6 +32,11 @@ class MainActivity : AppCompatActivity() {
 
         val btnToggle = findViewById<Button>(R.id.btnToggleStream)
         val tvStatus = findViewById<TextView>(R.id.tvStatus)
+        val btnSettings = findViewById<Button>(R.id.btnSettings)
+
+        btnSettings.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
 
         btnToggle.setOnClickListener {
             if (isStreaming) stopStream() else startCameraAndServer()
