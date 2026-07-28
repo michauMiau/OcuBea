@@ -33,6 +33,14 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.OcuBea.NoActionBar"
+            android:label="OcuBea Settings"
+            android:parentActivityName=".MainActivity"/>
+
     </application>
 
 </manifest>

@@ -3,6 +3,14 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
     <color name="background_dark">#FF1A1A1A</color>
+    <color name="background_darker">#FF0A0A0A</color>
     <color name="green_primary">#FF4CAF50</color>
+    <color name="green_500">#FF4CAF50</color>
     <color name="green_hover">#FF45A049</color>
+    <color name="red_500">#FFF44336</color>
+    <color name="red_hover">#FFD32F2F</color>
+    <color name="card_background">#FF1A1A1A</color>
+    <color name="card_border">#FF333333</color>
+    <color name="text_primary">#FFE0E0E0</color>
+    <color name="text_secondary">#FF888888</color>
 </resources>

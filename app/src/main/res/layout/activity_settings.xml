@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0a0a0a"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <!-- Header -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="OcuBea Settings"
+            android:textSize="28sp"
+            android:textColor="#4CAF50"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="4dp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Configure camera and streaming options"
+            android:textSize="14sp"
+            android:textColor="#888888"
+            android:layout_marginBottom="24dp"/>
+
+        <!-- Stream status card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#1a1a1a"
+            android:padding="16dp"
+            android:layout_marginBottom="16dp">
+
+            <TextView
+                android:id="@+id/tvStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="⏸ Stopped — Tap to Start"
+                android:textSize="18sp"
+                android:textColor="#ffffff"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginBottom="12dp"/>
+
+            <Button
+                android:id="@+id/btnStartStop"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:text="▶ Start Stream"
+                android:textSize="16sp"
+                android:textColor="#ffffff"
+                android:backgroundTint="#4CAF50"
+                android:paddingTop="12dp"
+                android:layout_gravity="center_horizontal"/>
+        </LinearLayout>
+
+        <!-- Resolution card -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📐 Resolution"
+            android:textSize="16sp"
+            android:textColor="#4CAF50"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="8dp"/>
+
+        <Spinner
+            android:id="@+id/spinnerResolution"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="#222222"
+            android:padding="12dp"
+            android:layout_marginBottom="16dp"/>
+
+        <!-- FPS card -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⏱ Frames per second"
+            android:textSize="16sp"
+            android:textColor="#4CAF50"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="8dp"/>
+
+        <Spinner
+            android:id="@+id/spinnerFPS"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="#222222"
+            android:padding="12dp"
+            android:layout_marginBottom="16dp"/>
+
+        <!-- Toggles card -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🔧 Features"
+            android:textSize="16sp"
+            android:textColor="#4CAF50"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="8dp"/>
+
+        <CheckBox
+            android:id="@+id/checkboxNightVision"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🌙 Night Vision Enhancement"
+            android:textSize="15sp"
+            android:textColor="#e0e0e0"
+            android:padding="12dp"
+            android:background="#1a1a1a"
+            android:layout_marginBottom="8dp"/>
+
+        <CheckBox
+            android:id="@+id/checkboxMic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🎤 Enable Microphone (Audio Streaming)"
+            android:textSize="15sp"
+            android:textColor="#e0e0e0"
+            android:padding="12dp"
+            android:background="#1a1a1a"
+            android:layout_marginBottom="16dp"/>
+
+        <!-- Port card -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🌐 Server Port"
+            android:textSize="16sp"
+            android:textColor="#4CAF50"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="8dp"/>
+
+        <EditText
+            android:id="@+id/editTextPort"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:background="#222222"
+            android:padding="12dp"
+            android:inputType="number"
+            android:text="8080"
+            android:textColor="#e0e0e0"
+            android:textSize="16sp"
+            android:layout_marginBottom="16dp"/>
+
+        <!-- Info card -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ℹ️ Information"
+            android:textSize="16sp"
+            android:textColor="#4CAF50"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="8dp"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#1a1a1a"
+            android:padding="16dp">
+
+            <TextView
+                android:id="@+id/tvInfoPort"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Server Port: 8080"
+                android:textSize="14sp"
+                android:textColor="#888888"
+                android:paddingBottom="4dp"/>
+
+            <TextView
+                android:id="@+id/tvInfoWebUI"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Web UI: http://&lt;phone-ip&gt;:8080"
+                android:textSize="14sp"
+                android:textColor="#888888"
+                android:paddingBottom="4dp"/>
+
+            <TextView
+                android:id="@+id/tvInfoStream"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Stream: http://&lt;phone-ip&gt;:8080/video"
+                android:textSize="14sp"
+                android:textColor="#8bc34a"
+                android:paddingBottom="4dp"/>
+
+            <TextView
+                android:id="@+id/tvInfoSnapshot"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Snapshot: http://&lt;phone-ip&gt;:8080/shot.jpg"
+                android:textSize="14sp"
+                android:textColor="#8bc34a"
+                android:paddingBottom="4dp"/>
+        </LinearLayout>
+
+        <!-- Spacer -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="40dp"/>
+
+    </LinearLayout>
+</ScrollView>
