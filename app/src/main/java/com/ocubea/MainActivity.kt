@@ -1,96 +1,91 @@
 package com.ocubea
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.ocubea.camera.CameraManager
-import com.ocubea.server.StreamServer
-import android.content.Intent
+import com.ocubea.service.StreamService
 
+/**
+ * Thin UI over StreamService. The service owns the camera and server;
+ * the activity only starts/stops it and shows status.
+ */
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var cameraManager: CameraManager
-    private lateinit var streamServer: StreamServer
-    private var isStreaming = false
-    
     companion object {
-        const val CAMERA_PERMISSION_REQUEST_CODE = 1001
+        private const val PERMS_REQUEST = 1001
     }
+
+    private lateinit var btnToggle: Button
+    private lateinit var tvStatus: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        cameraManager = CameraManager(this)
-        streamServer = StreamServer(this)
-        streamServer.setCameraManager(cameraManager)
-
-        val btnToggle = findViewById<Button>(R.id.btnToggleStream)
-        val tvStatus = findViewById<TextView>(R.id.tvStatus)
-        val btnSettings = findViewById<Button>(R.id.btnSettings)
-
-        btnSettings.setOnClickListener {
+        btnToggle = findViewById(R.id.btnToggleStream)
+        tvStatus = findViewById(R.id.tvStatus)
+        findViewById<Button>(R.id.btnSettings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
 
-        btnToggle.setOnClickListener {
-            if (isStreaming) stopStream() else startCameraAndServer()
-        }
+        btnToggle.setOnClickListener { if (StreamService.instance != null) stopStreaming() else checkPermsAndStart() }
 
-        checkPermissionsAndStart()
+        // Auto-resume if the service is already running
+        if (StreamService.instance != null) renderRunning()
+        else checkPermsAndStart()
     }
 
-    private fun checkPermissionsAndStart() {
-        if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            startCameraAndServer()
+    private fun requiredPerms() = buildList {
+        add(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT <= 32) add(Manifest.permission.RECORD_AUDIO)
+        else add(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+    }.toTypedArray()
+
+    private fun checkPermsAndStart() {
+        val missing = requiredPerms().filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) startStreaming()
+        else ActivityCompat.requestPermissions(this, missing.toTypedArray(), PERMS_REQUEST)
+    }
+
+    override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(code, perms, results)
+        if (code == PERMS_REQUEST && results.isNotEmpty() && results[0] == PackageManager.PERMISSION_GRANTED) {
+            startStreaming()
         } else {
-        ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST_CODE
-            )
+            Toast.makeText(this, "Camera permission is required", Toast.LENGTH_LONG).show()
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE &&
-            grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-        ) startCameraAndServer()
+    private fun startStreaming() {
+        val intent = Intent(this, StreamService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
+        else startService(intent)
+        renderRunning()
     }
 
-    private fun startCameraAndServer() {
-        try {
-            cameraManager.startPreview(this, onStarted = {
-                streamServer.start()
-                isStreaming = true
-                findViewById<TextView>(R.id.tvStatus).text = "Streaming"
-                (findViewById<Button>(R.id.btnToggleStream) as Button).text = "Stop Stream"
-            }, onError = { error ->
-                println("Camera start error: $error")
-            })
-        } catch (e: Exception) {
-            println("Error starting camera and server: ${e.message}")
-        }
+    private fun stopStreaming() {
+        startService(Intent(this, StreamService::class.java).setAction("com.ocubea.STOP_STREAM"))
+        renderStopped()
     }
 
-    private fun stopStream() {
-        try { 
-            streamServer.stopServer() 
-            cameraManager.stopPreview()
-            isStreaming = false 
-        } catch (_: Exception) {}
-        findViewById<TextView>(R.id.tvStatus).text = "Stopped"
-        (findViewById<Button>(R.id.btnToggleStream) as Button).text = "Start Stream"
+    private fun renderRunning() {
+        tvStatus.text = "Streaming — open http://<phone-ip>:8080"
+        btnToggle.text = getString(R.string.stop_stream)
     }
 
-    override fun onDestroy() { super.onDestroy(); if (isStreaming) stopStream() }
+    private fun renderStopped() {
+        tvStatus.text = "Stopped"
+        btnToggle.text = getString(R.string.start_stream)
+    }
 }
