@@ -145,8 +145,8 @@ class StreamServer(
         )
         audio.addClient(client)
 
-        // Plain InputStream — NanoHTTPD writes the HTTP headers itself.
-        return NanoHTTPD.Response(Status.OK, mime, input, -1)
+        // Chunked response — NanoHTTPD writes the HTTP headers itself.
+        return newChunkedResponse(Status.OK, mime, input)
     }
 
     private val audio = AudioStreamManager(context.applicationContext)
