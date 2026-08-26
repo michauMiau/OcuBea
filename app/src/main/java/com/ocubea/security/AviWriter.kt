@@ -91,8 +91,8 @@ class AviWriter(private val file: File, private val width: Int, private val heig
         s("LIST"); le32(4 + 8 + 56 + 8 + 40); s("hdrl")
         // MainAVIHeader (avih): 56 bytes chunk
         s("avih"); le32(56)
-        le32(1_000_000L / frameDurUs) // dwMicroSecPerFrame
-        le32(1_000_000L / frameDurUs) // dwMaxBytesPerSec (approx fps bytes? fine)
+        le32((1_000_000L / frameDurUs).toInt()) // dwMicroSecPerFrame
+        le32((1_000_000L / frameDurUs).toInt()) // dwMaxBytesPerSec (approx fps bytes? fine)
         le32(0)                   // dwPaddingGranularity
         le32(0x10)                // dwFlags: AVIF_HASINDEX
         le32(frameCount)          // dwTotalFrames
@@ -111,7 +111,7 @@ class AviWriter(private val file: File, private val width: Int, private val heig
         le32(0)                   // wPriority+wLanguage
         le32(0)                   // dwInitialFrames
         le32(1)                   // dwScale
-        le32(1_000_000L / frameDurUs) // dwRate = fps
+        le32((1_000_000L / frameDurUs).toInt()) // dwRate = fps
         le32(0)                   // dwStart
         le32(frameCount)          // dwLength
         le32(192 * 1024)          // dwSuggestedBufferSize
