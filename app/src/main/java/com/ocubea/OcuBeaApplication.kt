@@ -1,31 +1,16 @@
 package com.ocubea
 
 import android.app.Application
-import com.ocubea.camera.CameraManager
-import com.ocubea.stream.VideoEncoder
-import com.ocubea.server.StreamServer
+import com.ocubea.service.StreamService
 
 /**
- * Global application class for OcuBea.
- * Manages shared components: Camera, Encoder, Stream Server.
+ * Global application class. All streaming state lives in StreamService;
+ * the Application is intentionally stateless.
  */
 class OcuBeaApplication : Application() {
-    
-    lateinit var cameraManager: CameraManager
-        private set
-    
-    lateinit var videoEncoder: VideoEncoder
-        private set
-    
-    lateinit var streamServer: StreamServer
-        private set
-    
     override fun onCreate() {
         super.onCreate()
-        
-        // Initialize components
-        cameraManager = CameraManager(this)
-        videoEncoder = VideoEncoder()
-        streamServer = StreamServer(this)
     }
+
+    val streamService: StreamService? get() = StreamService.instance
 }

@@ -6,12 +6,12 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import java.io.OutputStream
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.absoluteValue
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Real-time audio capture and streaming via HTTP.
- * Uses AudioRecord to capture PCM 16-bit mono at 44100 Hz, writes WAV-formatted chunks continuously.
+ * Shared microphone capture: ONE AudioRecord instance fans out PCM to any number
+ * of connected clients. Each client gets a proper streaming WAV (header with
+ * unknown length 0xFFFFFFFF — standard for endless streams).
  */
 class AudioStreamManager(private val context: Context) {
 
@@ -20,139 +20,103 @@ class AudioStreamManager(private val context: Context) {
         const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
 
-        fun getMinBufferSize(): Int = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT
-        )
+        fun getMinBufferSize(): Int = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
     }
 
-    @Volatile private var isRecording = false
-    @Volatile private var audioRecord: AudioRecord? = null
-
+    private val clients = AtomicInteger(0)
+    private var audioRecord: AudioRecord? = null
     private val executor = Executors.newSingleThreadExecutor()
+    @Volatile private var capturing = false
 
-    /** Check if microphone permission is granted */
-    fun canRecord(): Boolean {
-        return context.checkSelfPermission(
-            android.Manifest.permission.RECORD_AUDIO
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-    }
+    /** Per-client sink; onDisconnect is invoked on the capture thread when the pipe breaks. */
+    class Client(val write: (ByteArray, Int) -> Boolean, val onDisconnect: () -> Unit)
 
-    /** Get current recording state */
-    fun isStreaming(): Boolean = isRecording
+    fun canRecord(): Boolean = context.checkSelfPermission(
+        android.Manifest.permission.RECORD_AUDIO
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
-    /** Stop audio capture and release resources */
-    fun stop() {
-        isRecording = false
+    fun clientCount(): Int = clients.get()
+
+    /** Register a client; starts shared capture if this is the first one. */
+    fun addClient(client: Client) {
+        ensureCapture()
+        clients.incrementAndGet()
+        synchronized(activeClients) { activeClients.add(client) }
+        // immediately send header to the new client
         try {
-            audioRecord?.stop()
-            audioRecord?.release()
+            val header = wavHeader(0xFFFFFFFFL)
+            client.write(header, header.size)
         } catch (_: Exception) {}
-        audioRecord = null
-        println("Audio streaming stopped")
     }
 
-    /** Start continuous WAV stream to the given output stream.
-     *  Writes a single complete WAV header first, then appends data chunks as they arrive. */
-    fun startStream(outputStream: OutputStream) {
-        if (!canRecord()) {
-            println("Audio streaming denied — RECORD_AUDIO permission not granted")
-            return
-        }
+    fun removeClient(client: Client) {
+        synchronized(activeClients) { activeClients.remove(client) }
+        if (clients.decrementAndGet() <= 0) stop()
+    }
 
-        val bufferSize = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT
+    private val activeClients = ArrayList<Client>()
+
+    private fun ensureCapture() {
+        if (capturing) return
+        if (!canRecord()) throw SecurityException("RECORD_AUDIO permission not granted")
+
+        val bufSize = getMinBufferSize().coerceAtLeast(4096)
+        val record = AudioRecord(
+            MediaRecorder.AudioSource.MIC, SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT, bufSize
         )
-        
-        isRecording = true
-        audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            SAMPLE_RATE,
-            CHANNEL_CONFIG,
-            AUDIO_FORMAT,
-            bufferSize.coerceAtLeast(4096)
-        )
-
-        val record = audioRecord ?: run {
-            isRecording = false
-            return
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            record.release()
+            throw IllegalStateException("AudioRecord failed to initialize")
         }
+        audioRecord = record
+        record.startRecording()
+        capturing = true
+        executor.execute { captureLoop(record, bufSize) }
+    }
 
+    private fun captureLoop(record: AudioRecord, bufSize: Int) {
+        val buffer = ByteArray(bufSize)
         try {
-            record.startRecording()
-            println("Audio streaming started: ${SAMPLE_RATE}Hz mono PCM16")
-        } catch (e: Exception) {
-            isRecording = false
-            println("Failed to start audio recording: ${e.message}")
-            return
-        }
-
-        executor.execute {
-            val buffer = ShortArray(bufferSize.coerceAtLeast(4096))
-            var totalSamplesWritten = 0L
-
-            try {
-                while (isRecording) {
-                    val read = record.read(buffer, 0, buffer.size)
-                    if (read <= 0) continue
-
-                    // Write WAV header every ~1 second of audio (~44100 samples @ 2 bytes/sample = 88200 bytes per chunk)
-                    val totalBytesSoFar = totalSamplesWritten * 2
-                    val headerSize = 44 // standard WAV header
-                    val fileSize = (totalBytesSoFar + read * 2 + headerSize).toInt()
-
-                    writeWavHeader(outputStream, fileSize, SAMPLE_RATE, 1)
-
-                    // Write PCM samples as little-endian shorts (write() takes Int, not Byte)
-                    for (i in 0 until read) {
-                        val sample = buffer[i]
-                        outputStream.write(sample.toInt() and 0xFF)
-                        outputStream.write((sample.toInt() shr 8) and 0xFF)
+            while (capturing) {
+                val read = record.read(buffer, 0, buffer.size)
+                if (read <= 0) continue
+                val dead = ArrayList<Client>()
+                synchronized(activeClients) {
+                    for (c in activeClients) {
+                        try {
+                            if (!c.write(buffer, read)) dead.add(c)
+                        } catch (_: Exception) { dead.add(c) }
                     }
-                    totalSamplesWritten += read
-
-                    // Flush periodically to avoid buffering delays
-                    if (totalBytesSoFar % (SAMPLE_RATE * 2) == 0L) {
-                        try { outputStream.flush() } catch (_: Exception) {}
-                    }
+                    activeClients.removeAll(dead)
                 }
-            } catch (e: Exception) {
-                // Client disconnected or stream closed — normal
-            } finally {
-                stop()
+                for (c in dead) {
+                    clients.decrementAndGet()
+                    try { c.onDisconnect() } catch (_: Exception) {}
+                }
             }
+        } finally {
+            try { record.stop() } catch (_: Exception) {}
+            try { record.release() } catch (_: Exception) {}
+            if (audioRecord === record) audioRecord = null
         }
     }
 
-    /** Write a standard 44-byte WAV header */
-    private fun writeWavHeader(outputStream: OutputStream, fileSize: Int, sampleRate: Int, channels: Int) {
-        val byteRate = sampleRate * channels * 2 // PCM16 = 2 bytes per sample
-        val blockAlign = channels * 2
-
-        outputStream.write("RIFF".toByteArray())                          // "RIFF"
-        writeIntLE(outputStream, fileSize - 8)                             // file size - 8
-        outputStream.write("WAVE".toByteArray())                           // "WAVE"
-        outputStream.write("fmt ".toByteArray())                            // "fmt " (with trailing space)
-        writeIntLE(outputStream, 16)                                       // PCM format chunk size = 16
-        writeShortLE(outputStream, 1)                                      // PCM format tag = 1 (uncompressed)
-        writeShortLE(outputStream, channels.toShort())                     // number of channels
-        writeIntLE(outputStream, sampleRate)                               // sample rate
-        writeIntLE(outputStream, byteRate)                                 // byte rate
-        writeShortLE(outputStream, blockAlign.toShort())                   // block align
-        writeShortLE(outputStream, 16)                                     // bits per sample = 16
-        outputStream.write("data".toByteArray())                            // "data"
-        val dataChunkSize = fileSize - 44                                  // remaining bytes after header
-        writeIntLE(outputStream, dataChunkSize)                            // data chunk size
+    fun stop() {
+        capturing = false
     }
 
-    private fun writeIntLE(os: OutputStream, value: Int) {
-        os.write(value and 0xFF)
-        os.write((value shr 8) and 0xFF)
-        os.write((value shr 16) and 0xFF)
-        os.write((value shr 24) and 0xFF)
-    }
-
-    private fun writeShortLE(os: OutputStream, value: Short) {
-        os.write(value.toInt() and 0xFF)
-        os.write((value.toInt() shr 8) and 0xFF)
+    /** Standard 44-byte WAV header. Pass 0xFFFFFFFF for data size when streaming live. */
+    private fun wavHeader(dataSize: Long): ByteArray {
+        val total = dataSize + 36
+        val out = java.io.ByteArrayOutputStream(44)
+        fun w32(v: Int) { out.write(v and 0xFF); out.write((v shr 8) and 0xFF); out.write((v shr 16) and 0xFF); out.write((v shr 24) and 0xFF) }
+        fun w16(v: Int) { out.write(v and 0xFF); out.write((v shr 8) and 0xFF) }
+        val byteRate = SAMPLE_RATE * 2
+        out.write("RIFF".toByteArray()); w32(total.toInt())
+        out.write("WAVEfmt ".toByteArray())
+        w32(16); w16(1); w16(1)
+        w32(SAMPLE_RATE); w32(byteRate); w16(2); w16(16)
+        out.write("data".toByteArray()); w32(dataSize.toInt())
+        return out.toByteArray()
     }
 }
