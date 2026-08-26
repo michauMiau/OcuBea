@@ -68,8 +68,8 @@ class StreamService : LifecycleService() {
 
         // Security pipeline: every frame → motion detector → recorder
         if (securityEnabled) { motionDetector.enabled = true; motionRecorder.enabled = true }
-        motionRecorder.currentW = cameraManager.currentTargetWidth
-        motionRecorder.currentH = cameraManager.currentTargetHeight
+        MotionRecorder.lastWidth = cameraManager.currentTargetWidth
+        MotionRecorder.lastHeight = cameraManager.currentTargetHeight
         cameraManager.onFrameCaptured = { jpeg, _ ->
             if (motionDetector.enabled || motionRecorder.enabled) {
                 try {
@@ -107,8 +107,6 @@ class StreamService : LifecycleService() {
         stopEverything()
         super.onDestroy()
     }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun localIpAddress(): String {
         try {
