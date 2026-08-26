@@ -29,7 +29,10 @@ class StreamService : LifecycleService() {
     private lateinit var streamServer: StreamServer
     private val onvifDiscovery by lazy { OnvifDiscovery(this) }
     private val motionDetector = MotionDetector()
-    private val motionRecorder = MotionRecorder(File(getExternalFilesDir(null) ?: filesDir, "recordings"))
+
+    // NOTE: must be created in onCreate() — getExternalFilesDir() needs the
+    // context attached, which does not happen until after the constructor.
+    private lateinit var motionRecorder: MotionRecorder
 
     companion object {
         const val CHANNEL_ID = "ocubea_stream"
@@ -43,6 +46,7 @@ class StreamService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        motionRecorder = MotionRecorder(File(getExternalFilesDir(null) ?: filesDir, "recordings"))
         cameraManager = CameraManager(this)
     }
 
