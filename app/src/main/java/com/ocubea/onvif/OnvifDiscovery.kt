@@ -2,8 +2,8 @@ package com.ocubea.onvif
 
 import android.content.Context
 import android.net.wifi.WifiManager
-import java.io.DatagramPacket
-import java.io.DatagramSocket
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
