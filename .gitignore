@@ -13,3 +13,4 @@ app/build/
 app/.cxx/
 build/
 local.properties
+.gradle/

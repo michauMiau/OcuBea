@@ -54,6 +54,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-video:$cameraxVersion")
+    implementation("androidx.lifecycle:lifecycle-service:2.6.2")
     
     // MediaCodec for hardware encoding (H.264, H.265)
     implementation("androidx.media3:media3-exoplayer:1.2.0")
