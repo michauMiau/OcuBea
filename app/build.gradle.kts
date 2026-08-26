@@ -17,6 +17,16 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            // Keystore committed to repo — keeps the same debug signature on CI and locally
+            storeFile = rootProject.file("debug.keystore")
+            storePassword = "ocubea123"
+            keyAlias = "ocubea"
+            keyPassword = "ocubea123"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
