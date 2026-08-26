@@ -86,27 +86,36 @@ class StreamServer(
             return newFixedLengthResponse(Status.SERVICE_UNAVAILABLE, "text/plain", "Camera not streaming")
         }
         val viewer = cameraManager.frameHub.addViewer()
-        return object : NanoHTTPD.Response(
-            Status.OK, "multipart/x-mixed-replace; boundary=framebound",
-            ByteArrayInputStream(ByteArray(0)), -1
-        ) {
-            override fun send(out: OutputStream) {
-                try {
-                    while (cameraManager.isStreaming) {
-                        val frame = cameraManager.frameHub.pollFrame(viewer, 5000) ?: break
-                        out.write("--framebound\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.size}\r\n\r\n".toByteArray())
-                        out.write(frame)
-                        out.write("\r\n".toByteArray())
-                        out.flush()
-                    }
-                } catch (_: Exception) {
-                    // client disconnected — normal
-                } finally {
-                    cameraManager.frameHub.removeViewer(viewer)
-                    try { out.close() } catch (_: Exception) {}
+        // Feed frames through an InputStream so NanoHTTPD writes proper
+        // HTTP/1.1 headers itself — overriding send() skips them entirely.
+        val stream = object : java.io.InputStream() {
+            var buf: ByteArray = ByteArray(0)
+            var pos = 0
+            override fun read(): Int {
+                if (pos >= buf.size) nextFrame()
+                return if (pos < buf.size) buf[pos++].toInt() and 0xFF else -1
+            }
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (pos >= buf.size) nextFrame()
+                if (pos >= buf.size) return -1
+                val n = minOf(len, buf.size - pos)
+                System.arraycopy(buf, pos, b, off, n)
+                pos += n
+                return n
+            }
+            private fun nextFrame() {
+                while (cameraManager.isStreaming) {
+                    val frame = cameraManager.frameHub.pollFrame(viewer, 5000)
+                    if (frame == null) continue
+                    val head = "--framebound\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.size}\r\n\r\n".toByteArray()
+                    val tail = "\r\n".toByteArray()
+                    buf = head + frame + tail
+                    pos = 0
+                    return
                 }
             }
         }
+        return newChunkedResponse(Status.OK, "multipart/x-mixed-replace; boundary=framebound", stream)
     }
 
     private fun handleShot(): Response {
@@ -136,14 +145,8 @@ class StreamServer(
         )
         audio.addClient(client)
 
-        return object : NanoHTTPD.Response(Status.OK, mime, input, -1) {
-            override fun send(out: OutputStream) {
-                try { input.copyTo(out); out.flush() } catch (_: Exception) {} finally {
-                    audio.removeClient(client)
-                    try { out.close() } catch (_: Exception) {}
-                }
-            }
-        }
+        // Plain InputStream — NanoHTTPD writes the HTTP headers itself.
+        return NanoHTTPD.Response(Status.OK, mime, input, -1)
     }
 
     private val audio = AudioStreamManager(context.applicationContext)
