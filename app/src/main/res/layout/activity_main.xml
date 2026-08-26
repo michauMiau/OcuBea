@@ -1,57 +1,98 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:background="#1a1a1a">
 
-    <TextView
-        android:id="@+id/tvTitle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="OcuBea"
-        android:textSize="24sp"
-        android:textColor="#4CAF50"
-        android:layout_gravity="center_horizontal"
-        android:paddingTop="16dp"/>
-
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Stopped"
-        android:textSize="18sp"
-        android:textColor="#ffffff"
-        android:layout_gravity="center_horizontal"
-        android:paddingTop="8dp"/>
-
-    <ImageView
-        android:id="@+id/ivPreview"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:scaleType="fitCenter"
-        android:contentDescription="Camera preview"/>
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
-    <Button
-        android:id="@+id/btnToggleStream"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Start Stream"
-        android:backgroundTint="#4CAF50"
-        android:textColor="#ffffff"
-        android:layout_gravity="center_horizontal"
-        android:paddingTop="8dp"/>
+        <TextView
+            android:id="@+id/tvTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="OcuBea"
+            android:textSize="24sp"
+            android:textColor="#4CAF50"
+            android:layout_gravity="center_horizontal"
+            android:paddingTop="16dp"/>
 
-    <Button
-        android:id="@+id/btnSettings"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="⚙ Settings"
-        android:backgroundTint="#333333"
-        android:textColor="#888888"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginTop="8dp"
-        android:paddingTop="8dp"/>
+        <TextView
+            android:id="@+id/tvIp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="14sp"
+            android:textColor="#9E9E9E"
+            android:fontFamily="monospace"
+            android:layout_gravity="center_horizontal"
+            android:paddingTop="4dp"/>
 
-</LinearLayout>
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Stopped"
+            android:textSize="18sp"
+            android:textColor="#ffffff"
+            android:layout_gravity="center_horizontal"
+            android:paddingTop="8dp"/>
+
+        <ImageView
+            android:id="@+id/ivPreview"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:scaleType="fitCenter"
+            android:contentDescription="Camera preview"/>
+
+        <Button
+            android:id="@+id/btnToggleStream"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Start Stream"
+            android:backgroundTint="#4CAF50"
+            android:textColor="#ffffff"
+            android:layout_gravity="center_horizontal"
+            android:paddingTop="8dp"/>
+
+        <Button
+            android:id="@+id/btnSettings"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⚙ Settings"
+            android:backgroundTint="#333333"
+            android:textColor="#888888"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="8dp"
+            android:paddingTop="8dp"/>
+
+    </LinearLayout>
+
+    <!-- Corner button: exit to the real launcher (visible when OcuBea is home app) -->
+    <ImageButton
+        android:id="@+id/btnRealLauncher"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="10dp"
+        android:src="@android:drawable/ic_menu_manage"
+        android:contentDescription="Exit to launcher"
+        android:alpha="0.35"
+        android:background="?attr/selectableItemBackgroundBorderless"/>
+
+    <!-- Corner button: turn screen off while stream keeps running -->
+    <ImageButton
+        android:id="@+id/btnScreenOff"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="10dp"
+        android:src="@android:drawable/ic_lock_idle_lock"
+        android:contentDescription="Screen off"
+        android:alpha="0.35"
+        android:background="?attr/selectableItemBackgroundBorderless"/>
+
+</FrameLayout>
