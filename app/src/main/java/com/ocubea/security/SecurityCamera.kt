@@ -32,8 +32,14 @@ class MotionDetector(
 
     private var threshold: Int = computeThreshold(sensitivity)
 
+    /** Current sensitivity 0..100, kept in sync with the threshold. */
+    @Volatile var sensitivity: Int = sensitivity
+        private set
+
     fun setSensitivity(s: Int) {
-        threshold = computeThreshold(s.coerceIn(0, 100))
+        val clamped = s.coerceIn(0, 100)
+        sensitivity = clamped
+        threshold = computeThreshold(clamped)
     }
 
     private fun computeThreshold(s: Int): Int = ((100 - s.coerceIn(0, 100)) * 40 / 100) + 2

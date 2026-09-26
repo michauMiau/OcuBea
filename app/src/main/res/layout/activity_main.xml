@@ -2,97 +2,233 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#1a1a1a">
+    android:background="#0d1117">
 
+    <!-- Live preview fills the screen; controls float on top -->
+    <com.ocubea.ui.LivePreviewView
+        android:id="@+id/livePreview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Top bar -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical">
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="#99000000"
+        android:padding="10dp">
 
-        <TextView
-            android:id="@+id/tvTitle"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="OcuBea"
-            android:textSize="24sp"
-            android:textColor="#4CAF50"
-            android:layout_gravity="center_horizontal"
-            android:paddingTop="16dp"/>
+            android:layout_weight="1"
+            android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/tvIp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text=""
-            android:textSize="14sp"
-            android:textColor="#9E9E9E"
-            android:fontFamily="monospace"
-            android:layout_gravity="center_horizontal"
-            android:paddingTop="4dp"/>
+            <TextView
+                android:id="@+id/tvTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OcuBea"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="#4CAF50"/>
+
+            <TextView
+                android:id="@+id/tvUrl"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="12sp"
+                android:textColor="#9E9E9E"
+                android:fontFamily="monospace"/>
+
+        </LinearLayout>
 
         <TextView
             android:id="@+id/tvStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Stopped"
-            android:textSize="18sp"
-            android:textColor="#ffffff"
-            android:layout_gravity="center_horizontal"
-            android:paddingTop="8dp"/>
-
-        <ImageView
-            android:id="@+id/ivPreview"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:scaleType="fitCenter"
-            android:contentDescription="Camera preview"/>
-
-        <Button
-            android:id="@+id/btnToggleStream"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Start Stream"
-            android:backgroundTint="#4CAF50"
-            android:textColor="#ffffff"
-            android:layout_gravity="center_horizontal"
-            android:paddingTop="8dp"/>
-
-        <Button
-            android:id="@+id/btnSettings"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="⚙ Settings"
-            android:backgroundTint="#333333"
-            android:textColor="#888888"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="8dp"
-            android:paddingTop="8dp"/>
+            android:textSize="13sp"
+            android:textColor="#ffffff"/>
 
     </LinearLayout>
 
-    <!-- Corner button: exit to the real launcher (visible when OcuBea is home app) -->
+    <!-- Bottom control bar -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:background="#CC000000"
+        android:padding="8dp">
+
+        <!-- Row 1: primary controls -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnToggleStream"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1.2"
+                android:layout_margin="2dp"
+                android:text="▶ Start"
+                android:textSize="11sp"
+                android:backgroundTint="#2E7D32"
+                android:textColor="#ffffff"
+                android:minHeight="46dp"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+            <Button
+                android:id="@+id/btnTorch"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_margin="2dp"
+                android:text="🔦"
+                android:textSize="13sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:minHeight="46dp"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+            <Button
+                android:id="@+id/btnFlip"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_margin="2dp"
+                android:text="🔄"
+                android:textSize="13sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:minHeight="46dp"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+            <Button
+                android:id="@+id/btnZoomIn"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_margin="2dp"
+                android:text="🔍+"
+                android:textSize="13sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:minHeight="46dp"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+            <Button
+                android:id="@+id/btnZoomOut"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_margin="2dp"
+                android:text="🔍−"
+                android:textSize="13sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:minHeight="46dp"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+        </LinearLayout>
+
+        <!-- Row 2: secondary controls -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnNightVision"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1.2"
+                android:layout_margin="2dp"
+                android:text="🌙"
+                android:textSize="13sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:minHeight="42dp"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+            <Button
+                android:id="@+id/btnMotion"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_margin="2dp"
+                android:text="🚨"
+                android:textSize="13sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:minHeight="42dp"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+            <Button
+                android:id="@+id/btnScreenOff"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_margin="2dp"
+                android:text="🌑"
+                android:textSize="13sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:minHeight="42dp"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+            <Button
+                android:id="@+id/btnSettings"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_margin="2dp"
+                android:text="⚙"
+                android:textSize="13sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:minHeight="42dp"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+            <ImageButton
+                android:id="@+id/btnRealLauncher"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
+                android:layout_gravity="center_vertical"
+                android:layout_margin="2dp"
+                android:src="@android:drawable/ic_menu_manage"
+                android:contentDescription="Exit to launcher"
+                android:background="#37474F"/>
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- Top-right corner: leave kiosk mode -->
     <ImageButton
-        android:id="@+id/btnRealLauncher"
+        android:id="@+id/btnExitKiosk"
         android:layout_width="44dp"
         android:layout_height="44dp"
         android:layout_gravity="top|end"
-        android:layout_margin="10dp"
-        android:src="@android:drawable/ic_menu_manage"
-        android:contentDescription="Exit to launcher"
-        android:alpha="0.35"
-        android:background="?attr/selectableItemBackgroundBorderless"/>
-
-    <!-- Corner button: turn screen off while stream keeps running -->
-    <ImageButton
-        android:id="@+id/btnScreenOff"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="10dp"
-        android:src="@android:drawable/ic_lock_idle_lock"
-        android:contentDescription="Screen off"
-        android:alpha="0.35"
+        android:layout_marginTop="58dp"
+        android:layout_marginEnd="10dp"
+        android:src="@android:drawable/ic_menu_close_clear_cancel"
+        android:contentDescription="Exit kiosk"
+        android:alpha="0.3"
         android:background="?attr/selectableItemBackgroundBorderless"/>
 
 </FrameLayout>

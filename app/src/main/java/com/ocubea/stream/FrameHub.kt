@@ -57,6 +57,16 @@ class FrameHub {
 
     fun hasFrame(): Boolean = latestFrame.get() != null
 
+    /** Drop the current frame and all viewer queues — used when the camera rebinds. */
+    fun reset() {
+        latestFrame.set(null)
+        frameSeq = 0
+        frameCountThisSecond = 0
+        for (v in viewers) {
+            synchronized(v.queue) { v.queue.clear() }
+        }
+    }
+
     /** Register a new MJPEG viewer; returns null-safe handle used in removeViewer(). */
     fun addViewer(): Viewer {
         val v = Viewer(viewerCounter++)

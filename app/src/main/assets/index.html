@@ -6,155 +6,368 @@
 <meta name="theme-color" content="#0d1117">
 <title>OcuBea</title>
 <style>
-:root{--bg:#0d1117;--card:#161b22;--edge:#30363d;--fg:#e6edf3;--dim:#8b949e;--ok:#3fb950;--warn:#d29922;--err:#f85149;--acc:#58a6ff}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--fg);padding:12px;max-width:900px;margin:0 auto}
-header{display:flex;justify-content:space-between;align-items:center;padding:8px 4px 14px}
-h1{font-size:20px;font-weight:600}h1 span{color:var(--acc)}
-.badge{font-size:11px;padding:3px 10px;border-radius:12px;border:1px solid var(--err);color:var(--err)}
-.badge.on{border-color:var(--ok);color:var(--ok)}
-#view{background:#000;border:1px solid var(--edge);border-radius:10px;width:100%;aspect-ratio:16/9;display:block;object-fit:contain}
-.controls{display:flex;gap:8px;margin:10px 0 16px;flex-wrap:wrap}
-button{background:var(--card);color:var(--fg);border:1px solid var(--edge);border-radius:8px;padding:9px 16px;font-size:14px;cursor:pointer}
-button:hover{border-color:var(--acc)}button.primary{background:#1f6feb;border-color:#1f6feb}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
-.card{background:var(--card);border:1px solid var(--edge);border-radius:10px;padding:14px}
-.card h2{font-size:13px;text-transform:uppercase;color:var(--dim);letter-spacing:.5px;margin-bottom:10px}
-.row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:14px}
-.row .val{color:var(--dim);font-family:monospace}
-select,input[type=range]{accent-color:var(--acc);background:var(--bg);color:var(--fg);border:1px solid var(--edge);border-radius:6px;padding:4px 8px}
-.switch{position:relative;width:40px;height:22px}.switch input{opacity:0;width:0;height:0}
-.slider{position:absolute;inset:0;background:var(--edge);border-radius:22px;cursor:pointer;transition:.15s}
-.slider:before{content:"";position:absolute;height:16px;width:16px;left:3px;top:3px;background:var(--fg);border-radius:50%;transition:.15s}
-input:checked+.slider{background:var(--ok)}input:checked+.slider:before{transform:translateX(18px)}
-#recList{font-size:13px;color:var(--dim)}#recList a{color:var(--acc);text-decoration:none;display:block;padding:3px 0}
-footer{margin-top:18px;text-align:center;color:var(--dim);font-size:12px}
+  :root{--bg:#0d1117;--panel:#161b22;--line:#30363d;--txt:#e6edf3;--dim:#8b949e;--acc:#4CAF50;--warn:#ff5252}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding-bottom:40px}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.95);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:12px}
+  h1{font-size:20px;color:var(--acc);font-weight:700}
+  .pill{margin-left:auto;font-size:12px;padding:4px 10px;border-radius:12px;background:var(--panel);border:1px solid var(--line);color:var(--dim)}
+  .pill.on{color:var(--acc);border-color:var(--acc)}
+  .pill.off{color:var(--warn);border-color:var(--warn)}
+  main{max-width:860px;margin:0 auto;padding:16px}
+  .stream{position:relative;background:#000;border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:16px}
+  .stream img{width:100%;display:block;aspect-ratio:16/9;object-fit:contain}
+  .stream .off{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:14px}
+  .grid{display:grid;gap:12px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .g4{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:12px;font-weight:600}
+  button{background:#21262d;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+         font-size:13px;cursor:pointer;transition:.15s;font-family:inherit}
+  button:hover{background:#30363d}
+  button.on{background:#238636;border-color:#2ea043;color:#fff}
+  button.primary{background:#238636;border-color:#2ea043;color:#fff}
+  button.danger{background:#3d1d1d;border-color:#6e2b2b;color:#ff8a80}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .row>*{flex:1;min-width:80px}
+  label{display:block;font-size:12px;color:var(--dim);margin:10px 0 5px}
+  select,input[type=text],input[type=password],input[type=number]{width:100%;background:#0d1117;color:var(--txt);
+         border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:13px;font-family:inherit}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase}
+  td.num{text-align:right;font-family:ui-monospace,monospace}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12px}
+  .kv dt{color:var(--dim)}
+  .kv dd{font-family:ui-monospace,monospace;text-align:right}
+  code{font-family:ui-monospace,monospace;font-size:11px;background:#0d1117;padding:1px 5px;border-radius:4px;color:#79c0ff}
+  .hint{font-size:11px;color:var(--dim);margin-top:6px}
+  .rec{color:var(--warn);font-weight:600}
+  footer{text-align:center;color:var(--dim);font-size:11px;padding:20px}
+  @media(max-width:520px){.row>*{min-width:64px}button{padding:11px 8px;font-size:12px}}
 </style>
 </head>
 <body>
+
 <header>
-  <h1>Ocu<span>Bea</span></h1>
-  <span class="badge" id="badge">OFFLINE</span>
+  <h1>Ocu<span style="color:var(--txt)">Bea</span></h1>
+  <span class="pill" id="statusPill">connecting…</span>
 </header>
 
-<img id="view" src="/shot.jpg" alt="preview">
+<main>
 
-<div class="controls">
-  <button class="primary" id="btnStream">▶ Start view</button>
-  <button id="btnSnap">📷 Snapshot</button>
-  <button id="btnTorch">🔦 Torch</button>
-  <button id="btnFlip">🔄 Flip cam</button>
-</div>
-
-<div class="grid">
-  <div class="card">
-    <h2>Video</h2>
-    <div class="row"><span>Quality</span>
-      <select id="quality"><option value="320">320p</option><option value="480">480p</option><option value="720" selected>720p</option><option value="1080">1080p</option></select></div>
-    <div class="row"><span>Effect</span>
-      <select id="effect"><option value="none">None</option><option value="mono">Mono</option><option value="negative">Negative</option><option value="sepia">Sepia</option><option value="nightvision">Night vision</option></select></div>
-    <div class="row"><span>Zoom <small id="zoomVal">1.0x</small></span>
-      <input type="range" id="zoom" min="1" max="8" step="0.5" value="1"></div>
+  <div class="stream">
+    <img id="live" src="/video" alt="Live stream">
+    <div class="off" id="streamOff">stream offline</div>
   </div>
 
-  <div class="card">
-    <h2>Security camera</h2>
-    <div class="row"><span>Motion detection</span><label class="switch"><input type="checkbox" id="motion"><span class="slider"></span></label></div>
-    <div class="row"><span>Sensitivity</span><input type="range" id="sens" min="1" max="100" value="50"></div>
-    <div class="row"><span>Record on motion</span><label class="switch"><input type="checkbox" id="recording"><span class="slider"></span></label></div>
-    <div class="row"><span>Status</span><span class="val" id="motionStatus">idle</span></div>
+  <div class="grid g4">
+    <button id="bStream" class="primary">Start</button>
+    <button id="bTorch">Torch</button>
+    <button id="bFlip">Flip cam</button>
+    <button id="bShot">Snapshot</button>
   </div>
 
-  <div class="card">
-    <h2>Audio</h2>
-    <div class="row"><span>Listen</span><audio controls preload="none" style="width:100%" src="/audio.wav"></audio></div>
-    <div class="row"><span>Clients</span><span class="val" id="audioClients">0</span></div>
+  <div class="grid g2" style="margin-top:12px">
+    <section>
+      <h2>Optics</h2>
+      <label>Zoom <span id="zoomVal" style="float:right;color:var(--txt)">1.0×</span></label>
+      <input type="range" id="zoom" min="1" max="10" step="0.1" value="1">
+      <label>Focus</label>
+      <div class="row">
+        <button id="bFocus">Autofocus center</button>
+      </div>
+      <p class="hint">Tap anywhere on the video to focus that spot.</p>
+    </section>
+
+    <section>
+      <h2>Image</h2>
+      <label>Effect</label>
+      <select id="effect">
+        <option value="none">None</option>
+        <option value="mono">Monochrome</option>
+        <option value="negative">Negative</option>
+        <option value="sepia">Sepia</option>
+        <option value="nightvision">Night vision</option>
+      </select>
+      <label>Quality</label>
+      <select id="quality">
+        <option value="320">320×240 (QVGA)</option>
+        <option value="480">640×480 (VGA)</option>
+        <option value="720" selected>1280×720 (HD)</option>
+        <option value="1080">1920×1080 (FullHD)</option>
+      </select>
+      <label>Night vision</label>
+      <div class="row">
+        <button id="bNight">Toggle</button>
+      </div>
+    </section>
   </div>
 
-  <div class="card">
-    <h2>Recordings (<span id="recCount">0</span>)</h2>
-    <div id="recList">loading…</div>
+  <div class="grid g2">
+    <section>
+      <h2>Security camera</h2>
+      <div class="row">
+        <button id="bMotion">Motion detect</button>
+        <button id="bRec">Record on motion</button>
+      </div>
+      <label>Sensitivity <span id="sensVal" style="float:right;color:var(--txt)">50</span></label>
+      <input type="range" id="sens" min="0" max="100" value="50">
+      <label>Pre-record <span id="preVal" style="float:right;color:var(--txt)">2s</span></label>
+      <input type="range" id="pre" min="0" max="10" value="2">
+      <label>Max clip <span id="clipVal" style="float:right;color:var(--txt)">300s</span></label>
+      <input type="range" id="clip" min="10" max="1800" step="10" value="300">
+      <p class="hint" id="motionState">motion: idle</p>
+    </section>
+
+    <section>
+      <h2>Status</h2>
+      <dl class="kv">
+        <dt>FPS</dt><dd id="sFps">–</dd>
+        <dt>Viewers</dt><dd id="sViewers">0</dd>
+        <dt>Frames</dt><dd id="sFrames">0</dd>
+        <dt>Dropped</dt><dd id="sDropped">0</dd>
+        <dt>Resolution</dt><dd id="sRes">–</dd>
+        <dt>Uptime</dt><dd id="sUptime">–</dd>
+        <dt>Battery</dt><dd id="sBattery">–</dd>
+        <dt>Audio clients</dt><dd id="sAudio">0</dd>
+        <dt>Recordings</dt><dd id="sRec">0</dd>
+      </dl>
+    </section>
   </div>
 
-  <div class="card">
-    <h2>Info</h2>
-    <div class="row"><span>FPS / Viewers</span><span class="val" id="fpsViewers">–</span></div>
-    <div class="row"><span>Resolution</span><span class="val" id="res">–</span></div>
-    <div class="row"><span>Battery</span><span class="val" id="battery">–</span></div>
-    <div class="row"><span>ONVIF</span><span class="val">Profile S @ :3702</span></div>
-  </div>
-</div>
+  <section>
+    <h2>Recordings</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button id="bRefreshRec">Refresh</button>
+      <button id="bDelAll" class="danger">Delete all</button>
+    </div>
+    <div id="recEmpty" class="hint" style="display:none">No recordings yet.</div>
+    <table id="recTable" style="display:none">
+      <thead><tr><th>File</th><th>Size</th><th>Recorded</th><th></th></tr></thead>
+      <tbody id="recBody"></tbody>
+    </table>
+  </section>
 
-<footer>OcuBea — open IP webcam · API at <a style="color:var(--acc)" href="/status.json">/status.json</a></footer>
+  <section>
+    <h2>Device</h2>
+    <dl class="kv" id="devKv"></dl>
+  </section>
+
+  <section>
+    <h2>API</h2>
+    <p class="hint" style="margin-bottom:8px">IP Webcam compatible API. Common endpoints:</p>
+    <div class="kv">
+      <dt><code>GET /video</code></dt><dd style="text-align:left">MJPEG stream</dd>
+      <dt><code>GET /shot.jpg</code></dt><dd style="text-align:left">snapshot</dd>
+      <dt><code>GET /audio.wav</code></dt><dd style="text-align:left">microphone</dd>
+      <dt><code>GET /status.json</code></dt><dd style="text-align:left">telemetry</dd>
+      <dt><code>GET /sensors.json</code></dt><dd style="text-align:left">battery, thermal, storage</dd>
+      <dt><code>POST /onvif/device_service</code></dt><dd style="text-align:left">ONVIF SOAP</dd>
+    </div>
+  </section>
+
+</main>
+
+<footer>OcuBea — reliability first</footer>
 
 <script>
-"use strict";
-var streaming=false;
-function $(id){return document.getElementById(id)}
+var T = new URLSearchParams(location.search).get('token') || localStorage.getItem('ocubea_token') || '';
+var debounce = null;
 
-function set(name,val,cb){
-  fetch('/settings/'+name+'?set='+encodeURIComponent(val),{method:'POST'})
-    .then(function(r){if(cb)cb(r.ok)});
+function url(p){ return T ? p + (p.indexOf('?')>=0?'&':'?') + 'token=' + encodeURIComponent(T) : p; }
+function api(p){ return fetch(url(p), {method:'POST'}); }
+function get(p){ return fetch(url(p)); }
+function $(id){ return document.getElementById(id); }
+function bytes(n){
+  if(!n) return '0 B';
+  var u=['B','KB','MB','GB'], i=Math.min(Math.floor(Math.log(n)/Math.log(1024)),3);
+  return (n/Math.pow(1024,i)).toFixed(i?1:0)+' '+u[i];
+}
+function later(fn, ms){
+  clearTimeout(debounce);
+  debounce = setTimeout(fn, ms);
 }
 
-$('btnStream').onclick=function(){
-  if(streaming){$('view').src='/shot.jpg';this.textContent='▶ Start view';streaming=false;}
-  else{$('view').src='/video';this.textContent='⏸ Stop view';streaming=true;}
+/* ── Live stream with auto-reconnect ─────────────────────────── */
+var live = $('live'), delay = 1000;
+live.onerror = function(){
+  $('streamOff').style.display = 'flex';
+  delay = Math.min(delay * 1.5, 10000);
+  setTimeout(function(){ live.src = url('/video') + '?t=' + Date.now(); }, delay);
 };
+live.onload = function(){ $('streamOff').style.display = 'none'; delay = 1000; };
 
-$('btnSnap').onclick=function(){window.open('/shot.jpg','_blank')};
-$('btnTorch').onclick=function(){
-  var on=this.dataset.on!=='1';
-  this.dataset.on=on?'1':'0';
-  fetch(on?'/torchon':'/torchoff',{method:'POST'});
-};
-$('btnFlip').onclick=function(){fetch('/settings/ffc?set=toggle',{method:'POST'}).then(refreshStatus)};
+/* ── Status ─────────────────────────────────────────────────── */
+function refresh(){
+  get('/status.json').then(function(r){ return r.json(); }).then(function(s){
+    var cam = s.camera_active;
+    $('bStream').textContent = cam ? 'Stop' : 'Start';
+    $('bStream').className = cam ? 'danger' : 'primary';
+    $('streamOff').style.display = cam ? 'none' : 'flex';
+    if(!cam && live.naturalWidth === 0){ live.src = url('/video') + '?t=' + Date.now(); }
 
-$('quality').onchange=function(){set('quality',this.value)};
-$('effect').onchange=function(){set('effect',this.value)};
-$('motion').onchange=function(){set('motion_detection',this.checked?'on':'off')};
-$('recording').onchange=function(){set('recording',this.checked?'on':'off')};
-$('sens').onchange=function(){set('motion_sensitivity',this.value)};
-var zoomT;$('zoom').oninput=function(){
-  $('zoomVal').textContent=(+this.value).toFixed(1)+'x';
-  clearTimeout(zoomT);var v=this.value;
-  zoomT=setTimeout(function(){fetch('/ptz?zoom='+v,{method:'POST'})},200);
-};
+    var pill = $('statusPill');
+    pill.textContent = cam ? '● live · ' + (s.fps || 0) + ' fps' : '○ stopped';
+    pill.className = 'pill ' + (cam ? 'on' : 'off');
 
-function refreshStatus(){
-  fetch('/status.json').then(function(r){return r.json()}).then(function(s){
-    $('badge').textContent=s.camera_active?'LIVE':'OFFLINE';
-    $('badge').className='badge'+(s.camera_active?' on':'');
-    $('fpsViewers').textContent=s.fps+' fps · '+s.viewers+' viewer(s)';
-    $('res').textContent=s.resolution;
-    $('battery').textContent=s.battery_level>=0?s.battery_level+'%':'n/a';
-    $('audioClients').textContent=s.audio_clients;
-    $('motionStatus').textContent=s.motion.detected?'⚠ MOTION':(s.recording.active?'● recording':'idle');
-    if(!$('motion').matches(':focus')) $('motion').checked=s.motion.enabled;
-    $('recording').checked=s.recording.enabled;
-    $('recCount').textContent=s.recording.count;
+    $('sFps').textContent = s.fps;
+    $('sViewers').textContent = s.viewers;
+    $('sFrames').textContent = s.frames;
+    $('sDropped').textContent = s.dropped || 0;
+    $('sRes').textContent = s.resolution;
+    $('sAudio').textContent = (s.audio && s.audio.clients) || 0;
+    $('sBattery').textContent = s.battery_level >= 0 ? s.battery_level + '%' : '–';
+    $('sUptime').textContent = uptime(s.uptime_s);
+
+    $('bTorch').className = s.torch ? 'on' : '';
+    $('bNight').className = s.night_vision ? 'on' : '';
+    $('bMotion').className = (s.motion && s.motion.enabled) ? 'on' : '';
+    $('bRec').className = (s.recording && s.recording.enabled) ? 'on' : '';
+    $('sRec').textContent = (s.recording && s.recording.count) || 0;
+
+    if(s.recording && s.recording.active){
+      $('motionState').innerHTML = '<span class="rec">● recording clip…</span>';
+    } else if(s.motion && s.motion.detected){
+      $('motionState').innerHTML = '<span class="rec">motion detected</span>';
+    } else {
+      $('motionState').textContent = 'motion: idle · sensitivity ' + s.motion.sensitivity;
+    }
+
+    if(s.zoom){
+      $('zoom').max = s.zoom.max > 1 ? s.zoom.max : 10;
+      $('zoom').value = s.zoom.level;
+      $('zoomVal').textContent = Number(s.zoom.level).toFixed(1) + '×';
+    }
+    $('effect').value = s.effect || 'none';
+    if(s.resolution){
+      var q = s.resolution.split('x')[1];
+      if(q) $('quality').value = q;
+    }
+    if(s.motion) $('sens').value = s.motion.sensitivity;
+  }).catch(function(){
+    var pill = $('statusPill');
+    pill.textContent = '○ offline'; pill.className = 'pill off';
+  });
+}
+function uptime(s){
+  if(s == null) return '–';
+  var h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+  return h ? h + 'h ' + m + 'm' : m + 'm';
+}
+
+/* ── Sensors ────────────────────────────────────────────────── */
+function refreshSensors(){
+  get('/sensors.json').then(function(r){ return r.json(); }).then(function(s){
+    var b = s.battery || {}, st = s.storage || {}, mem = s.memory || {},
+        net = s.network || {}, th = (s.thermal && s.thermal.status) || 'n/a',
+        cam = s.camera || {}, dev = s.device || {};
+    $('devKv').innerHTML =
+      kv('Model', dev.model) +
+      kv('Android', dev.android + ' (API ' + dev.sdk + ')') +
+      kv('Battery', b.level + '%' + (b.charging ? ' ⚡' : '')) +
+      kv('Temp', b.temperature_c != null ? b.temperature_c + '°C' : '–') +
+      kv('Health', b.health) +
+      kv('Storage', st.free_mb + ' MB free') +
+      kv('RAM', mem.available_mb + ' MB free') +
+      kv('Thermal', th) +
+      kv('Network', net.interface + ' ' + (net.wifi ? 'Wi-Fi' : 'mobile') + (net.metered ? ' metered' : '')) +
+      kv('Cameras', (cam.ids || []).join(', ') + ' · torch ' + (cam.torch_capable ? 'yes' : 'no'));
   }).catch(function(){});
 }
-function refreshRecs(){
-  fetch('/recordings').then(function(r){return r.json()}).then(function(d){
-    var el=$('recList');
-    if(!d.recordings.length){el.textContent='no recordings yet';return}
-    el.innerHTML='';
-    d.recordings.forEach(function(f){
-      var a=document.createElement('a');
-      a.href='/recordings/'+f.name;a.textContent='🎬 '+f.name+' ('+(f.size/1048576).toFixed(1)+' MB)';
-      a.download=f.name;el.appendChild(a);
+function kv(k, v){ return '<dt>' + k + '</dt><dd>' + (v == null ? '–' : v) + '</dd>'; }
+
+/* ── Recordings ─────────────────────────────────────────────── */
+function refreshRec(){
+  get('/recordings').then(function(r){ return r.json(); }).then(function(d){
+    var list = d.recordings || [];
+    $('recEmpty').style.display = list.length ? 'none' : 'block';
+    $('recTable').style.display = list.length ? 'table' : 'none';
+    $('recBody').innerHTML = list.map(function(f){
+      return '<tr><td>' + f.name + '</td>' +
+             '<td class="num">' + bytes(f.size) + '</td>' +
+             '<td class="num">' + new Date(f.modified).toLocaleString() + '</td>' +
+             '<td style="text-align:right">' +
+             '<a href="' + url('/recordings/' + f.name) + '" download>⬇</a> ' +
+             '<button data-del="' + f.name + '" style="padding:2px 8px;font-size:11px">✕</button>' +
+             '</td></tr>';
+    }).join('');
+  }).catch(function(){});
+}
+
+/* ── Wiring ─────────────────────────────────────────────────── */
+$('bStream').onclick = function(){
+  var running = this.textContent === 'Stop';
+  api(running ? '/settings/force_stop' : '/settings/force_start').then(function(){
+    $('statusPill').textContent = running ? 'stopping…' : 'starting…';
+  });
+};
+$('bTorch').onclick = function(){ api(this.className === 'on' ? '/torchoff' : '/torchon').then(refresh); };
+$('bFlip').onclick = function(){ api('/settings/ffc?set=toggle').then(refresh); };
+$('bShot').onclick = function(){
+  var a = document.createElement('a');
+  a.href = url('/shot.jpg') + '?t=' + Date.now();
+  a.download = 'ocubea.jpg';
+  a.click();
+};
+$('bFocus').onclick = function(){ api('/focus?x=0.5&y=0.5'); };
+$('bNight').onclick = function(){ api('/settings/night_vision?set=' + (this.className === 'on' ? 'off' : 'on')).then(refresh); };
+$('bMotion').onclick = function(){ api('/settings/motion_detection?set=' + (this.className === 'on' ? 'off' : 'on')).then(refresh); };
+$('bRec').onclick = function(){ api('/settings/recording?set=' + (this.className === 'on' ? 'off' : 'on')).then(refresh); };
+$('effect').onchange = function(){ api('/settings/effect?set=' + this.value).then(refresh); };
+$('quality').onchange = function(){ api('/settings/quality?set=' + this.value).then(function(){ setTimeout(refresh, 900); }); };
+
+$('zoom').oninput = function(){
+  $('zoomVal').textContent = Number(this.value).toFixed(1) + '×';
+  var v = this.value;
+  later(function(){ api('/ptz?zoom=' + v); }, 180);
+};
+$('sens').oninput = function(){
+  $('sensVal').textContent = this.value;
+  var v = this.value;
+  later(function(){ api('/settings/motion_sensitivity?set=' + v); }, 200);
+};
+$('pre').oninput = function(){
+  $('preVal').textContent = this.value + 's';
+  var v = this.value;
+  later(function(){ api('/settings/pre_record_seconds?set=' + v); }, 200);
+};
+$('clip').oninput = function(){
+  $('clipVal').textContent = this.value + 's';
+  var v = this.value;
+  later(function(){ api('/settings/max_clip_seconds?set=' + v); }, 200);
+};
+
+$('bRefreshRec').onclick = refreshRec;
+$('bDelAll').onclick = function(){
+  if(!confirm('Delete all recordings?')) return;
+  get('/recordings').then(function(r){ return r.json(); }).then(function(d){
+    (d.recordings || []).forEach(function(f){
+      fetch(url('/recordings/' + f.name), {method:'DELETE'});
     });
-  }).catch(function(){});
-}
+    setTimeout(refreshRec, 700);
+  });
+};
+$('recBody').onclick = function(e){
+  var name = e.target.getAttribute('data-del');
+  if(!name || !confirm('Delete ' + name + '?')) return;
+  fetch(url('/recordings/' + name), {method:'DELETE'}).then(refreshRec);
+};
 
-refreshStatus();refreshRecs();
-setInterval(refreshStatus,3000);
-setInterval(refreshRecs,15000);
-// auto-recover stream if it drops
-setInterval(function(){
-  if(streaming&&$('view').naturalWidth===0){$('view').src='/video'}
-},5000);
+/* Tap the video to focus that spot */
+$('live').onclick = function(e){
+  var r = this.getBoundingClientRect();
+  var x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+  api('/focus?x=' + x.toFixed(3) + '&y=' + y.toFixed(3));
+};
+
+refresh(); refreshSensors(); refreshRec();
+setInterval(function(){ refresh(); refreshRec(); }, 3000);
+setInterval(refreshSensors, 15000);
 </script>
+
 </body>
 </html>

@@ -2,212 +2,240 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0a0a0a"
+    android:background="#0d1117"
     android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:padding="16dp">
 
-        <!-- Header -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="OcuBea Settings"
-            android:textSize="28sp"
+            android:text="Settings"
+            android:textSize="24sp"
+            android:textStyle="bold"
             android:textColor="#4CAF50"
-            android:fontFamily="sans-serif-medium"
-            android:layout_marginBottom="4dp"/>
+            android:layout_marginBottom="2dp"/>
 
         <TextView
+            android:id="@+id/tvStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Configure camera and streaming options"
+            android:text="Stopped"
             android:textSize="14sp"
-            android:textColor="#888888"
-            android:layout_marginBottom="24dp"/>
+            android:textColor="#8b949e"
+            android:layout_marginBottom="12dp"/>
 
-        <!-- Stream status card -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="#1a1a1a"
-            android:padding="16dp"
-            android:layout_marginBottom="16dp">
-
-            <TextView
-                android:id="@+id/tvStatus"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="⏸ Stopped — Tap to Start"
-                android:textSize="18sp"
-                android:textColor="#ffffff"
-                android:layout_gravity="center_horizontal"
-                android:layout_marginBottom="12dp"/>
-
-            <Button
-                android:id="@+id/btnStartStop"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:text="▶ Start Stream"
-                android:textSize="16sp"
-                android:textColor="#ffffff"
-                android:backgroundTint="#4CAF50"
-                android:paddingTop="12dp"
-                android:layout_gravity="center_horizontal"/>
-        </LinearLayout>
-
-        <!-- Resolution card -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="📐 Resolution"
-            android:textSize="16sp"
-            android:textColor="#4CAF50"
-            android:fontFamily="sans-serif-medium"
-            android:layout_marginBottom="8dp"/>
-
-        <Spinner
-            android:id="@+id/spinnerResolution"
+        <Button
+            android:id="@+id/btnStartStop"
             android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:background="#222222"
-            android:padding="12dp"
-            android:layout_marginBottom="16dp"/>
-
-        <!-- FPS card -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="⏱ Frames per second"
-            android:textSize="16sp"
-            android:textColor="#4CAF50"
-            android:fontFamily="sans-serif-medium"
-            android:layout_marginBottom="8dp"/>
-
-        <Spinner
-            android:id="@+id/spinnerFPS"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:background="#222222"
-            android:padding="12dp"
-            android:layout_marginBottom="16dp"/>
-
-        <!-- Toggles card -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="🔧 Features"
-            android:textSize="16sp"
-            android:textColor="#4CAF50"
-            android:fontFamily="sans-serif-medium"
-            android:layout_marginBottom="8dp"/>
-
-        <CheckBox
-            android:id="@+id/checkboxNightVision"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="🌙 Night Vision Enhancement"
+            android:text="▶ Start Stream"
             android:textSize="15sp"
-            android:textColor="#e0e0e0"
-            android:padding="12dp"
-            android:background="#1a1a1a"
-            android:layout_marginBottom="8dp"/>
+            android:textColor="#ffffff"
+            android:backgroundTint="#2E7D32"
+            android:layout_marginBottom="20dp"/>
 
-        <CheckBox
-            android:id="@+id/checkboxMic"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="🎤 Enable Microphone (Audio Streaming)"
-            android:textSize="15sp"
-            android:textColor="#e0e0e0"
-            android:padding="12dp"
-            android:background="#1a1a1a"
-            android:layout_marginBottom="16dp"/>
+        <!-- Server -->
+        <TextView style="@style/SectionHead" android:text="SERVER"/>
 
-        <!-- Port card -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="🌐 Server Port"
-            android:textSize="16sp"
-            android:textColor="#4CAF50"
-            android:fontFamily="sans-serif-medium"
-            android:layout_marginBottom="8dp"/>
-
+        <TextView style="@style/Label" android:text="Port"/>
         <EditText
             android:id="@+id/editTextPort"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:background="#222222"
+            android:layout_height="46dp"
+            android:background="@style/InputBg"
             android:padding="12dp"
             android:inputType="number"
-            android:text="8080"
-            android:textColor="#e0e0e0"
-            android:textSize="16sp"
+            android:hint="8080"
+            android:textColor="#e6edf3"
+            android:textColorHint="#8b949e"
+            android:textSize="15sp"/>
+
+        <TextView style="@style/Label" android:text="Access token (blank = open camera)"/>
+        <EditText
+            android:id="@+id/editTextToken"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:background="@style/InputBg"
+            android:padding="12dp"
+            android:inputType="textPassword"
+            android:hint="leave empty for no auth"
+            android:textColor="#e6edf3"
+            android:textColorHint="#8b949e"
+            android:textSize="15sp"/>
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="When set, every request needs ?token=… or an Authorization header. A new port or token needs a restart."
+            android:textSize="11sp"
+            android:textColor="#8b949e"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="12dp"/>
+
+        <TextView style="@style/Label" android:text="Device name (ONVIF)"/>
+        <EditText
+            android:id="@+id/editTextDeviceName"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:background="@style/InputBg"
+            android:padding="12dp"
+            android:inputType="text"
+            android:hint="OcuBea"
+            android:textColor="#e6edf3"
+            android:textColorHint="#8b949e"
+            android:textSize="15sp"
+            android:layout_marginBottom="12dp"/>
+
+        <!-- Video -->
+        <TextView style="@style/SectionHead" android:text="VIDEO"/>
+
+        <TextView style="@style/Label" android:text="Resolution"/>
+        <Spinner
+            android:id="@+id/spinnerResolution"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:background="@style/InputBg"
+            android:padding="10dp"
+            android:layout_marginBottom="12dp"/>
+
+        <TextView style="@style/Label" android:text="Frame rate"/>
+        <Spinner
+            android:id="@+id/spinnerFPS"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:background="@style/InputBg"
+            android:padding="10dp"
+            android:layout_marginBottom="12dp"/>
+
+        <TextView
+            android:id="@+id/labelQuality"
+            style="@style/Label"
+            android:text="JPEG quality: 82"/>
+        <SeekBar
+            android:id="@+id/seekQuality"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:max="60"
+            android:progress="42"
+            android:layout_marginBottom="12dp"/>
+
+        <!-- Toggles -->
+        <TextView style="@style/SectionHead" android:text="FEATURES"/>
+
+        <CheckBox
+            android:id="@+id/checkboxNightVision"
+            style="@style/Check"
+            android:text="Night vision enhancement"/>
+
+        <CheckBox
+            android:id="@+id/checkboxMic"
+            style="@style/Check"
+            android:text="Microphone / audio streaming"/>
+
+        <CheckBox
+            android:id="@+id/checkboxSecurity"
+            style="@style/Check"
+            android:text="Security camera (motion detection)"/>
+
+        <CheckBox
+            android:id="@+id/checkboxAutostart"
+            style="@style/Check"
+            android:text="Start automatically after boot"/>
+
+        <CheckBox
+            android:id="@+id/checkboxPowerSaving"
+            style="@style/Check"
+            android:text="Power saving (lower quality when hot/low battery)"/>
+
+        <!-- Security detail -->
+        <TextView style="@style/SectionHead" android:text="MOTION RECORDING"/>
+
+        <TextView
+            android:id="@+id/labelSensitivity"
+            style="@style/Label"
+            android:text="Sensitivity: 50"/>
+        <SeekBar
+            android:id="@+id/seekSensitivity"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:max="100"
+            android:progress="50"
+            android:layout_marginBottom="12dp"/>
+
+        <TextView style="@style/Label" android:text="Pre-record seconds"/>
+        <SeekBar
+            android:id="@+id/seekPreRecord"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:max="10"
+            android:progress="2"
+            android:layout_marginBottom="12dp"/>
+
+        <TextView style="@style/Label" android:text="Max clip length (seconds)"/>
+        <SeekBar
+            android:id="@+id/seekMaxClip"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:max="360"
+            android:progress="30"
             android:layout_marginBottom="16dp"/>
 
-        <!-- Info card -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="ℹ️ Information"
-            android:textSize="16sp"
-            android:textColor="#4CAF50"
-            android:fontFamily="sans-serif-medium"
-            android:layout_marginBottom="8dp"/>
+        <!-- Diagnostics -->
+        <TextView style="@style/SectionHead" android:text="DIAGNOSTICS"/>
 
-        <LinearLayout
+        <Button
+            android:id="@+id/btnRestartCamera"
+            style="@style/ActionBtn"
+            android:text="Restart camera"/>
+
+        <Button
+            android:id="@+id/btnShowLog"
+            style="@style/ActionBtn"
+            android:text="Show log"/>
+
+        <TextView
+            android:id="@+id/tvLog"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="#1a1a1a"
-            android:padding="16dp">
+            android:background="@style/InputBg"
+            android:padding="10dp"
+            android:textColor="#8b949e"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:visibility="gone"
+            android:layout_marginBottom="16dp"/>
 
-            <TextView
-                android:id="@+id/tvInfoPort"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Server Port: 8080"
-                android:textSize="14sp"
-                android:textColor="#888888"
-                android:paddingBottom="4dp"/>
+        <!-- Addresses -->
+        <TextView style="@style/SectionHead" android:text="ADDRESSES"/>
 
-            <TextView
-                android:id="@+id/tvInfoWebUI"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Web UI: http://&lt;phone-ip&gt;:8080"
-                android:textSize="14sp"
-                android:textColor="#888888"
-                android:paddingBottom="4dp"/>
+        <TextView
+            android:id="@+id/tvInfoWebUI"
+            style="@style/InfoLine"
+            android:text="Web UI: –"/>
+        <TextView
+            android:id="@+id/tvInfoStream"
+            style="@style/InfoLine"
+            android:text="Stream: –"/>
+        <TextView
+            android:id="@+id/tvInfoSnapshot"
+            style="@style/InfoLine"
+            android:text="Snapshot: –"/>
+        <TextView
+            android:id="@+id/tvInfoAudio"
+            style="@style/InfoLine"
+            android:text="Audio: –"/>
+        <TextView
+            android:id="@+id/tvInfoOnvif"
+            style="@style/InfoLine"
+            android:text="ONVIF: –"/>
 
-            <TextView
-                android:id="@+id/tvInfoStream"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Stream: http://&lt;phone-ip&gt;:8080/video"
-                android:textSize="14sp"
-                android:textColor="#8bc34a"
-                android:paddingBottom="4dp"/>
-
-            <TextView
-                android:id="@+id/tvInfoSnapshot"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Snapshot: http://&lt;phone-ip&gt;:8080/shot.jpg"
-                android:textSize="14sp"
-                android:textColor="#8bc34a"
-                android:paddingBottom="4dp"/>
-        </LinearLayout>
-
-        <!-- Spacer -->
         <View
             android:layout_width="match_parent"
-            android:layout_height="40dp"/>
+            android:layout_height="32dp"/>
 
     </LinearLayout>
 </ScrollView>
