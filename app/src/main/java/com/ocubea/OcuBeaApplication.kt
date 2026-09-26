@@ -10,7 +10,7 @@ import com.ocubea.service.StreamService
 class OcuBeaApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        CrashLogger.install(this)
+        CrashLogger.installIfNeeded(this)
     }
 
     val streamService: StreamService? get() = StreamService.instance

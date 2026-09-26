@@ -1,17 +1,20 @@
 package com.ocubea.server
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import java.io.OutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Shared microphone capture: ONE AudioRecord instance fans out PCM to any number
- * of connected clients. Each client gets a proper streaming WAV (header with
- * unknown length 0xFFFFFFFF — standard for endless streams).
+ * of connected clients, so a second viewer never fights the first for the mic.
+ *
+ * Each client receives a proper streaming WAV — 44-byte header with sizes set to
+ * 0xFFFFFFFF (the standard "length unknown" marker for endless streams), sent once
+ * at connect rather than per chunk.
  */
 class AudioStreamManager(private val context: Context) {
 
@@ -23,38 +26,47 @@ class AudioStreamManager(private val context: Context) {
         fun getMinBufferSize(): Int = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
     }
 
+    private val activeClients = ArrayList<Client>()
     private val clients = AtomicInteger(0)
     private var audioRecord: AudioRecord? = null
-    private val executor = Executors.newSingleThreadExecutor()
+    private val executor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ocubea-audio").apply { isDaemon = true }
+    }
     @Volatile private var capturing = false
 
-    /** Per-client sink; onDisconnect is invoked on the capture thread when the pipe breaks. */
+    /** Per-client sink. Returning false (or throwing) from [write] drops the client. */
     class Client(val write: (ByteArray, Int) -> Boolean, val onDisconnect: () -> Unit)
 
-    fun canRecord(): Boolean = context.checkSelfPermission(
-        android.Manifest.permission.RECORD_AUDIO
-    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    fun canRecord(): Boolean =
+        context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
     fun clientCount(): Int = clients.get()
 
-    /** Register a client; starts shared capture if this is the first one. */
+    fun isCapturing(): Boolean = capturing
+
+    /** Register a client and start shared capture if this is the first one. */
     fun addClient(client: Client) {
         ensureCapture()
-        clients.incrementAndGet()
-        synchronized(activeClients) { activeClients.add(client) }
-        // immediately send header to the new client
+        // WAV header first so the client can start decoding immediately
         try {
             val header = wavHeader(0xFFFFFFFFL)
             client.write(header, header.size)
         } catch (_: Exception) {}
+        synchronized(activeClients) { activeClients.add(client) }
+        clients.incrementAndGet()
     }
 
     fun removeClient(client: Client) {
-        synchronized(activeClients) { activeClients.remove(client) }
-        if (clients.decrementAndGet() <= 0) stop()
+        val removed = synchronized(activeClients) { activeClients.remove(client) }
+        if (removed) dropClient(client, alreadyCounted = true)
     }
 
-    private val activeClients = ArrayList<Client>()
+    private fun dropClient(client: Client, alreadyCounted: Boolean) {
+        if (!alreadyCounted) clients.decrementAndGet()
+        else clients.updateAndGet { if (it > 0) it - 1 else 0 }
+        try { client.onDisconnect() } catch (_: Exception) {}
+        if (clients.get() <= 0) stop()
+    }
 
     private fun ensureCapture() {
         if (capturing) return
@@ -69,7 +81,13 @@ class AudioStreamManager(private val context: Context) {
             throw IllegalStateException("AudioRecord failed to initialize")
         }
         audioRecord = record
-        record.startRecording()
+        try {
+            record.startRecording()
+        } catch (e: Exception) {
+            record.release()
+            audioRecord = null
+            throw IllegalStateException("AudioRecord could not start: ${e.message}")
+        }
         capturing = true
         executor.execute { captureLoop(record, bufSize) }
     }
@@ -87,29 +105,51 @@ class AudioStreamManager(private val context: Context) {
                             if (!c.write(buffer, read)) dead.add(c)
                         } catch (_: Exception) { dead.add(c) }
                     }
-                    activeClients.removeAll(dead)
+                    for (c in dead) activeClients.remove(c)
                 }
-                for (c in dead) {
-                    clients.decrementAndGet()
-                    try { c.onDisconnect() } catch (_: Exception) {}
-                }
+                for (c in dead) dropClient(c, alreadyCounted = true)
             }
+        } catch (_: Exception) {
+            // recorder died — fall through to cleanup
         } finally {
             try { record.stop() } catch (_: Exception) {}
             try { record.release() } catch (_: Exception) {}
             if (audioRecord === record) audioRecord = null
+            // Disconnect everyone still waiting on the dead recorder
+            val orphans = synchronized(activeClients) {
+                val copy = ArrayList(activeClients)
+                activeClients.clear()
+                copy
+            }
+            for (c in orphans) {
+                try { c.onDisconnect() } catch (_: Exception) {}
+            }
+            clients.set(0)
+            capturing = false
         }
     }
 
     fun stop() {
         capturing = false
+        val orphans = synchronized(activeClients) {
+            val copy = ArrayList(activeClients)
+            activeClients.clear()
+            copy
+        }
+        for (c in orphans) {
+            try { c.onDisconnect() } catch (_: Exception) {}
+        }
+        clients.set(0)
     }
 
     /** Standard 44-byte WAV header. Pass 0xFFFFFFFF for data size when streaming live. */
     private fun wavHeader(dataSize: Long): ByteArray {
         val total = dataSize + 36
         val out = java.io.ByteArrayOutputStream(44)
-        fun w32(v: Int) { out.write(v and 0xFF); out.write((v shr 8) and 0xFF); out.write((v shr 16) and 0xFF); out.write((v shr 24) and 0xFF) }
+        fun w32(v: Int) {
+            out.write(v and 0xFF); out.write((v shr 8) and 0xFF)
+            out.write((v shr 16) and 0xFF); out.write((v shr 24) and 0xFF)
+        }
         fun w16(v: Int) { out.write(v and 0xFF); out.write((v shr 8) and 0xFF) }
         val byteRate = SAMPLE_RATE * 2
         out.write("RIFF".toByteArray()); w32(total.toInt())
