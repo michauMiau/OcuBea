@@ -37,7 +37,14 @@ class HlsSession(
     }
 
     private val encoder = H264Encoder(width, height, fps, bitrate)
-    private val muxer = Fmp4Writer()
+    // The muxer MUST get the real frame rate. It uses it for the duration of a
+    // single-frame segment, and a wrong value punches holes in the playback
+    // timeline: with fps defaulted to 30 while the camera actually delivers one
+    // frame every ~241ms, each segment claimed 33ms of media, so six
+    // consecutive segments left six separate 193ms gaps in SourceBuffer.buffered
+    // and the decoder never saw a continuous range — readyState stayed at 1 and
+    // nothing painted, even though every segment was accepted and buffered.
+    private val muxer = Fmp4Writer(fps)
     private val ring = ArrayDeque<Pair<Int, ByteArray>>()
 
     @Volatile private var initReady = false
@@ -74,6 +81,42 @@ class HlsSession(
         return true
     }
 
+    /**
+     * Frames per second actually produced, measured over a short sliding window
+     * of encoded samples.
+     *
+     * The requested fps is a ceiling, not a fact: this camera's ImageAnalysis
+     * yields well below it under load, and status.json regularly reports 15 for a
+     * target of 30. The muxer needs the truth, because it stamps every
+     * single-frame segment with one frame interval as its duration — too short a
+     * value leaves gaps between segments and the decoder never assembles a
+     * continuous range to paint.
+     */
+    @Volatile private var windowFrames = 0
+    @Volatile private var windowStartUs = 0L
+    @Volatile var measuredFps: Double = 0.0
+        private set
+
+    private fun noteFrame() {
+        val now = System.nanoTime() / 1000
+        if (windowStartUs == 0L) {
+            windowStartUs = now
+            windowFrames = 1
+            return
+        }
+        windowFrames++
+        val elapsedUs = now - windowStartUs
+        if (elapsedUs >= 1_000_000L) {
+            val fps = windowFrames.toDouble() * 1_000_000.0 / elapsedUs
+            // Ignore absurd readings from a window that was starved by a pause.
+            if (fps in 0.5..120.0) {
+                measuredFps = if (measuredFps == 0.0) fps else measuredFps * 0.7 + fps * 0.3
+            }
+            windowStartUs = now
+            windowFrames = 0
+        }
+    }
+
     /** Feeds one camera frame; segments are produced here, not on a timer. */
     fun encodeFrame(image: ImageProxy, ptsUs: Long) {
         if (!encoder.isRunning) return
@@ -89,6 +132,8 @@ class HlsSession(
                     .onFailure { lastError = it.message ?: "mux init failed" }
                 return@encode
             }
+            noteFrame()
+            if (measuredFps > 0.0) muxer.setMeasuredFps(measuredFps)
             muxer.append(sample)?.let { seg ->
                 synchronized(ring) {
                     ring.addLast(seg.sequence to seg.bytes)
