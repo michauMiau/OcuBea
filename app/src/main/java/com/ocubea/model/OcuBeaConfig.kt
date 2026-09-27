@@ -79,6 +79,26 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         get() = prefs.getInt(KEY_MAX_CLIP, 300).coerceIn(10, 3600)
         set(v) = prefs.edit().putInt(KEY_MAX_CLIP, v.coerceIn(10, 3600)).apply()
 
+    // ── Clip retention ─────────────────────────────────────────
+    //
+    // Three independent limits, any of which can evict. See ClipRetention for
+    // why they are OR-ed rather than combined.
+
+    /** Total bytes clips may occupy. */
+    var clipMaxSpaceMb: Int
+        get() = prefs.getInt(KEY_CLIP_MAX_MB, 4096).coerceIn(64, 1024 * 64)
+        set(v) = prefs.edit().putInt(KEY_CLIP_MAX_MB, v.coerceIn(64, 1024 * 64)).apply()
+
+    /** Age limit in hours. */
+    var clipMaxAgeHours: Int
+        get() = prefs.getInt(KEY_CLIP_MAX_AGE_H, 24 * 7).coerceIn(1, 24 * 90)
+        set(v) = prefs.edit().putInt(KEY_CLIP_MAX_AGE_H, v.coerceIn(1, 24 * 90)).apply()
+
+    /** File-count limit — a directory of 5000 two-second clips is unusable. */
+    var clipMaxFiles: Int
+        get() = prefs.getInt(KEY_CLIP_MAX_FILES, 500).coerceIn(10, 5000)
+        set(v) = prefs.edit().putInt(KEY_CLIP_MAX_FILES, v.coerceIn(10, 5000)).apply()
+
     // ── System ─────────────────────────────────────────────────
 
     var deviceName: String
@@ -137,6 +157,9 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         const val KEY_MOTION_RECORD = "motion_record"
         const val KEY_PRE_RECORD = "pre_record_seconds"
         const val KEY_MAX_CLIP = "max_clip_seconds"
+        const val KEY_CLIP_MAX_MB = "clip_max_space_mb"
+        const val KEY_CLIP_MAX_AGE_H = "clip_max_age_hours"
+        const val KEY_CLIP_MAX_FILES = "clip_max_files"
         const val KEY_DEVICE_NAME = "device_name"
         const val KEY_AUTOSTART = "autostart"
         const val KEY_POWER_SAVING = "power_saving"

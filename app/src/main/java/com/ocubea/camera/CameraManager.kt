@@ -336,6 +336,139 @@ class CameraManager(
         hlsSession = null
     }
 
+    // ─── Clip recording ────────────────────────────────────────
+    //
+    // A clip gets its OWN hardware encoder rather than tapping the HLS one.
+    // Sharing would mean either the clip stops whenever HLS is idle (the
+    // session is created lazily and torn down on the last viewer), or HLS
+    // starts encoding for every user who never opened a stream tab — the
+    // encoder is the most expensive thing in the pipeline, and MJPEG-only
+    // users should not pay for it. Two encoders cost nothing here because
+    // MediaCodec instances are cheap and the device has a spare AVC encoder.
+    //
+    // Both read the same YUV from the ImageAnalysis frame, so the cost of a
+    // second encoder is a second hardware pass, not a second camera.
+
+    @Volatile var clipWriter: com.ocubea.security.ClipWriter? = null
+    private var clipEncoder: com.ocubea.stream.H264Encoder? = null
+    private var clipMuxer: com.ocubea.stream.Fmp4Writer? = null
+    private var clipStopAtMs = 0L
+    private var clipFps = 30
+
+    @Volatile var clipState: String? = null
+
+    /** True while an on-demand or motion clip is being written. */
+    val isRecordingClip: Boolean get() = clipWriter?.recording == true
+
+    /** True once a clip encoder exists and is waiting for its first frame. */
+    val isClipArmed: Boolean get() = clipEncoder != null
+
+    /**
+     * Arms clip recording. [seconds] <= 0 records until [stopClipRecording].
+     *
+     * The file is NOT created here. The init segment needs the encoder's
+     * SPS/PPS, which only arrive with the first encoded frame, so the clip
+     * writer opens the file on the first keyframe in analyzeFrame(). Holding an
+     * ImageProxy alive across the call to open a file would leak a native
+     * buffer, and guessing the geometry instead of waiting just produces a file
+     * whose moov disagrees with its mdat.
+     */
+    fun startClipRecording(seconds: Int = 0): Boolean {
+        if (clipEncoder != null) return true
+        val w = lastSrcW.takeIf { it > 0 } ?: 1280
+        val h = lastSrcH.takeIf { it > 0 } ?: 720
+        val fps = targetFps.coerceIn(5, 30)
+        clipFps = fps
+
+        val enc = com.ocubea.stream.H264Encoder(w, h, fps, w * h * 4)
+        if (!enc.start()) {
+            clipState = "encoder: ${enc.lastError}"
+            return false
+        }
+        clipEncoder = enc
+        clipMuxer = com.ocubea.stream.Fmp4Writer(fps)
+        clipStopAtMs = if (seconds > 0) System.currentTimeMillis() + seconds * 1000L else 0L
+        clipState = null
+        return true
+    }
+
+    fun stopClipRecording() {
+        clipStopAtMs = 0L
+        runCatching { clipWriter?.stop() }
+        clipWriter = null
+        runCatching { clipEncoder?.stop() }
+        clipEncoder = null
+        clipMuxer = null
+    }
+
+    /** Tears down an in-progress clip, discarding the file — used on camera stop. */
+    fun abortClipRecording() {
+        clipStopAtMs = 0L
+        runCatching { clipWriter?.abort() }
+        clipWriter = null
+        runCatching { clipEncoder?.stop() }
+        clipEncoder = null
+        clipMuxer = null
+    }
+
+    /** Current clip telemetry for /status.json and /clips/recording. */
+    fun clipTelemetry(): Map<String, Any?> {
+        val w = clipWriter
+        return mapOf(
+            "armed" to (clipEncoder != null),
+            "active" to (w?.recording == true),
+            "file" to w?.activeClip,
+            "bytes" to (w?.bytesWritten ?: 0L),
+            "frames" to (w?.framesWritten ?: 0),
+            "dropped" to (w?.framesDropped ?: 0),
+            "error" to (clipState ?: w?.lastError),
+        )
+    }
+
+    /**
+     * Feeds one frame to the clip encoder, opening the file on the first
+     * keyframe.
+     *
+     * The file must not be created before the init segment exists: ftyp+moov
+     * carries the avcC record built from the encoder's SPS/PPS, and those
+     * arrive with the first encoded output. Writing a media segment first
+     * produces a file whose track header contradicts its samples, and the
+     * gallery shows a zero-length clip.
+     */
+    private fun feedClipFrame(image: ImageProxy, ptsUs: Long) {
+        val enc = clipEncoder ?: return
+        val muxer = clipMuxer ?: return
+        val fps = clipFps
+        // The writer is created on the first keyframe, but the callback keeps a
+        // stable local so samples arriving before that are simply dropped
+        // rather than null-checked on every frame.
+        var writer: com.ocubea.security.ClipWriter? = clipWriter
+
+        // encode() drains internally, so one callback sees every sample the
+        // encoder produces for this frame — codec config, then media.
+        enc.encode(image, ptsUs) { sample ->
+            val w = writer
+            if (w != null) {
+                w.offer(sample)
+                return@encode
+            }
+            if (!sample.keyframe) return@encode
+            val cfg = enc.codecConfig ?: return@encode
+            val init = runCatching { muxer.initSegmentFor(lastSrcW, lastSrcH, cfg) }.getOrNull()
+                ?: return@encode
+            val created = com.ocubea.security.ClipWriter(context)
+            if (!created.openWith(init, fps, muxer)) {
+                clipState = created.lastError ?: "cannot open clip"
+                stopClipRecording()
+                return@encode
+            }
+            clipWriter = created
+            writer = created
+            // This keyframe belongs at the head of the file, not dropped.
+            created.offer(sample)
+        }
+    }
+
     // ─── Frame pipeline ─────────────────────────────────────────
 
     private fun analyzeFrame(imageProxy: ImageProxy) {
@@ -376,7 +509,21 @@ class CameraManager(
                     .onFailure { hlsLastError = it.message ?: "h264 feed failed" }
             }
 
-            val bitmap = if (hlsFed && !mjpegWanted()) null else imageProxy.toBitmap()
+            // Clip path: a second hardware encoder reading the same YUV. Fed
+            // before the JPEG work for the same reason as HLS — never let a
+            // software compress delay a hardware encode.
+            val clipEnc = clipEncoder
+            if (clipEnc != null && clipEnc.isRunning) {
+                runCatching { feedClipFrame(imageProxy, now / 1000) }
+                    .onFailure { clipState = it.message ?: "clip feed failed" }
+                // An on-demand clip with a duration ends itself.
+                val deadline = clipStopAtMs
+                if (deadline > 0 && System.currentTimeMillis() >= deadline) {
+                    stopClipRecording()
+                }
+            }
+
+            val bitmap = if ((hlsFed || clipEnc != null) && !mjpegWanted()) null else imageProxy.toBitmap()
             imageProxy.close()
             // A null here after an intentional skip is expected, not a failure.
             if (bitmap == null) { if (hlsFed) return; nullBitmaps++; return }
