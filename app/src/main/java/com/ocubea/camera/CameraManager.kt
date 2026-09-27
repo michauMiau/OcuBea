@@ -53,6 +53,16 @@ class CameraManager(
     var onFrameCaptured: ((ByteArray, Long) -> Unit)? = null
     var onCameraError: ((String) -> Unit)? = null
 
+    /**
+     * Fired for EVERY analysed frame, before any JPEG work.
+     *
+     * The service watchdog used to infer liveness from the JPEG callback, which
+     * only fires when someone consumes MJPEG. An HLS-only client therefore looked
+     * like a dead camera and the watchdog tore the encoder down every 30 seconds.
+     * This heartbeat is independent of who — if anyone — is watching.
+     */
+    @Volatile var onFrameHeartbeat: (() -> Unit)? = null
+
     private var frameCounter = 0L
     private var lastFrameNanos = 0L
     private var dropDecisions = 0
@@ -298,6 +308,11 @@ class CameraManager(
                 }
             }
             lastFrameNanos = now
+
+            // Liveness heartbeat before any expensive work, so the watchdog sees
+            // the camera as alive whether the frame goes to MJPEG, to HLS, or is
+            // dropped for having no consumer at all.
+            onFrameHeartbeat?.invoke()
 
             val srcW = imageProxy.width
             val srcH = imageProxy.height
