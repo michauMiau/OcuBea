@@ -3,6 +3,48 @@
 Status: **zaplanowane, nie zaimplementowane.** Powstało 2026-09-27 podczas
 debugowania HLS. Poniżej decyzje projektowe; implementacja osobnym commitem.
 
+## Gdzie zapisywać — ustalone 2026-09-27
+
+**`/sdcard/Android/media/com.ocubea/klipy/`** przez `context.getExternalMediaDir("klipy")`.
+
+Nie `Pictures/OcuBea/`, nie `Movies/OcuBea/`, nie `getExternalFilesDir()`:
+
+| Miejsce | Problem |
+|---|---|
+| `/sdcard/Pictures/...` | **Permission denied** — potwierdzone na telefonie. Wymaga `WRITE_EXTERNAL_STORAGE`, a na API 33 to `neverForLocation` i użytkownik musi ręcznie przyznać, a po odinstalowaniu i tak zniknie. |
+| `/sdcard/Movies/...` | To samo, tylko przez `MediaStore`. Na API 33 własne pliki wstawia się bez uprawnienia, ale trzeba pamiętać o `IS_PENDING` i zawiera dodatkową maszynerię. |
+| `getExternalFilesDir()` | **Już używane** w `StreamService.kt:90` i `StreamServer.kt:860` dla `recordings`. Od Androida 11 katalog `Android/data/` **nie jest widoczny w galerii ani w większości menedżerów plików** — klipy są, ale użytkownik ich nie znajdzie. |
+| `getExternalMediaDir()` | Bez uprawnień, działa od API 21, **indeksowany przez MediaStore** i widoczny w galerii jako folder „OcuBea". Zero dodatkowego kodu. |
+
+Fallback przy `null` (brak pamięci zewnętrznej): `filesDir/media/klipy` — wtedy
+klipy znikają przy odinstalowaniu, więc `status.json` musi to zgłaszać, żeby
+użytkownik nie szukał ich bez powodu.
+
+### Konsolidacja
+
+`recordings` w `Android/data/` przenosimy do `Android/media/com.ocubea/klipy/`,
+żeby nie było dwóch katalogów na jeden cel. Logi (`CrashLogger`) zostają w
+`getExternalFilesDir()` — nie są dla użytkownika.
+
+Ścieżkę ustawia **jedna** funkcja, nie litery w trzech miejscach:
+
+```kotlin
+// media/ClipStorage.kt
+object ClipStorage {
+    fun root(context: Context): File {
+        val dir = context.getExternalMediaDir("klipy")
+            ?: File(context.filesDir, "media/klipy")
+        dir.mkdirs()
+        return dir
+    }
+}
+```
+
+### Nazwy plików
+
+`klip_2026-09-27_14-31-08.mp4` — prefiks zgodny z katalogiem, czas lokalny.
+Sortowanie po nazwie działa, bo timestamp jest zawsze tej samej długości.
+
 ## Co użytkownik opisał
 
 System automatycznego usuwania klipów oparty o trzy niezależne kryteria:
@@ -71,6 +113,12 @@ nie łapać pojedynczych szpilek.
 Konsistentny z resztą aplikacji: fMP4, ten sam hardwarowy enkoder H.264 co HLS,
 ten sam `Fmp4Writer`. Klip = `init.mp4` + kolejne `moof+mdat`, konkatenowane
 do `.mp4`. Reuse istniejącego muxer zamiast pisać drugi.
+
+**Uwaga o `Duration`:** ręcznie pisany `mvhd` ma `duration = 0` (przepływ
+fragmentowany, `mehd` w init). Niektóre odtwarzacze — w tym galeria MIUI —
+otwierają plik i traktują `duration = 0` jako „plik niekompletny", pokazując
+zero długości. Klipy dostaną prawdziwy `mvhd.duration` z licznika próbek, a HLS
+zostawi jak jest (bo tam liczy go playlista).
 
 ### Rotacja
 Plik rośnie, `moof` doklejany co 250 ms. Pilnować dwóch rzeczy:
