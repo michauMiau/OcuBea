@@ -1,11 +1,29 @@
 package com.ocubea.stream
 
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * In-memory frame hub: holds the latest JPEG frame and fans out frames
- * to every connected MJPEG viewer without touching the filesystem.
+ * In-memory frame hub: holds the latest JPEG frame and fans it out to every
+ * connected MJPEG viewer without touching the filesystem.
+ *
+ * ## Design: one-slot handoff, not a queue
+ *
+ * Each viewer keeps a **single slot** holding the newest frame, published
+ * through an [AtomicReference]. Two reasons this is not a backlog queue:
+ *
+ * 1. **Latency.** A queue lets a slow client fall behind and then be served
+ *    stale frames — the picture lags reality by however far behind it drifted.
+ *    Overwriting the slot means a viewer that wakes up gets the *current*
+ *    frame, so latency stays bounded by one encode no matter how slow the
+ *    client is.
+ * 2. **Correctness and cost.** The previous implementation mixed an
+ *    unsynchronized `queue.addLast()` in publish() with a
+ *    `synchronized(queue) { queue.removeFirst() }` in pollFrame() — a data race
+ *    on a non-thread-safe ArrayDeque that can corrupt its internal arrays. It
+ *    also allocated a queue node per frame per viewer. A single atomic slot
+ *    has neither problem: no lock, no per-frame allocation, no race.
  */
 class FrameHub {
 
@@ -13,88 +31,94 @@ class FrameHub {
     private val latestFrame = AtomicReference<ByteArray?>(null)
 
     /** Monotonic sequence number of [latestFrame]; increments per produced frame. */
-    @Volatile var frameSeq: Long = 0
-        private set
+    val frameSeq = AtomicLong(0)
 
     @Volatile var fps: Int = 0
         private set
 
     private val viewers = ConcurrentLinkedQueue<Viewer>()
 
+    /**
+     * A registered consumer. [pending] is a one-slot mailbox: the producer
+     * overwrites it, the consumer takes it.
+     */
     class Viewer internal constructor(val id: Long) {
-        val queue = ArrayDeque<ByteArray>()
+        val pending = AtomicReference<ByteArray?>(null)
         @Volatile var active = true
     }
 
-    private var viewerCounter = 0L
+    private val viewerCounter = AtomicLong(0)
 
     /** Called by the capture pipeline for every produced frame. */
     fun publish(frame: ByteArray) {
         if (frame.isEmpty()) return
         latestFrame.set(frame)
-        frameSeq++
-        // simple rolling FPS estimate over last second
+        frameSeq.incrementAndGet()
+
+        // Rolling FPS estimate over ~1s.
+        frameCountThisSecond++
         val now = System.nanoTime()
         if (now - lastFpsSample >= 1_000_000_000L) {
             fps = frameCountThisSecond
             frameCountThisSecond = 0
             lastFpsSample = now
         }
-        frameCountThisSecond++
+
+        // Fan out. Overwrite unconditionally: a viewer that cannot keep up
+        // gets the newest frame instead of accumulating a backlog.
         for (v in viewers) {
-            if (!v.active || v.queue.size > 2) { // drop slow viewers' backlog
-                if (v.queue.isNotEmpty()) v.queue.clear()
-                continue
-            }
-            v.queue.addLast(frame)
+            if (v.active) v.pending.set(frame)
         }
     }
 
-    private var lastFpsSample = System.nanoTime()
-    private var frameCountThisSecond = 0
+    @Volatile private var lastFpsSample = System.nanoTime()
+    @Volatile private var frameCountThisSecond = 0
 
     fun getLatest(): ByteArray? = latestFrame.get()
 
     fun hasFrame(): Boolean = latestFrame.get() != null
 
-    /** Drop the current frame and all viewer queues — used when the camera rebinds. */
+    /** Drop the current frame and all viewer slots — used when the camera rebinds. */
     fun reset() {
         latestFrame.set(null)
-        frameSeq = 0
+        frameSeq.set(0)
         frameCountThisSecond = 0
-        for (v in viewers) {
-            synchronized(v.queue) { v.queue.clear() }
-        }
+        for (v in viewers) v.pending.set(null)
     }
 
-    /** Register a new MJPEG viewer; returns null-safe handle used in removeViewer(). */
-    fun addViewer(): Viewer {
-        val v = Viewer(viewerCounter++)
-        viewers.add(v)
-        return v
-    }
+    /** Register a new MJPEG viewer. */
+    fun addViewer(): Viewer = Viewer(viewerCounter.getAndIncrement()).also { viewers.add(it) }
 
     fun removeViewer(v: Viewer) {
         v.active = false
+        v.pending.set(null)
         viewers.remove(v)
     }
 
     fun viewerCount(): Int = viewers.size
 
     /**
-     * Blocking pull of the next frame for a viewer.
-     * Returns the newest queued frame, or waits up to [timeoutMs] for one.
+     * Waits up to [timeoutMs] for this viewer's next frame.
+     *
+     * Returns null when the viewer was removed or the timeout expired with
+     * nothing available. A merely slow viewer gets the newest frame rather
+     * than a stale one.
      */
     fun pollFrame(v: Viewer, timeoutMs: Long): ByteArray? {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            synchronized(v.queue) {
-                if (v.queue.isNotEmpty()) return v.queue.removeFirst()
-            }
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000L
+        while (true) {
+            v.pending.getAndSet(null)?.let { return it }
             if (!v.active) return null
-            try { Thread.sleep(10) } catch (_: InterruptedException) { return null }
+            val left = deadline - System.nanoTime()
+            if (left <= 0) return getLatest()
+            // Park briefly rather than spin: the producer posts on every frame,
+            // so a short wait costs no measurable latency.
+            try {
+                Thread.sleep(if (left > 2_000_000L) 2L else 1L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
         }
-        // timeout: fall back to latest frame so slow clients never stall forever
-        return getLatest()
     }
 }

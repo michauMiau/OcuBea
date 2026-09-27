@@ -35,6 +35,7 @@ class StreamService : LifecycleService() {
         const val CHANNEL_ID = "ocubea_stream"
         const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "com.ocubea.STOP_STREAM"
+        const val ACTION_START_CAMERA = "com.ocubea.START_CAMERA"
         const val ACTION_RESTART_CAMERA = "com.ocubea.RESTART_CAMERA"
 
         @Volatile var instance: StreamService? = null
@@ -42,6 +43,15 @@ class StreamService : LifecycleService() {
     }
 
     private val started = AtomicBoolean(false)
+
+    /**
+     * Camera-only running state, independent of the HTTP server.
+     *
+     * Tracked separately so "Stop stream" can leave the server listening: the
+     * WebUI has to be able to reach /status.json to learn the stream stopped.
+     */
+    private val cameraRunning = AtomicBoolean(false)
+
     private var wakeLock: PowerManager.WakeLock? = null
     private val watchdog = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "ocubea-watchdog").apply { isDaemon = true }
@@ -92,9 +102,14 @@ class StreamService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_STOP -> {
-                stopEverything()
-                stopSelf()
-                return START_NOT_STICKY
+                // Camera only — the HTTP server deliberately stays up so the
+                // WebUI can still report the new state. See stopCameraOnly().
+                stopCameraOnly()
+                return START_STICKY
+            }
+            ACTION_START_CAMERA -> {
+                startCamera()
+                return START_STICKY
             }
             ACTION_RESTART_CAMERA -> {
                 restartCamera()
@@ -106,6 +121,26 @@ class StreamService : LifecycleService() {
     }
 
     // ═══ Start / stop ═══════════════════════════════════════
+
+    /**
+     * (Re)starts just the camera, assuming the server is already listening.
+     *
+     * Split out of startEverything() so the "Start stream" button can resume
+     * streaming without tearing down and rebinding the HTTP listener, which
+     * would drop every other connected client for no reason.
+     */
+    private fun startCamera() {
+        if (!cameraRunning.compareAndSet(false, true)) return
+        try {
+            cameraManager.onFrameCaptured = { jpeg, _ -> onCameraFrame(jpeg) }
+            cameraManager.start { msg -> reportError(msg) }
+            lastFrameAt = System.currentTimeMillis()
+            updateNotification("Streaming on port ${config.port}")
+        } catch (e: Exception) {
+            cameraRunning.set(false)
+            reportError("Camera start failed: ${e.message}")
+        }
+    }
 
     private fun startEverything() {
         if (!started.compareAndSet(false, true)) return
@@ -133,6 +168,7 @@ class StreamService : LifecycleService() {
 
         cameraManager.onFrameCaptured = { jpeg, _ -> onCameraFrame(jpeg) }
         cameraManager.start { msg -> reportError(msg) }
+        cameraRunning.set(true)
 
         try {
             streamServer?.start()
@@ -169,8 +205,26 @@ class StreamService : LifecycleService() {
         } catch (_: Exception) {}
     }
 
+    /**
+     * Stops only the camera, leaving the HTTP server up.
+     *
+     * The WebUI has to stay reachable after "Stop stream" — otherwise the page
+     * loses the very endpoint it needs to report that the stream stopped, and
+     * the button is stuck showing "Stop stream" forever. The server is torn
+     * down only when the service itself dies.
+     */
+    private fun stopCameraOnly() {
+        if (!cameraRunning.compareAndSet(true, false)) return
+        try { cameraManager.stopHls() } catch (_: Exception) {}
+        try { cameraManager.stop() } catch (_: Exception) {}
+        try { motionRecorder.finishClip() } catch (_: Exception) {}
+        updateNotification("Camera stopped")
+    }
+
+    /** Full teardown: camera, server, discovery, wakelock. */
     private fun stopEverything() {
         if (!started.compareAndSet(true, false)) return
+        stopCameraOnly()
         try { streamServer?.stopServer() } catch (_: Exception) {}
         streamServer = null
         try { onvifDiscovery.stop() } catch (_: Exception) {}
