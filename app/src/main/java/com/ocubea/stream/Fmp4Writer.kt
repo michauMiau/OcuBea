@@ -14,13 +14,24 @@ import java.nio.ByteBuffer
  * Every segment begins with a random-access point, so a client that joins at
  * segment N never has to decode from the stream's beginning.
  */
-class Fmp4Writer {
+class Fmp4Writer(requestedFps: Int = 30) {
 
     data class Segment(val sequence: Int, val bytes: ByteArray, val durationMs: Long)
 
     private companion object {
         const val TIMESCALE = 1_000_000L          // microseconds, matches PTS directly
-        const val MOV_TIMESCALE = 1_000          // 1ms, the classic MP4 timescale
+        // The movie AND media timescales must both be TIMESCALE, because every
+        // timestamp written into the file — tfdt baseMediaDecodeTime and each
+        // trun sample duration — is in microseconds straight from the encoder.
+        //
+        // Writing MOV_TIMESCALE (1000) here while feeding microsecond values made
+        // a segment claim baseMediaDecodeTime = 16 977 125 223 / 1000 ≈ 16977125
+        // seconds. A browser's MSE refuses to append such a buffer: hls.js
+        // reports "bufferAppendError" and "internalException", the video element
+        // never leaves readyState=1, and playback silently never starts. The
+        // bytes are all individually valid, which is why ffprobe and ffmpeg read
+        // the same segments without complaint while no browser would play them.
+        const val MOV_TIMESCALE = TIMESCALE
         const val TARGET_SEGMENT_MS = 250L       // 4 segments/sec: ~0.5s latency
         const val SAMPLE_FLAGS_SYNC = 0x02000000
     }
@@ -31,8 +42,29 @@ class Fmp4Writer {
     private var segmentStartPtsUs = -1L
     private var lastPtsUs = -1L
 
+    /** First sample's absolute PTS; subtracted from every sample to rebase to 0. */
+    private var basePtsUs = 0L
+    private var basePtsUsSet = false
+
     /** True when [pendingSamples] currently opens with an IDR. */
     private var segmentStartsWithKey = false
+
+    /**
+     * Frame interval used to stamp a segment's duration, in microseconds.
+     *
+     * Not the requested rate: the camera's ImageAnalysis regularly delivers
+     * fewer frames than asked for, and a single-frame segment must claim exactly
+     * the time that one frame really occupies. Too short and the segments leave
+     * gaps; the decoder then never holds a continuous range and nothing paints.
+     * Updated by [setMeasuredFps] as soon as the session has a real measurement.
+     */
+    @Volatile private var frameUs = 1_000_000L / 30
+
+    fun setMeasuredFps(measured: Double) {
+        if (measured <= 0.0) return
+        val clamped = measured.coerceIn(0.5, 120.0)
+        frameUs = (1_000_000.0 / clamped).toLong().coerceAtLeast(1_000L)
+    }
     private var width = 0
     private var height = 0
 
@@ -76,6 +108,22 @@ class Fmp4Writer {
      * random-access point, which is the hard requirement for CMAF.
      */
     fun append(sample: H264Encoder.Sample): Segment? {
+        // A live stream must start its media timeline at zero, not at the
+        // encoder's absolute PTS. The PTS comes from System.nanoTime()/1000, so
+        // it is already ~17 million microseconds by the time anyone connects.
+        // Subtracting the first sample's timestamp keeps the deltas exact while
+        // making every tfdt and every segment start at a small, sane value —
+        // which is also what a player expects from a live source, and what
+        // keeps MSE from rejecting the first buffer as non-monotonic.
+        if (!basePtsUsSet) {
+            basePtsUs = sample.ptsUs
+            basePtsUsSet = true
+        }
+        val rel = sample.copy(ptsUs = sample.ptsUs - basePtsUs)
+        return appendRelative(rel)
+    }
+
+    private fun appendRelative(sample: H264Encoder.Sample): Segment? {
         if (pendingSamples.isEmpty()) {
             segmentStartPtsUs = sample.ptsUs
             // A segment that does not begin on an IDR is undecodable on its own:
@@ -124,7 +172,13 @@ class Fmp4Writer {
 
         val startUs = segmentStartPtsUs
         val endUs = lastPtsUs
-        val durationUs = (endUs - startUs).coerceAtLeast(1000L)
+        // A one-sample segment has endUs == startUs, so the measured duration is
+        // zero and the floor below supplies exactly one real frame interval.
+        // A hardcoded 1000us instead of frameUs is what produced the gaps: at a
+        // real 4fps a frame occupies ~250ms, so every segment claimed 1/250th
+        // of the time it covered and SourceBuffer.buffered came out as a row of
+        // disconnected 33ms islands.
+        val durationUs = (endUs - startUs).coerceAtLeast(frameUs)
 
         val mdatPayload = buildFragment(samples, startUs, durationUs)
         // A CMAF media segment is moof+mdat ONLY. The ftyp+moov belongs to the
@@ -184,10 +238,10 @@ class Fmp4Writer {
             // already stripped (the codec-config buffer is consumed once at
             // init). With no marker to anchor on, the whole buffer is one NAL.
             val out0 = ByteArray(data.size + 4)
-            out0[3] = data.size.toByte()
             out0[0] = (data.size ushr 24).toByte()
             out0[1] = (data.size ushr 16).toByte()
             out0[2] = (data.size ushr 8).toByte()
+            out0[3] = data.size.toByte()
             System.arraycopy(data, 0, out0, 4, data.size)
             return out0
         }
@@ -206,7 +260,20 @@ class Fmp4Writer {
             System.arraycopy(data, from, out, o + 4, len)
             o += 4 + len
         }
-        return if (o == data.size) data else out.copyOf(o)
+        // Always return the AVCC form, including when the sizes happen to match.
+        //
+        // The old code had `if (o == data.size) return data`, reasoning that a
+        // same-length result meant "nothing changed". It changes: Annex-B spends
+        // 3 or 4 bytes on each start code and AVCC spends 4 on a length, so
+        // equal totals prove nothing about the framing. On a single-NAL sample
+        // whose leading start code the codec already stripped, the two are the
+        // same length, the guard fired, and the raw Annex-B bytes were written
+        // into mdat while trun advertised AVCC. Media Source Extensions then
+        // got a buffer with no length-prefixed NAL at all: appendBuffer raised
+        // an error, hls.js reported bufferAppendError, and no browser played a
+        // frame — while ffprobe and ffmpeg, which are tolerant of the mismatch,
+        // decoded the same segments without complaint.
+        return out.copyOf(o)
     }
 
     /**
@@ -269,7 +336,18 @@ class Fmp4Writer {
         out.write(1)                        // configurationVersion = 1
         out.write(first[1].toInt())          // AVCProfileIndication
         out.write(first[2].toInt())          // profile_compatibility
-        out.write(first[3].toInt())          // AVCLevelIndication
+        // AVCLevelIndication is overwritten with the level the actual frame size
+        // requires, not the one the vendor encoder wrote into its SPS.
+        //
+        // This device's encoder reports level 0x0A (1.0) while producing
+        // 1920x1080, which needs 4.0. A browser's Media Source Extensions
+        // validates the codec string it built from this avcC against the stream
+        // and refuses the media segment: MSE emits an error on appendBuffer,
+        // hls.js surfaces "bufferAppendError" / "internalException", and the
+        // video element stays stuck at readyState 1 with no picture. ffprobe and
+        // ffmpeg never complain, which is why every byte-level test passed while
+        // no browser would play a single frame.
+        out.write(avcLevelFor(width, height))
         out.write(byteArrayOf(0xFF.toByte())) // 6 bits reserved + lengthSizeMinusOne = 3
         out.write(byteArrayOf(0xE1.toByte())) // 3 bits reserved + numOfSequenceParameterSets = 1
         for (s in sps) {
@@ -284,6 +362,30 @@ class Fmp4Writer {
             out.write(p, 0, p.size)
         }
         return out.toByteArray()
+    }
+
+    /**
+     * The AVC level byte written into avcC, chosen from the real frame size.
+     *
+     * Level 4.0 (0x28) admits 8192 macroblocks per frame, i.e. 2048x1536, so
+     * 1920x1080 (8160 macroblocks) fits level 4.0 and not level 3.1. Levels
+     * 4.1/5.0/5.1 raise the bitrate ceiling but not the macroblock count, so
+     * there is nothing to gain by going past 4.0 here.
+     *
+     * The device's own encoder reports 0x0A (1.0) in its SPS while producing
+     * 1080p, and MSE rejects the media segment when avcC disagrees with the
+     * stream, so this value must come from the geometry we actually encode.
+     */
+    private fun avcLevelFor(w: Int, h: Int): Int {
+        val macroblocks = ((w + 15) / 16).toLong() * ((h + 15) / 16)
+        return when {
+            macroblocks <= 3 * 3 -> 0x0A        // 1.0:  176x144
+            macroblocks <= 11 * 11 -> 0x14     // 2.0:  352x288
+            macroblocks <= 40 * 30 -> 0x1E     // 3.1:  1280x720
+            macroblocks <= 120 * 68 -> 0x28    // 4.0:  2048x1536 (fits 1080p)
+            macroblocks <= 368 * 368 -> 0x33   // 5.1:  4096x4096
+            else -> 0x34                        // 5.2
+        }
     }
 
     private fun buildFragment(samples: List<H264Encoder.Sample>, startUs: Long, durationUs: Long): ByteArray {
@@ -373,7 +475,6 @@ class Fmp4Writer {
             trunBody.write(int(if (cur.keyframe) SAMPLE_FLAGS_SYNC else 0))
         }
         traf.putAll(box("trun", trunBody.toByteArray()))
-
         val trafBytes = box("traf", traf.toByteArray())
         val moofBody = java.io.ByteArrayOutputStream()
         moofBody.putAll(mfhdBox)
