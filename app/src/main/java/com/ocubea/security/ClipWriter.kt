@@ -59,6 +59,17 @@ class ClipWriter(private val context: Context) {
     @Volatile var framesDropped = 0
         private set
 
+    /**
+     * Presentation length of the clip so far, in microseconds.
+     *
+     * Measured from the samples the muxer actually wrote, not from wall-clock
+     * time: on a phone whose ImageAnalysis yields a fraction of the requested
+     * frame rate, wall-clock would overstate the length by the same factor and
+     * the stamped duration would not match the frames present.
+     */
+    @Volatile var durationUs = 0L
+        private set
+
     val activeClip: String? get() = activeName
 
     /**
@@ -126,8 +137,36 @@ class ClipWriter(private val context: Context) {
         running.set(false)
         runCatching { thread?.join(3000) }
         thread = null
-        synchronized(lock) { closeFile() }
+        synchronized(lock) {
+            stampDuration()
+            closeFile()
+        }
         recording = false
+    }
+
+    /**
+     * Rewrites the file's moov with the real clip length.
+     *
+     * The init segment is written first because it has to be, but at that point
+     * the length is unknown, so it carries duration 0. Some players — the MIUI
+     * gallery among them — read duration 0 as "incomplete file" and show a
+     * zero-length clip even though every frame is present. Rewriting the header
+     * in place is safe precisely because the version-0 and version-1 layouts are
+     * the same size: only 32-bit fields become 64-bit ones, no box appears or
+     * disappears, so the replacement covers exactly the bytes already there.
+     */
+    private fun stampDuration() {
+        val raf = file ?: return
+        val mx = muxer ?: return
+        if (durationUs <= 0) return
+        val rebuilt = runCatching { mx.rebuildInitWithDuration(durationUs) }.getOrNull() ?: return
+        try {
+            raf.seek(0)
+            raf.write(rebuilt)
+            lastError = null
+        } catch (e: IOException) {
+            lastError = e.message ?: "duration stamp failed"
+        }
     }
 
     /** Stops and deletes the partial file — used when the camera shuts down. */
@@ -147,8 +186,8 @@ class ClipWriter(private val context: Context) {
                 null
             } ?: continue
 
-            val bytes = runCatching { muxer?.append(sample) }.getOrNull()?.bytes
-            if (bytes == null) continue
+            val segment = runCatching { muxer?.append(sample) }.getOrNull() ?: continue
+            val bytes = segment.bytes
 
             val ok = synchronized(lock) {
                 val raf = file
@@ -159,6 +198,10 @@ class ClipWriter(private val context: Context) {
                         raf.write(bytes)
                         bytesWritten += bytes.size
                         framesWritten++
+                        // durationMs is a measurement of what this segment
+                        // actually covers, so accumulating it tracks the
+                        // presentation length rather than wall-clock time.
+                        durationUs += segment.durationMs * 1000L
                         true
                     } catch (e: IOException) {
                         // A pulled SD card lands here.

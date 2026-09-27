@@ -81,8 +81,42 @@ class Fmp4Writer(requestedFps: Int = 30) {
     fun initSegmentFor(width: Int, height: Int, rawConfig: ByteArray): ByteArray? {
         this.width = width
         this.height = height
+        rawCodecConfig = rawConfig
         // The encoder hands us Annex-B SPS/PPS, not a ready-made avcC, so the
         // record has to be assembled before it can go into the avc1 sample entry.
+        val full = buildInitSegment(width, height, rawConfig, null) ?: return null
+        initSegment = full
+        return full
+    }
+
+    val initSegmentOrNull: ByteArray? get() = initSegment
+
+    /**
+     * Rebuilds the init segment with a known total duration.
+     *
+     * Only meaningful for a file that is being closed: the returned ftyp+moov
+     * has to replace what was written at the start of the file, so the caller
+     * must be able to rewrite the first bytes. [newInit] is guaranteed to be
+     * the same length as the original — the box layout only changes from 32-bit
+     * to 64-bit fields, never from present to absent — which is what makes an
+     * in-place overwrite of the header possible.
+     *
+     * Returns the replacement init, or null when the geometry is unknown or the
+     * rebuild came out a different size than the original.
+     */
+    fun rebuildInitWithDuration(durationUs: Long): ByteArray? {
+        val rawConfig = rawCodecConfig ?: return null
+        if (width <= 0 || height <= 0) return null
+        val original = initSegment ?: return null
+        val rebuilt = buildInitSegment(width, height, rawConfig, durationUs) ?: return null
+        if (rebuilt.size != original.size) return null
+        return rebuilt
+    }
+
+    /** Remembers the encoder's Annex-B config so the moov can be rebuilt. */
+    @Volatile private var rawCodecConfig: ByteArray? = null
+
+    private fun buildInitSegment(w: Int, h: Int, rawConfig: ByteArray, durationUs: Long?): ByteArray? {
         val avcConfig = buildAvcC(rawConfig) ?: return null
         val ftyp = box("ftyp", byteArrayOf(
             'i'.code.toByte(), 's'.code.toByte(), 'o'.code.toByte(), '6'.code.toByte(),
@@ -90,16 +124,9 @@ class Fmp4Writer(requestedFps: Int = 30) {
             'i'.code.toByte(), 's'.code.toByte(), 'o'.code.toByte(), '6'.code.toByte(),
             'c'.code.toByte(), 'm'.code.toByte(), 'f'.code.toByte(), 'c'.code.toByte()
         ))
-        val moov = box("moov", buildMoovBody(avcConfig, width, height))
-        // The cached init must be the WHOLE thing a player fetches via #EXT-X-MAP.
-        // Caching only the moov would drop ftyp from every served segment and
-        // leave the demuxer without a file-type header.
-        val full = ftyp + moov
-        initSegment = full
-        return full
+        val moov = box("moov", buildMoovBody(avcConfig, w, h, durationUs))
+        return ftyp + moov
     }
-
-    val initSegmentOrNull: ByteArray? get() = initSegment
 
     /**
      * Accumulates a sample; returns a segment when the target duration is hit.
@@ -522,18 +549,40 @@ class Fmp4Writer(requestedFps: Int = 30) {
      * Only the video track is described. There is no audio track, which is
      * valid for CMAF video-only HLS.
      */
-    private fun buildMoovBody(avcConfig: ByteArray, w: Int, h: Int): ByteArray {
+    /**
+     * Builds the moov.
+     *
+     * [knownDurationUs] is null for a live source, where the duration genuinely
+     * is not known when the header is written, and set for a clip, whose length
+     * is known by the time the file is closed. When it is set, mvhd and tkhd are
+     * emitted at version 1 with real 64-bit durations: some players, the MIUI
+     * gallery among them, read a version-0 duration of 0 as "incomplete file"
+     * and show a zero-length clip even though every frame is present.
+     *
+     * Version 1 is not just a larger field — it also moves creation_time,
+     * modification_time and duration to 64 bits, so the field layout changes
+     * and writing the old offsets with a version-1 marker corrupts the box.
+     */
+    private fun buildMoovBody(avcConfig: ByteArray, w: Int, h: Int, knownDurationUs: Long? = null): ByteArray {
         val moov = java.io.ByteArrayOutputStream()
+        val durationUs = knownDurationUs?.coerceAtLeast(0L) ?: 0L
+        val v1 = knownDurationUs != null
 
-        // mvhd: 108-byte body, version 0. Every inner box goes through box() so
-        // the size+type header is always written; assembling the header by hand
-        // (write(int(0)); write(type)) yields a box with no size, which makes the
-        // whole moov unparseable from that point on.
+        // mvhd. Every inner box goes through box() so the size+type header is
+        // always written; assembling the header by hand (write(int(0));
+        // write(type)) yields a box with no size, which makes the whole moov
+        // unparseable from that point on.
         val mvhd = java.io.ByteArrayOutputStream()
-        mvhd.write(int(0))                                   // version + flags
-        mvhd.write(int(0)); mvhd.write(int(0))                // creation/modification
-        mvhd.write(int(MOV_TIMESCALE.toInt()))
-        mvhd.write(int(0))                                   // duration: unknown (fragmented)
+        mvhd.write(int(if (v1) 0x01000000.toInt() else 0))   // version 1 | flags 0
+        if (v1) {
+            mvhd.write(long(0)); mvhd.write(long(0))          // creation/modification
+            mvhd.write(int(MOV_TIMESCALE.toInt()))
+            mvhd.write(long(durationUs))                     // 64-bit duration
+        } else {
+            mvhd.write(int(0)); mvhd.write(int(0))           // creation/modification
+            mvhd.write(int(MOV_TIMESCALE.toInt()))
+            mvhd.write(int(0))                               // duration: unknown (fragmented)
+        }
         mvhd.write(int(0x00010000))                          // rate 1.0
         mvhd.write(int(0x0100))                              // volume 1.0
         mvhd.write(int(0)); mvhd.write(int(0))               // reserved
@@ -543,7 +592,7 @@ class Fmp4Writer(requestedFps: Int = 30) {
         mvhd.write(int(2))                                   // next_track_ID
         moov.putAll(box("mvhd", mvhd.toByteArray()))
 
-        moov.putAll(trackBox(w, h, avcConfig))
+        moov.putAll(trackBox(w, h, avcConfig, durationUs, v1))
 
         // mvex/trex is MANDATORY for a fragmented MP4: it declares that the
         // track is fragmented and supplies the default track_ID that tfhd/trun
@@ -560,16 +609,29 @@ class Fmp4Writer(requestedFps: Int = 30) {
         return moov.toByteArray()
     }
 
-    private fun trackBox(w: Int, h: Int, avcConfig: ByteArray): ByteArray {
+    /**
+     * @param durationUs clip length, used only when [v1] is set
+     * @param v1 emit version 1 headers with 64-bit timestamps and a real
+     *   duration. A version-0 duration of 0 is legal for a live stream but
+     *   reads as "incomplete file" to a gallery, so clips use version 1.
+     */
+    private fun trackBox(w: Int, h: Int, avcConfig: ByteArray, durationUs: Long = 0L, v1: Boolean = false): ByteArray {
         val t = java.io.ByteArrayOutputStream()
 
         // ── tkhd (flags 3 = track_enabled | track_in_movie)
         val tkhd = java.io.ByteArrayOutputStream()
-        tkhd.write(int(0x000007))
-        tkhd.write(int(0)); tkhd.write(int(0))               // creation/modification
-        tkhd.write(int(1))                                   // track_ID
-        tkhd.write(int(0))                                   // reserved
-        tkhd.write(int(0))                                   // duration
+        tkhd.write(int(if (v1) 0x01000003 else 0x000007))
+        if (v1) {
+            tkhd.write(long(0)); tkhd.write(long(0))          // creation/modification
+            tkhd.write(int(1))                                 // track_ID
+            tkhd.write(int(0))                                 // reserved
+            tkhd.write(long(durationUs))                       // 64-bit duration
+        } else {
+            tkhd.write(int(0)); tkhd.write(int(0))             // creation/modification
+            tkhd.write(int(1))                                 // track_ID
+            tkhd.write(int(0))                                 // reserved
+            tkhd.write(int(0))                                 // duration
+        }
         tkhd.write(int(0)); tkhd.write(int(0))               // reserved
         tkhd.write(int(0)); tkhd.write(int(0))               // layer, alt group
         tkhd.write(int(0)); tkhd.write(int(0))               // volume, reserved
@@ -706,6 +768,13 @@ class Fmp4Writer(requestedFps: Int = 30) {
         ((v ushr 24) and 0xFF).toByte(), ((v ushr 16) and 0xFF).toByte(),
         ((v ushr 8) and 0xFF).toByte(), (v and 0xFF).toByte()
     )
+
+    /** Big-endian 64-bit field, needed by the version-1 movie/track headers. */
+    private fun long(v: Long): ByteArray {
+        val b = ByteArray(8)
+        for (i in 0 until 8) b[i] = ((v ushr (56 - 8 * i)) and 0xFF).toByte()
+        return b
+    }
 
     /**
      * Four-character box type, ASCII, exactly four bytes.

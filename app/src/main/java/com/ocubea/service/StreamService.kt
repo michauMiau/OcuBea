@@ -40,6 +40,14 @@ class StreamService : LifecycleService() {
 
         @Volatile var instance: StreamService? = null
             private set
+
+        /**
+         * Frames of stillness that end a motion clip. At the real frame rate
+         * this camera delivers under load, 30 frames is a few seconds — long
+         * enough to bridge a pause in the action, short enough that the clip
+         * does not keep recording an empty room.
+         */
+        const val MOTION_POST_FRAMES = 30
     }
 
     private val started = AtomicBoolean(false)
@@ -163,7 +171,16 @@ class StreamService : LifecycleService() {
             motionDetector.setSensitivity(config.motionSensitivity)
             motionRecorder.preRecordSeconds = config.preRecordSeconds
             motionRecorder.maxClipSeconds = config.maxClipSeconds
+            // Clip path: the encoder sits idle until motion shows up, so arming
+            // it costs one MediaCodec instance and nothing else. The AVI
+            // recorder above stays for /recordings, which is the IP Webcam
+            // compatibility surface and must keep its old format.
+            if (config.motionRecord) cameraManager.startClipRecording(0, onDemand = false)
         }
+        // Retention runs regardless of the security toggle: a user who turned
+        // motion recording off may still have old clips on disk, and the limits
+        // have to keep applying to them.
+        ensureClipRetention()
         MotionRecorder.lastWidth = cameraManager.currentTargetWidth
         MotionRecorder.lastHeight = cameraManager.currentTargetHeight
 
@@ -189,22 +206,80 @@ class StreamService : LifecycleService() {
 
     private fun onCameraFrame(jpeg: ByteArray) {
         lastFrameAt = System.currentTimeMillis()
-        if (!motionDetector.enabled && !motionRecorder.enabled) {
+        val clipArmed = cameraManager.isClipArmed
+        if (!motionDetector.enabled && !motionRecorder.enabled && !clipArmed) {
             motionRecorder.stopAllIfIdle()
             return
         }
         try {
             val bmp = android.graphics.BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
             if (bmp != null) {
-                val motion = motionDetector.process(bmp)
+                val motion = if (motionDetector.enabled) motionDetector.process(bmp) else false
                 bmp.recycle()
                 motionRecorder.onFrame(
                     jpeg,
                     isMotion = motion,
                     fps = cameraManager.frameHub.fps.coerceAtLeast(1)
                 )
+                // Motion now gates the fMP4 clip path too, not just the old AVI
+                // recorder. A separate on-demand clip in progress is not
+                // disturbed: it was started by the user and runs on its own
+                // duration or an explicit stop.
+                if (clipArmed) {
+                    if (motion) {
+                        if (!cameraManager.isRecordingClip) startMotionClip()
+                    } else if (cameraManager.isRecordingClip && !cameraManager.isOnDemandClip) {
+                        motionIdleFrames++
+                        if (motionIdleFrames >= MOTION_POST_FRAMES) {
+                            cameraManager.stopClipRecording()
+                            motionIdleFrames = 0
+                        }
+                    }
+                }
             }
         } catch (_: Exception) {}
+    }
+
+    /**
+     * Starts a clip because motion was seen.
+     *
+     * The clip is armed rather than opened: the file appears on the first
+     * keyframe, which is a frame or two away, and motion is already past by
+     * then. What we keep is the encoded samples themselves, so the clip still
+     * starts at the moment of the motion.
+     */
+    private fun startMotionClip() {
+        val seconds = config.maxClipSeconds
+        if (cameraManager.startClipRecording(seconds, onDemand = false)) {
+            motionIdleFrames = 0
+        }
+    }
+
+    private var motionIdleFrames = 0
+
+    private var clipRetention: com.ocubea.security.ClipRetentionScheduler? = null
+
+    private fun ensureClipRetention() {
+        if (clipRetention != null) return
+        clipRetention = com.ocubea.security.ClipRetentionScheduler(
+            applicationContext,
+            limits = {
+                com.ocubea.security.ClipRetentionScheduler.Limits(
+                    maxBytes = config.clipMaxSpaceMb.coerceIn(64, 1024 * 64) * 1024L * 1024L,
+                    maxAgeMs = config.clipMaxAgeHours.coerceIn(1, 24 * 90) * 3600_000L,
+                    maxFiles = config.clipMaxFiles.coerceIn(10, 5000),
+                )
+            },
+        ).also { scheduler ->
+            scheduler.start()
+            // One hook covers every path that ends a clip: on-demand stop, the
+            // motion timeout, the duration deadline and camera shutdown.
+            cameraManager.onClipClosed = {
+                scheduler.protect(null)
+                scheduler.scheduleAfterClose()
+            }
+            cameraManager.onClipOpened = { name -> scheduler.protect(name) }
+        }
     }
 
     /**
