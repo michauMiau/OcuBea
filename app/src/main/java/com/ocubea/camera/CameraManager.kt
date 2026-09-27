@@ -357,6 +357,19 @@ class CameraManager(
 
     @Volatile var clipState: String? = null
 
+    /**
+     * Why this clip is being recorded: the user asked for it, or motion did.
+     *
+     * The distinction matters because the two have different endings — an
+     * on-demand clip runs for the requested seconds or until stopped, while a
+     * motion clip ends when the scene goes quiet. Without it, a motion clip
+     * would keep running for the full duration with nothing happening in it.
+     */
+    @Volatile var clipReason: String? = null
+        private set
+
+    val isOnDemandClip: Boolean get() = clipReason == REASON_ON_DEMAND
+
     /** True while an on-demand or motion clip is being written. */
     val isRecordingClip: Boolean get() = clipWriter?.recording == true
 
@@ -373,7 +386,7 @@ class CameraManager(
      * buffer, and guessing the geometry instead of waiting just produces a file
      * whose moov disagrees with its mdat.
      */
-    fun startClipRecording(seconds: Int = 0): Boolean {
+    fun startClipRecording(seconds: Int = 0, onDemand: Boolean = true): Boolean {
         if (clipEncoder != null) return true
         val w = lastSrcW.takeIf { it > 0 } ?: 1280
         val h = lastSrcH.takeIf { it > 0 } ?: 720
@@ -388,6 +401,7 @@ class CameraManager(
         clipEncoder = enc
         clipMuxer = com.ocubea.stream.Fmp4Writer(fps)
         clipStopAtMs = if (seconds > 0) System.currentTimeMillis() + seconds * 1000L else 0L
+        clipReason = if (onDemand) REASON_ON_DEMAND else REASON_MOTION
         clipState = null
         return true
     }
@@ -399,7 +413,15 @@ class CameraManager(
         runCatching { clipEncoder?.stop() }
         clipEncoder = null
         clipMuxer = null
+        clipReason = null
+        // Retention must be told, not asked: the sweep runs on its own thread
+        // and the clip that was open a moment ago is no longer protected, so
+        // leaving the old name in place would make that file immortal.
+        runCatching { onClipClosed?.invoke() }
     }
+
+    /** Invoked after any clip closes, on whatever thread called stop. */
+    @Volatile var onClipClosed: (() -> Unit)? = null
 
     /** Tears down an in-progress clip, discarding the file — used on camera stop. */
     fun abortClipRecording() {
@@ -464,10 +486,17 @@ class CameraManager(
             }
             clipWriter = created
             writer = created
+            // The open clip must be shielded from the retention sweep, which
+            // runs on its own thread and could otherwise delete the file the
+            // writer is appending to.
+            onClipOpened?.invoke(created.activeClip)
             // This keyframe belongs at the head of the file, not dropped.
             created.offer(sample)
         }
     }
+
+    /** Invoked when a clip file is created, before any media lands in it. */
+    @Volatile var onClipOpened: ((String?) -> Unit)? = null
 
     // ─── Frame pipeline ─────────────────────────────────────────
 
@@ -824,5 +853,9 @@ class CameraManager(
          * stale frames. Dropping at the door keeps latency flat instead.
          */
         private const val MAX_PENDING_ENCODES = 3
+
+        /** Why a clip is being recorded: the user asked, or motion did. */
+        const val REASON_ON_DEMAND = "ondemand"
+        const val REASON_MOTION = "motion"
     }
 }
