@@ -46,6 +46,8 @@
   code{font-family:ui-monospace,monospace;font-size:11px;background:#0d1117;padding:1px 5px;border-radius:4px;color:#79c0ff}
   .hint{font-size:11px;color:var(--dim);margin-top:6px}
   .rec{color:var(--warn);font-weight:600}
+  .stream .badge{position:absolute;top:10px;left:10px;z-index:3;background:rgba(0,0,0,.6);
+         border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:11px;color:var(--txt)}
   footer{text-align:center;color:var(--dim);font-size:11px;padding:20px}
   @media(max-width:520px){.row>*{min-width:64px}button{padding:11px 8px;font-size:12px}}
 </style>
@@ -61,15 +63,27 @@
 
   <div class="stream">
     <img id="live" src="/video" alt="Live stream">
+    <video id="livev" playsinline autoplay muted style="display:none;width:100%;height:100%;object-fit:cover"></video>
     <div class="off" id="streamOff">stream offline</div>
+    <div class="badge" id="modeBadge">MJPEG</div>
   </div>
 
-  <div class="grid g4">
-    <button id="bStream" class="primary">Start</button>
+  <div class="row" style="margin-top:8px">
+    <button id="bStream" class="primary">Start stream</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="bMode">Mode: MJPEG</button>
+    <button id="bLL">Low latency: off</button>
+  </div>
+  <div class="row" style="margin-top:8px">
     <button id="bTorch">Torch</button>
     <button id="bFlip">Flip cam</button>
     <button id="bShot">Snapshot</button>
   </div>
+  <p class="hint" id="modeHint">
+    MJPEG: every viewer gets its own JPEG frames, works everywhere.
+    HLS: one hardware H.264 encode shared by all viewers, far less CPU.
+  </p>
 
   <div class="grid g2" style="margin-top:12px">
     <section>
@@ -130,6 +144,8 @@
         <dt>Viewers</dt><dd id="sViewers">0</dd>
         <dt>Frames</dt><dd id="sFrames">0</dd>
         <dt>Dropped</dt><dd id="sDropped">0</dd>
+        <dt>Encoder</dt><dd id="sCodec">–</dd>
+        <dt>HLS segments</dt><dd id="sSegs">0</dd>
         <dt>Resolution</dt><dd id="sRes">–</dd>
         <dt>Uptime</dt><dd id="sUptime">–</dd>
         <dt>Battery</dt><dd id="sBattery">–</dd>
@@ -193,7 +209,7 @@ function later(fn, ms){
 }
 
 /* ── Live stream with auto-reconnect ─────────────────────────── */
-var live = $('live'), delay = 1000;
+var live = $('live'), livev = $('livev'), delay = 1000;
 live.onerror = function(){
   $('streamOff').style.display = 'flex';
   delay = Math.min(delay * 1.5, 10000);
@@ -201,11 +217,95 @@ live.onerror = function(){
 };
 live.onload = function(){ $('streamOff').style.display = 'none'; delay = 1000; };
 
+/* ── Stream mode: MJPEG or hardware H.264 via HLS ─────────────── */
+var mode = 'mjpeg', lowLatency = false, hls = null;
+
+function showMjpeg(){
+  stopHls();
+  livev.style.display = 'none';
+  live.style.display = '';
+  if(live.naturalWidth === 0) live.src = url('/video') + '?t=' + Date.now();
+}
+
+function showHls(){
+  live.style.display = 'none';
+  livev.style.display = '';
+  livev.style.width = '100%';
+  livev.style.height = '100%';
+  livev.style.objectFit = 'cover';
+  livev.style.position = 'absolute';
+  livev.style.inset = '0';
+  startHls();
+}
+
+/**
+ * Starts hls.js against /hls/index.m3u8.
+ *
+ * lowLatency is the real lever here, not a cosmetic toggle. hls.js normally
+ * waits a full targetduration before fetching the next segment, which on a
+ * 250ms segment is fine, but it also buffers ahead by default. With
+ * lowLatencyEnabled it switches to an append-based, low-latency mode: no
+ * forward buffer, jumps to the playlist's live edge immediately. That is the
+ * difference between ~0.5s and several seconds of lag.
+ */
+function startHls(){
+  if(typeof Hls === 'undefined'){
+    $('modeHint').textContent =
+      'hls.js failed to load (no internet?), staying on MJPEG.';
+    showMjpeg();
+    return;
+  }
+  stopHls();
+  hls = new Hls({
+    lowLatencyMode: lowLatency,
+    // Keep the buffer shallow: a deep buffer on a live stream is just lag.
+    maxBufferLength: lowLatency ? 2 : 6,
+    maxMaxBufferLength: lowLatency ? 4 : 12,
+    liveSyncDurationCount: lowLatency ? 1 : 3,
+    // The phone is the encoder; there is no separate origin to measure.
+    enableWorker: true,
+    backBufferLength: 0
+  });
+  hls.on(Hls.Events.ERROR, function(_, data){
+    if(data.fatal){
+      if(data.type === Hls.ErrorTypes.NETWORK_ERROR){
+        hls.startLoad();
+      } else if(data.type === Hls.ErrorTypes.MEDIA_ERROR){
+        hls.recoverMediaError();
+      } else {
+        $('modeHint').textContent = 'HLS fatal: ' + data.details + ' — falling back to MJPEG';
+        showMjpeg();
+      }
+    }
+  });
+  hls.loadSource(url('/hls/index.m3u8'));
+  hls.attachMedia(livev);
+  livev.play().catch(function(){ /* autoplay may need a gesture; harmless */ });
+}
+
+function stopHls(){
+  if(hls){ hls.destroy(); hls = null; }
+}
+
+$('bMode').onclick = function(){
+  mode = (mode === 'mjpeg') ? 'hls' : 'mjpeg';
+  this.textContent = 'Mode: ' + mode.toUpperCase();
+  $('modeBadge').textContent = mode.toUpperCase();
+  if(mode === 'hls') showHls(); else showMjpeg();
+};
+
+$('bLL').onclick = function(){
+  lowLatency = !lowLatency;
+  this.textContent = 'Low latency: ' + (lowLatency ? 'on' : 'off');
+  this.className = lowLatency ? 'on' : '';
+  if(mode === 'hls') startHls();
+};
+
 /* ── Status ─────────────────────────────────────────────────── */
 function refresh(){
   get('/status.json').then(function(r){ return r.json(); }).then(function(s){
     var cam = s.camera_active;
-    $('bStream').textContent = cam ? 'Stop' : 'Start';
+    $('bStream').textContent = cam ? 'Stop stream' : 'Start stream';
     $('bStream').className = cam ? 'danger' : 'primary';
     $('streamOff').style.display = cam ? 'none' : 'flex';
     if(!cam && live.naturalWidth === 0){ live.src = url('/video') + '?t=' + Date.now(); }
@@ -227,6 +327,13 @@ function refresh(){
     $('bNight').className = s.night_vision ? 'on' : '';
     $('bMotion').className = (s.motion && s.motion.enabled) ? 'on' : '';
     $('bRec').className = (s.recording && s.recording.enabled) ? 'on' : '';
+
+    // hls.js is loaded by a script tag after this one, so it may still be
+    // undefined on the very first pass. Report the encoder state either way.
+    var h = s.hls || {};
+    if($('sCodec')) $('sCodec').textContent = h.active ? h.codec : '–';
+    if($('sSegs')) $('sSegs').textContent = h.segments || 0;
+    if(mode === 'hls' && h.active && !hls && typeof Hls !== 'undefined') startHls();
     $('sRec').textContent = (s.recording && s.recording.count) || 0;
 
     if(s.recording && s.recording.active){
@@ -299,10 +406,18 @@ function refreshRec(){
 }
 
 /* ── Wiring ─────────────────────────────────────────────────── */
+// The button label is the source of truth. It used to compare against
+// textContent === 'Stop' while the label actually reads "Stop stream", so the
+// comparison never matched and every click sent force_start — which is why the
+// label never changed and the stream never stopped.
 $('bStream').onclick = function(){
-  var running = this.textContent === 'Stop';
+  var label = this.textContent;
+  var running = label.indexOf('Stop') === 0;
+  $('statusPill').textContent = running ? 'stopping…' : 'starting…';
   api(running ? '/settings/force_stop' : '/settings/force_start').then(function(){
-    $('statusPill').textContent = running ? 'stopping…' : 'starting…';
+    // The service restart is asynchronous, so poll until the state actually
+    // flips rather than assuming the click took effect.
+    setTimeout(refresh, 900);
   });
 };
 $('bTorch').onclick = function(){ api(this.className === 'on' ? '/torchoff' : '/torchon').then(refresh); };
@@ -368,6 +483,11 @@ refresh(); refreshSensors(); refreshRec();
 setInterval(function(){ refresh(); refreshRec(); }, 3000);
 setInterval(refreshSensors, 15000);
 </script>
+
+<!-- hls.js enables hardware-H.264 playback in the browser. Loaded from CDN and
+     pinned to a specific version so a future release cannot change behaviour
+     under us. If it is unavailable, showMjpeg() falls back automatically. -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 
 </body>
 </html>

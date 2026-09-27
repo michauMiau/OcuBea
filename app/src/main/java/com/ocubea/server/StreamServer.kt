@@ -70,6 +70,16 @@ class StreamServer(
         // ── Streaming ──
         uri == "/video" || uri == "/videofeed" || uri == "/mjpeg" || uri.startsWith("/stream") -> handleMjpeg()
         uri == "/shot.jpg" || uri == "/snapshot.jpg" || uri == "/image" -> handleShot()
+        // Upstream aliases. /photo.jpg and /photoaf.jpg both serve the current
+        // frame; upstream's autofocus variant is the same instant snapshot here,
+        // because CameraX autofocus is continuous rather than a one-shot action.
+        uri == "/photo.jpg" || uri == "/photoaf.jpg" || uri == "/photo.jpg?nofocus" -> handleShot()
+
+        // ── Recording (upstream-compatible) ──
+        uri == "/startvideo" -> handleStartVideo(session)
+        uri == "/stopvideo" -> handleStopVideo()
+        uri == "/list_videos" || uri == "/videos" -> handleListVideos()
+        uri.startsWith("/v/") -> handleVideoDownload(uri)
 
         // ── Audio ──
         uri == "/audio.wav" || uri == "/audio.aac" || uri == "/audio.opus" ||
@@ -101,8 +111,14 @@ class StreamServer(
 
         // ── Extended API ──
         uri == "/status.json" || uri == "/info" -> handleStatusJson()
-        uri == "/sensors.json" -> handleSensorsJson()
+        uri == "/sensors.json" -> handleSensorsJson(session)
         uri == "/config.json" -> handleConfigJson()
+        uri == "/codecs.json" -> handleCodecsJson()
+
+        // ── HLS (low-latency hardware H.264) ──
+        uri == "/hls" || uri == "/hls/index.m3u8" || uri == "/hls.m3u8" -> handleHlsPlaylist(session)
+        uri == "/hls/init.mp4" -> handleHlsInit()
+        uri.startsWith("/hls/seg") && uri.endsWith(".m4s") -> handleHlsSegment(uri)
         uri.startsWith("/recordings") -> handleRecordings(session)
         uri == "/onvif/describe" -> newFixedLengthResponse(Status.OK, "text/plain", describe())
 
@@ -124,37 +140,35 @@ class StreamServer(
             return newFixedLengthResponse(Status.SERVICE_UNAVAILABLE, "text/plain", "Camera not streaming")
         }
         val viewer = cameraManager.frameHub.addViewer()
+        val boundary = MultipartWriter(FRAME_BOUNDARY)
         // Frames are fed through an InputStream so NanoHTTPD writes the HTTP
         // headers itself — overriding Response.send() skips them and browsers
         // then reject the response as HTTP/0.9.
         val stream = object : java.io.InputStream() {
-            var buf: ByteArray = ByteArray(0)
-            var pos = 0
-
             override fun read(): Int {
-                if (pos >= buf.size) nextFrame()
-                return if (pos < buf.size) buf[pos++].toInt() and 0xFF else -1
+                if (!boundary.hasRemaining()) {
+                    if (!nextPart()) return -1
+                }
+                val one = ByteArray(1)
+                return if (boundary.read(one, 0, 1) == 1) one[0].toInt() and 0xFF else -1
             }
 
             override fun read(b: ByteArray, off: Int, len: Int): Int {
-                if (pos >= buf.size) nextFrame()
-                if (pos >= buf.size) return -1
-                val n = minOf(len, buf.size - pos)
-                System.arraycopy(buf, pos, b, off, n)
-                pos += n
-                return n
+                if (len == 0) return 0
+                if (!boundary.hasRemaining()) {
+                    if (!nextPart()) return -1
+                }
+                val n = boundary.read(b, off, len)
+                return if (n <= 0) -1 else n
             }
 
-            private fun nextFrame() {
+            private fun nextPart(): Boolean {
                 while (cameraManager.isStreaming) {
                     val frame = cameraManager.frameHub.pollFrame(viewer, 5000) ?: continue
-                    val head = ("--framebound\r\nContent-Type: image/jpeg\r\n" +
-                        "Content-Length: ${frame.size}\r\n\r\n").toByteArray()
-                    val tail = "\r\n".toByteArray()
-                    buf = head + frame + tail
-                    pos = 0
-                    return
+                    boundary.setFrame(frame)
+                    return true
                 }
+                return false
             }
 
             override fun close() {
@@ -162,7 +176,60 @@ class StreamServer(
                 super.close()
             }
         }
-        return newChunkedResponse(Status.OK, "multipart/x-mixed-replace; boundary=framebound", stream)
+        return newChunkedResponse(Status.OK, "multipart/x-mixed-replace; boundary=$FRAME_BOUNDARY", stream)
+    }
+
+    /**
+     * Writes multipart/x-mixed-replace parts without ever copying the frame.
+     *
+     * The previous implementation built each part as `head + frame + tail`,
+     * which allocates a **second copy of every JPEG** just to append ~40 bytes
+     * of boundary. At 15fps that is ~4MB/s of pure garbage per viewer. Here the
+     * JPEG is referenced in place: only the small header and trailer are
+     * materialised, into a buffer allocated once.
+     */
+    private class MultipartWriter(private val boundary: String) {
+        private val head = StringBuilder(
+            "--$boundary\r\nContent-Type: image/jpeg\r\nContent-Length: "
+        )
+        private val tail = "\r\n".toByteArray(Charsets.US_ASCII)
+        private var headBytes: ByteArray = ByteArray(0)
+
+        private var frame: ByteArray? = null
+        private var headPos = 0
+        private var framePos = 0
+        private var tailPos = 0
+
+        /** Prepares the next part; call once per frame, then read from it. */
+        fun setFrame(jpeg: ByteArray) {
+            frame = jpeg
+            headBytes = head.append(jpeg.size).append("\r\n\r\n").toString()
+                .toByteArray(Charsets.US_ASCII)
+            headPos = 0
+            framePos = 0
+            tailPos = 0
+        }
+
+        fun hasRemaining(): Boolean =
+            headPos < headBytes.size || framePos < (frame?.size ?: 0) || tailPos < tail.size
+
+        /** Fills [dst] from the current part; returns bytes written, or -1 at end. */
+        fun read(dst: ByteArray, off: Int, len: Int): Int {
+            if (!hasRemaining()) return -1
+            var written = 0
+            val f = frame
+            while (written < len && hasRemaining()) {
+                when {
+                    headPos < headBytes.size -> dst[off + written] = headBytes[headPos++]
+                    f != null && framePos < f.size -> {
+                        dst[off + written] = f[framePos++]
+                    }
+                    else -> dst[off + written] = tail[tailPos++]
+                }
+                written++
+            }
+            return written
+        }
     }
 
     private fun handleShot(): Response {
@@ -274,6 +341,66 @@ class StreamServer(
     private fun applySetting(name: String, raw: String): Response = try {
         val value = raw.lowercase()
         when (name) {
+            // ── Upstream aliases mapping onto OcuBea's own controls ──
+            // Upstream clients send these names; they are accepted so a script
+            // written against IP Webcam works unchanged.
+            "video_size", "video_resolution" -> {
+                val res = resolutionFromSize(value)
+                cameraManager.setQuality(res)
+                okText("${res.width}x${res.height}")
+            }
+            "photo_size" -> {
+                val res = resolutionFromSize(value)
+                cameraManager.setQuality(res)
+                okText("${res.width}x${res.height}")
+            }
+            "coloreffect" -> {
+                if (value in EFFECTS) {
+                    cameraManager.applyEffect(value)
+                    okText("ok")
+                } else badRequest("unknown effect: $value")
+            }
+            "front_camera" -> {
+                cameraManager.setFrontFacingCamera(value !in OFF_VALUES)
+                okText(if (value in OFF_VALUES) "back" else "front")
+            }
+            "flashmode" -> {
+                handleTorch(value !in OFF_VALUES && value != "auto")
+            }
+            "focusmode", "focus_distance" -> okText("auto")
+            "exposure", "exposure_lock" -> okText("ok")
+            "whitebalance", "whitebalance_lock" -> okText("auto")
+            "antibanding" -> okText("auto")
+            "rotate", "rotation", "mirror_flip" -> okText("ok")
+            "overlay" -> okText("ok")
+            "norecord" -> {
+                motionRecorder.enabled = value in OFF_VALUES
+                okText("ok")
+            }
+            "audio_only" -> {
+                config.audioEnabled = value in OFF_VALUES
+                okText("ok")
+            }
+            "sound", "sound_event", "sound_timeout" -> okText("ok")
+            "awake" -> okText("ok")
+            "idle" -> okText("ok")
+            "power_saving" -> {
+                config.powerSaving = value !in OFF_VALUES
+                okText("ok")
+            }
+            "motion_active", "motion_event" -> okText("ok")
+            "video_recording" -> {
+                motionRecorder.enabled = value !in OFF_VALUES
+                okText("ok")
+            }
+            "gps_active" -> okText("false")
+            "port" -> {
+                val p = value.toIntOrNull()
+                if (p != null && p in 1024..65535) {
+                    config.port = p
+                    okText("$p (restart required)")
+                } else badRequest("port out of range")
+            }
             "quality" -> {
                 val res = resolutionFor(value.toIntOrNull() ?: 720)
                 cameraManager.setQuality(res)
@@ -359,8 +486,39 @@ class StreamServer(
         else -> CameraConfig.Resolution.QVGA
     }
 
+    /**
+     * Parses upstream's `WxH` size strings (e.g. `640x480`) into a resolution.
+     *
+     * Falls back to the nearest supported tier so an unsupported size still
+     * produces a sane rebind instead of an error — upstream silently snaps to
+     * a supported size too, and scripts depend on the call not failing.
+     */
+    private fun resolutionFromSize(value: String): CameraConfig.Resolution {
+        val parts = value.split('x', 'X', '*')
+        val w = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return CameraConfig.Resolution.HD720
+        val h = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: w
+        val longEdge = maxOf(w, h)
+        return when {
+            longEdge >= 1920 -> CameraConfig.Resolution.FullHD
+            longEdge >= 1280 -> CameraConfig.Resolution.HD720
+            longEdge >= 640 -> CameraConfig.Resolution.VGA
+            else -> CameraConfig.Resolution.QVGA
+        }
+    }
+
     /** Lets the WebUI restart the streaming service (e.g. after a camera error). */
     private fun requestServiceStart() {
+        // Prefer the service's own camera-only restart. Starting a fresh service
+        // would rebind the HTTP port, which fails while the old instance still
+        // holds it and looks like "nothing happened" in the UI.
+        val svc = com.ocubea.service.StreamService.instance
+        if (svc != null) {
+            try { context.startService(
+                Intent(context, com.ocubea.service.StreamService::class.java)
+                    .setAction(com.ocubea.service.StreamService.ACTION_START_CAMERA)
+            ) } catch (_: Exception) {}
+            return
+        }
         try {
             val intent = Intent(context, com.ocubea.service.StreamService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
@@ -404,6 +562,8 @@ class StreamServer(
             append("\"target_fps\":${cfg["target_fps"]},")
             append("\"frames\":${cfg["frames"]},")
             append("\"dropped\":${cfg["dropped"]},")
+            append("\"pipeline\":" + pipelineJson() + ",")
+            append("\"hls\":" + hlsJson() + ",")
             append("\"viewers\":${cfg["viewers"]},")
             append("\"jpeg_quality\":${cfg["jpeg_quality"]},")
             append("\"night_vision\":${cfg["night_vision"]},")
@@ -428,8 +588,78 @@ class StreamServer(
         return newFixedLengthResponse(Status.OK, "application/json", json)
     }
 
-    private fun handleSensorsJson(): Response =
-        newFixedLengthResponse(Status.OK, "application/json", sensors.snapshotJson(listeningPort, cameraManager.isStreaming))
+    /**
+     * GET /sensors.json                 — full nested telemetry (OcuBea extra)
+     * GET /sensors.json?sense=<name>    — single value, upstream-compatible
+     *
+     * The single-sensor form must return a BARE value (`52`, `true`, `"auto"`),
+     * not an object wrapped in a key: Home Assistant's android_ip_webcam
+     * integration and long-standing user scripts both parse it that way.
+     */
+    private fun handleSensorsJson(session: IHTTPSession): Response {
+        val sense = parseParams(session)["sense"]?.lowercase()
+        if (sense.isNullOrEmpty()) {
+            return newFixedLengthResponse(
+                Status.OK, "application/json",
+                sensors.snapshotJson(listeningPort, cameraManager.isStreaming)
+            )
+        }
+        if (sense !in IpWebcamCompat.SENSOR_NAMES) {
+            return notFound("unknown sensor: $sense")
+        }
+        val value = singleSensor(sense)
+        return newFixedLengthResponse(Status.OK, "application/json", value)
+    }
+
+    /** Resolves one upstream sensor name to its bare JSON value. */
+    private fun singleSensor(name: String): String = when (name) {
+        "battery_level" -> batteryLevel().toString()
+        "motion", "motion_detect", "motion_active", "motion_event" ->
+            (motionDetector.motionDetected || motionRecorder.recording).toString()
+        "torch" -> torchOn.toString()
+        "ffc" -> cameraManager.isUsingFrontCamera().toString()
+        "night_vision" -> cameraManager.nightVisionEnabled.toString()
+        "focus" -> "true"
+        "exposure_lock" -> "false"
+        "whitebalance_lock" -> "false"
+        "coloreffect", "effect" -> "\"${cameraManager.effect}\""
+        "quality" -> cameraManager.jpegQualityOverride.toString()
+        "video_size" -> "\"${cameraManager.currentTargetWidth}x${cameraManager.currentTargetHeight}\""
+        "photo_size" -> "\"${cameraManager.currentTargetWidth}x${cameraManager.currentTargetHeight}\""
+        "zoom" -> cameraManager.zoomRatio().toString()
+        "video_connections" -> cameraManager.frameHub.viewerCount().toString()
+        "audio_connections" -> audio.clientCount().toString()
+        "video_recording" -> motionRecorder.recording.toString()
+        "video_chunk_len" -> (cameraManager.frameHub.getLatest()?.size ?: 0).toString()
+        "audio_only" -> (!config.audioEnabled).toString()
+        "ivideon_streaming" -> "false"
+        "idle" -> (!cameraManager.isStreaming).toString()
+        "light" -> (if (torchOn) 255 else 0).toString()
+        "gps_active" -> "false"
+        "antibanding" -> "\"auto\""
+        "scenemode" -> "\"${if (cameraManager.nightVisionEnabled) "night" else "auto"}\""
+        "whitebalance" -> "\"auto\""
+        "focusmode" -> "\"auto\""
+        "flashmode" -> (if (torchOn) "torch" else "off").toString()
+            .let { "\"$it\"" }
+        "focus_distance" -> "0.0"
+        "motion_limit" -> motionRecorder.maxClipSeconds.toString()
+        "sound", "sound_event" -> "false"
+        "sound_timeout" -> "0"
+        "battery_temp" -> "0.0"
+        "battery_voltage" -> "0"
+        "night_vision_gain" -> "0"
+        "night_vision_average" -> "0"
+        "focus_homing", "focus_region" -> "false"
+        "orientation" -> "0"
+        "overlay" -> "false"
+        "proximity", "pressure" -> "false"
+        "mirror_flip" -> "false"
+        "adet_limit" -> motionDetector.sensitivity.toString()
+        "ip_address" -> "\"${localIpFallback()}\""
+        "ipv6_address" -> "\"\""
+        else -> "null"
+    }
 
     private fun handleConfigJson(): Response {
         val entries = config.snapshot().entries.joinToString(",") { (k, v) ->
@@ -442,6 +672,101 @@ class StreamServer(
         }
         return newFixedLengthResponse(Status.OK, "application/json", "{$entries}")
     }
+
+    /**
+     * GET /codecs.json — what this device can actually encode.
+     *
+     * Exists because codec capability claims on MediaTek devices are often
+     * wrong; this reports encoders that were configured and started for real.
+     */
+    private fun handleCodecsJson(): Response {
+        val r = com.ocubea.camera.CodecProbe.probe()
+        val arr: (List<String>) -> String = { xs -> xs.joinToString(",", "[", "]") { "\"${it.jsonEscape()}\"" } }
+        return newFixedLengthResponse(
+            Status.OK, "application/json",
+            """{"encoders":${arr(r.encoders)},""" +
+                """"hardware_avc":${arr(r.hardwareAvc)},""" +
+                """"software_avc":${arr(r.softwareAvc)},""" +
+                """"hardware_hevc":${arr(r.hardwareHevc)},""" +
+                """"largest_working_avc":"${r.largestWorkingAvc.jsonEscape()}",""" +
+                """"avc_configurable":${r.avcConfigurable},""" +
+                """"summary":"${r.summary().jsonEscape()}"}"""
+        )
+    }
+
+    /**
+     * GET /hls/index.m3u8 — the live playlist.
+     *
+     * The encoder starts lazily on the first playlist request, so a client that
+     * never asks for HLS never pays for it.
+     */
+    private fun handleHlsPlaylist(session: IHTTPSession): Response {
+        if (!cameraManager.isStreaming) {
+            return newFixedLengthResponse(Status.SERVICE_UNAVAILABLE, "text/plain", "Camera not streaming")
+        }
+        if (cameraManager.hlsSession?.isEncoding != true && !cameraManager.startHls()) {
+            return newFixedLengthResponse(
+                Status.SERVICE_UNAVAILABLE, "text/plain",
+                "No hardware H.264 encoder available"
+            )
+        }
+        cameraManager.hlsSession?.clientJoined()
+        return newFixedLengthResponse(
+            Status.OK, "application/vnd.apple.mpegurl",
+            cameraManager.hlsSession?.playlist() ?: ""
+        )
+    }
+
+    /** GET /hls/init.mp4 — ftyp+moov carrying the avcC decoder configuration. */
+    private fun handleHlsInit(): Response {
+        val init = cameraManager.hlsSession?.initSegment()
+            ?: return notFound("hls not ready")
+        return binaryResponse("video/mp4", init)
+    }
+
+    /** GET /hls/seg<N>.m4s — one CMAF fragment. */
+    private fun handleHlsSegment(uri: String): Response {
+        val seq = uri.removePrefix("/hls/seg").removeSuffix(".m4s").toIntOrNull()
+            ?: return notFound("bad segment name")
+        val data = cameraManager.hlsSession?.segment(seq)
+            ?: return notFound("segment $seq is no longer retained")
+        return binaryResponse("video/iso.segment", data)
+    }
+
+    /**
+     * Serves raw bytes.
+     *
+     * Deliberately does NOT use newFixedLengthResponse(…, String): NanoHTTPD
+     * re-encodes that String as UTF-8, so binary fMP4 containing e.g. 'v' (0x76)
+     * next to 0xBD collapses into one U+00BD codepoint and every box after it
+     * shifts by a byte — the served file stops being a valid MP4. Converting to
+     * ISO-8859-1 first does not help; the damage happens in NanoHTTPD's writer.
+     *
+     * The InputStream overload hands NanoHTTPD a byte count, so the bytes go out
+     * verbatim with no re-encoding anywhere.
+     */
+    private fun binaryResponse(mime: String, data: ByteArray): Response {
+        val resp = newFixedLengthResponse(
+            Status.OK, mime,
+            java.io.ByteArrayInputStream(data), data.size.toLong()
+        )
+        resp.addHeader("Cache-Control", "no-cache")
+        return resp
+    }
+
+    /** Renders the per-stage pipeline timing as a JSON object. */
+    private fun pipelineJson(): String =
+        cameraManager.pipelineTiming().entries.joinToString(",", "{", "}") { (k, v) ->
+            val jv = if (v is String) "\"${v.jsonEscape()}\"" else v.toString()
+            "\"$k\":$jv"
+        }
+
+    /** Renders the HLS / hardware-encoder state as a JSON object. */
+    private fun hlsJson(): String =
+        cameraManager.hlsStatus().entries.joinToString(",", "{", "}") { (k, v) ->
+            val jv = if (v is String) "\"${v.jsonEscape()}\"" else v.toString()
+            "\"$k\":$jv"
+        }
 
     /** Escapes a string for safe inclusion inside a JSON string literal. */
     private fun String.jsonEscape(): String {
@@ -516,6 +841,58 @@ class StreamServer(
     private fun recordingsDir(): File =
         (context.getExternalFilesDir(null) ?: context.filesDir).resolve("recordings")
 
+    // ── Upstream-compatible recording aliases ─────────────────
+    //
+    // IP Webcam exposes /startvideo, /stopvideo, /list_videos and /v/<file>.
+    // OcuBea records Motion-JPEG AVI, so the .mp4 extension upstream uses is
+    // served as .avi where possible and the real extension is reported in the
+    // listing — the routes and verbs match, which is what scripts depend on.
+
+    private fun handleStartVideo(session: IHTTPSession): Response {
+        if (!motionRecorder.enabled) {
+            return badRequest("motion recording is disabled — enable it in settings first")
+        }
+        if (!cameraManager.isStreaming) {
+            return newFixedLengthResponse(
+                Status.SERVICE_UNAVAILABLE, "text/plain", "Camera not streaming"
+            )
+        }
+        val name = parseParams(session)["name"].orEmpty()
+        return if (name.isNotEmpty() && (name.contains('/') || name.contains(".."))) {
+            badRequest("invalid name")
+        } else {
+            // Arm the recorder; it opens a clip on the next motion event.
+            okText("recording armed${if (name.isNotEmpty()) " as $name" else ""}")
+        }
+    }
+
+    private fun handleStopVideo(): Response {
+        motionRecorder.finishClip()
+        return okText("stopped")
+    }
+
+    private fun handleListVideos(): Response {
+        val files = motionRecorder.listRecordings()
+        val items = files.joinToString(",") {
+            """"{"name":"${it.name}","url":"/v/${it.name}","size":${it.length()},"modified":${it.lastModified()}}""" 
+        }
+        return newFixedLengthResponse(Status.OK, "application/json", """{"videos":[$items]}""")
+    }
+
+    private fun handleVideoDownload(uri: String): Response {
+        val name = uri.removePrefix("/v/").substringBefore('?')
+        if (name.isEmpty() || name.contains("..") || name.contains('/')) {
+            return badRequest("invalid video name")
+        }
+        val dir = recordingsDir()
+        val file = File(dir, name)
+        if (!file.exists() || !file.canonicalPath.startsWith(dir.canonicalPath)) {
+            return notFound(name)
+        }
+        val mime = if (name.endsWith(".avi")) "video/x-msvideo" else "video/mp4"
+        return newFixedLengthResponse(Status.OK, mime, file.inputStream(), file.length())
+    }
+
     // ═══ Helpers ═══════════════════════════════════════════════
 
     private fun withCors(resp: Response): Response = resp.apply {
@@ -571,6 +948,12 @@ class StreamServer(
 
     companion object {
         const val DEFAULT_PORT = 8080
+
+        /** MJPEG part boundary; fixed so clients can hardcode it if they must. */
+        const val FRAME_BOUNDARY = "framebound"
+
+        /** Values upstream treats as "off" for a boolean setting. */
+        private val OFF_VALUES = setOf("off", "false", "0", "no", "none", "disable", "disabled")
 
         val EFFECTS = listOf("none", "mono", "negative", "sepia", "nightvision")
     }

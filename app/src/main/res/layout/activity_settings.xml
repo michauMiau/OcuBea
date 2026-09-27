@@ -47,7 +47,7 @@
             android:id="@+id/editTextPort"
             android:layout_width="match_parent"
             android:layout_height="46dp"
-            android:background="@style/InputBg"
+            android:background="@drawable/input_bg"
             android:padding="12dp"
             android:inputType="number"
             android:hint="8080"
@@ -60,7 +60,7 @@
             android:id="@+id/editTextToken"
             android:layout_width="match_parent"
             android:layout_height="46dp"
-            android:background="@style/InputBg"
+            android:background="@drawable/input_bg"
             android:padding="12dp"
             android:inputType="textPassword"
             android:hint="leave empty for no auth"
@@ -81,7 +81,7 @@
             android:id="@+id/editTextDeviceName"
             android:layout_width="match_parent"
             android:layout_height="46dp"
-            android:background="@style/InputBg"
+            android:background="@drawable/input_bg"
             android:padding="12dp"
             android:inputType="text"
             android:hint="OcuBea"
@@ -98,7 +98,7 @@
             android:id="@+id/spinnerResolution"
             android:layout_width="match_parent"
             android:layout_height="46dp"
-            android:background="@style/InputBg"
+            android:background="@drawable/input_bg"
             android:padding="10dp"
             android:layout_marginBottom="12dp"/>
 
@@ -107,7 +107,7 @@
             android:id="@+id/spinnerFPS"
             android:layout_width="match_parent"
             android:layout_height="46dp"
-            android:background="@style/InputBg"
+            android:background="@drawable/input_bg"
             android:padding="10dp"
             android:layout_marginBottom="12dp"/>
 
@@ -201,7 +201,7 @@
             android:id="@+id/tvLog"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@style/InputBg"
+            android:background="@drawable/input_bg"
             android:padding="10dp"
             android:textColor="#8b949e"
             android:textSize="10sp"

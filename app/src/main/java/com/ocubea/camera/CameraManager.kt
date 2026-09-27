@@ -14,7 +14,7 @@ import com.ocubea.model.OcuBeaConfig
 import com.ocubea.stream.FrameHub
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * Headless camera manager for background streaming.
@@ -57,8 +57,103 @@ class CameraManager(
     private var lastFrameNanos = 0L
     private var dropDecisions = 0
 
+    /**
+     * Reusable JPEG encode buffers.
+     *
+     * A fresh [ByteArrayOutputStream] per frame meant a fresh multi-hundred-KB
+     * allocation, grown by doubling, on every single frame. `reset()` clears
+     * the write position but *keeps* the backing array, so pooling the stream
+     * removes that churn from the steady state entirely.
+     */
+    private val jpegPool = JpegBufferPool()
+
+    /**
+     * Per-thread scratch pixel array for effects.
+     *
+     * ThreadLocal because encoding now runs on a pool: a single shared
+     * IntArray would be a data race, and allocating one per frame is what
+     * caused the GC pressure in the first place. Each pooled thread reuses
+     * its own buffer, grown only when the frame size changes.
+     */
+    private val pixelScratch = ThreadLocal.withInitial { IntArray(0) }
+
+    /** Frames dropped because the encoder pool was already saturated. */
+    @Volatile var droppedSaturated = 0L; private set
+
+    /** Cached night-vision tone curve; built once, immutable thereafter. */
+    @Volatile private var nightVisionLutCache: IntArray? = null
+
+    /**
+     * Encoder thread pool.
+     *
+     * Previously the entire pipeline (YUV→Bitmap, effects, JPEG encode,
+     * publish) ran on the single analyzer thread, one frame at a time, which
+     * is what capped the stream at ~5fps: a single `Bitmap.compress` is
+     * 115-145ms of blocking JNI and nothing could overlap with it.
+     *
+     * Now the analyzer only does the cheap conversion and hands off to this
+     * pool, so while frame N is being encoded, frame N+1 is already being
+     * converted. Each task gets its own bitmap, so `Bitmap.compress` is never
+     * invoked concurrently on the same pixels.
+     */
+    private val encodePool: java.util.concurrent.ExecutorService by lazy {
+        val n = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+        analysisExecutorSize = n
+        java.util.concurrent.Executors.newFixedThreadPool(n) { r ->
+            Thread(r, "ocubea-encode-$n").apply { priority = Thread.NORM_PRIORITY }
+        }
+    }
+
+    /** Frames handed to the encoder but not yet published. */
+    @Volatile private var pendingEncodes = 0
+
+    /** Last source frame size actually delivered by the camera, to verify requests are honoured. */
+    @Volatile private var lastSrcW = 0
+    @Volatile private var lastSrcH = 0
+    @Volatile private var lastSrcFormat = 0
+
+    /**
+     * Live HLS session, or null when nobody is watching.
+     *
+     * The encoder is fed straight from the camera's YUV planes, so enabling it
+     * costs almost nothing on the CPU — the whole reason HLS is viable here
+     * where JPEG was the bottleneck.
+     */
+    @Volatile var hlsSession: com.ocubea.stream.HlsSession? = null
+        private set
+    @Volatile private var hlsLastError = "none"
+
+    /**
+     * Whether any MJPEG consumer still needs frames.
+     *
+     * With HLS running and no MJPEG viewers, the expensive Bitmap+JPEG path is
+     * skipped entirely — that is where the CPU savings come from.
+     */
+    private fun mjpegWanted(): Boolean = frameHub.viewerCount() > 0
+
     /** Owner used for bindToLifecycle — set by the service, not the activity. */
     var lifecycleOwner: androidx.lifecycle.LifecycleOwner? = null
+
+    /**
+     * Tiny pool of resettable [ByteArrayOutputStream]s.
+     *
+     * Two is enough: a frame is fully encoded and copied out before the next
+     * encode starts. Bounded so a transient resolution bump cannot retain an
+     * oversized buffer forever.
+     */
+    private class JpegBufferPool {
+        private val free = ArrayDeque<ByteArrayOutputStream>()
+
+        fun acquire(): ByteArrayOutputStream {
+            val bos = free.removeFirstOrNull() ?: ByteArrayOutputStream(256 * 1024)
+            bos.reset()
+            return bos
+        }
+
+        fun release(bos: ByteArrayOutputStream) {
+            if (bos.size() <= 4 * 1024 * 1024) free.addLast(bos)
+        }
+    }
 
     // ─── Lifecycle ──────────────────────────────────────────────
 
@@ -114,7 +209,7 @@ class CameraManager(
     ): androidx.camera.core.Camera {
         provider.unbindAll()
         imageAnalysis = ImageAnalysis.Builder()
-            .setTargetResolution(android.util.Size(currentTargetWidth, currentTargetHeight))
+            .setResolutionSelector(resolutionSelector())
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also { it.setAnalyzer(analysisExecutor, ::analyzeFrame) }
@@ -124,53 +219,196 @@ class CameraManager(
         return camera
     }
 
+    /**
+     * Builds the resolution selector for the requested output size.
+     *
+     * `setTargetResolution()` is deprecated and on this MediaTek build it was
+     * silently ignored — the camera returned 2448x2448 when 1280x720 was
+     * asked for, and JPEG-encoding six megapixels on a single thread is what
+     * capped the stream at 5fps. An explicit ResolutionStrategy is honoured.
+     */
+    private fun resolutionSelector(): androidx.camera.core.resolutionselector.ResolutionSelector {
+        val target = android.util.Size(currentTargetWidth, currentTargetHeight)
+        val fallback = androidx.camera.core.resolutionselector.ResolutionStrategy
+            .FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+        val strategy = androidx.camera.core.resolutionselector.ResolutionStrategy(target, fallback)
+        return androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+            .setResolutionStrategy(strategy)
+            .setAspectRatioStrategy(
+                androidx.camera.core.resolutionselector.AspectRatioStrategy
+                    .RATIO_16_9_FALLBACK_AUTO_STRATEGY
+            )
+            .build()
+    }
+
     fun stop() {
         isStreaming = false
         try { cameraProvider?.unbindAll() } catch (_: Exception) {}
         try { imageAnalysis?.clearAnalyzer() } catch (_: Exception) {}
         imageAnalysis = null
         cameraRef = null
+        runCatching { hlsSession?.stop() }
+        hlsSession = null
         frameHub.reset()
+    }
+
+    /**
+     * Starts the hardware H.264 encoder and the HLS muxer.
+     *
+     * Returns false — and leaves MJPEG untouched — when no hardware encoder
+     * accepts the live resolution. HLS is an addition here, never a
+     * replacement, so a device without a usable encoder still streams fine.
+     */
+    fun startHls(): Boolean {
+        if (hlsSession?.isEncoding == true) return true
+        val w = lastSrcW.takeIf { it > 0 } ?: 1280
+        val h = lastSrcH.takeIf { it > 0 } ?: 720
+        val session = com.ocubea.stream.HlsSession(
+            width = w, height = h, fps = targetFps.coerceIn(5, 30),
+            bitrate = w * h * 4
+        )
+        if (!session.start()) {
+            hlsLastError = session.lastError
+            return false
+        }
+        hlsSession = session
+        hlsLastError = "none"
+        return true
+    }
+
+    fun stopHls() {
+        runCatching { hlsSession?.stop() }
+        hlsSession = null
     }
 
     // ─── Frame pipeline ─────────────────────────────────────────
 
     private fun analyzeFrame(imageProxy: ImageProxy) {
         try {
-            if (!isStreaming) return
+            if (!isStreaming) { imageProxy.close(); return }
 
-            // Frame-rate limiting: analysis can deliver faster than requested
+            // FPS limit. Skipping is nearly free: the buffer goes straight back.
             val now = System.nanoTime()
             if (lastFrameNanos != 0L) {
                 val minInterval = 1_000_000_000L / targetFps.coerceAtLeast(1)
                 if (now - lastFrameNanos < minInterval) {
                     dropDecisions++
+                    imageProxy.close()
                     return
                 }
             }
             lastFrameNanos = now
 
-            val bitmap = imageProxy.toBitmap()
-            imageProxy.close()
-            if (bitmap == null) return
+            val srcW = imageProxy.width
+            val srcH = imageProxy.height
+            lastSrcW = srcW
+            lastSrcH = srcH
+            lastSrcFormat = imageProxy.format
 
-            val processed = applyEffects(bitmap)
-            if (processed !== bitmap) bitmap.recycle()
-
-            val quality = jpegQualityOverride.coerceIn(40, 100)
-            val jpeg = ByteArrayOutputStream(processed.byteCount / 4).let { bos ->
-                processed.compress(Bitmap.CompressFormat.JPEG, quality, bos)
-                bos.toByteArray()
+            // H.264 path: the encoder copies the YUV planes out synchronously
+            // inside encode(), so the proxy stays valid and the MJPEG path below
+            // can still read it. This ordering matters — encoding first means
+            // the hardware encoder never waits behind a JPEG compress.
+            val hls = hlsSession
+            val hlsFed = hls != null && hls.isEncoding
+            if (hlsFed) {
+                runCatching { hls!!.encodeFrame(imageProxy, now / 1000) }
+                    .onFailure { hlsLastError = it.message ?: "h264 feed failed" }
             }
-            processed.recycle()
 
-            frameCounter++
-            frameHub.publish(jpeg)
-            onFrameCaptured?.invoke(jpeg, frameCounter)
+            val bitmap = if (hlsFed && !mjpegWanted()) null else imageProxy.toBitmap()
+            imageProxy.close()
+            // A null here after an intentional skip is expected, not a failure.
+            if (bitmap == null) { if (hlsFed) return; nullBitmaps++; return }
+
+            // Saturation guard: if encoders are already behind, drop this frame
+            // rather than queueing it. A queued frame is a stale frame, and the
+            // whole point of this pipeline is low latency.
+            if (pendingEncodes >= MAX_PENDING_ENCODES) { droppedSaturated++; bitmap.recycle(); return }
+
+            pendingEncodes++
+            try {
+                encodePool.execute {
+                    try {
+                        val processed = applyEffects(bitmap)
+                        // applyEffects returns a new bitmap only when an effect
+                        // ran; otherwise the source is reused as-is.
+                        val ownsProcessed = processed !== bitmap
+                        if (ownsProcessed) bitmap.recycle()
+                        try {
+                            val quality = jpegQualityOverride.coerceIn(40, 100)
+                            val bos = jpegPool.acquire()
+                            val jpeg: ByteArray
+                            try {
+                                processed.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+                                jpeg = bos.toByteArray()
+                            } finally {
+                                jpegPool.release(bos)
+                            }
+                            frameCounter++
+                            frameHub.publish(jpeg)
+                            onFrameCaptured?.invoke(jpeg, frameCounter)
+                        } finally {
+                            if (ownsProcessed) processed.recycle()
+                        }
+                    } catch (e: Exception) {
+                        // Never swallow silently: a frame lost here is a frame
+                        // the viewer never sees.
+                        pipelineErrors++
+                        lastPipelineError = "${e.javaClass.simpleName}: ${e.message}"
+                        bitmap.recycle()
+                    } finally {
+                        pendingEncodes--
+                    }
+                }
+            } catch (e: RejectedExecutionException) {
+                pendingEncodes--
+                bitmap.recycle()
+            }
         } catch (e: Exception) {
+            pipelineErrors++
+            lastPipelineError = "${e.javaClass.simpleName}: ${e.message}"
             try { imageProxy.close() } catch (_: Exception) {}
         }
     }
+
+    // ── Pipeline instrumentation (surfaced in /status.json) ────
+
+    @Volatile var nullBitmaps = 0L; private set
+    @Volatile var pipelineErrors = 0L; private set
+    @Volatile var lastPipelineError: String? = null; private set
+
+
+
+    /** Full pipeline timing breakdown, for diagnosing a frame-rate ceiling. */
+    fun pipelineTiming(): Map<String, Any> = mapOf(
+        "null_bitmaps" to nullBitmaps,
+        "pipeline_errors" to pipelineErrors,
+        "last_error" to (lastPipelineError ?: "none"),
+        "dropped_saturated" to droppedSaturated,
+        "pending_encodes" to pendingEncodes,
+        "encode_threads" to analysisExecutorSize,
+        "src_w" to lastSrcW,
+        "src_h" to lastSrcH,
+        "src_format" to lastSrcFormat
+    )
+
+    /** HLS / hardware-encoder state, for /status.json and the WebUI. */
+    fun hlsStatus(): Map<String, Any> {
+        val s = hlsSession
+        return mapOf(
+            "active" to (s?.isActive == true),
+            "codec" to (s?.codecName ?: "none"),
+            "clients" to (s?.clients ?: 0),
+            "frames_encoded" to (s?.framesEncoded ?: 0L),
+            "frames_queued" to (s?.framesQueued ?: 0L),
+            "frames_dropped" to (s?.framesDropped ?: 0L),
+            "segments" to (s?.segmentsWritten ?: 0L),
+            "last_error" to hlsLastError
+        )
+    }
+
+    @Volatile private var analysisExecutorSize = 1
 
     /** Frames deliberately skipped by the FPS limiter — surfaced in /status.json. */
     fun droppedFrames(): Int = dropDecisions
@@ -186,14 +424,23 @@ class CameraManager(
 
         val w = source.width
         val h = source.height
-        val pixels = IntArray(w * h)
+        val count = w * h
+        // Reuse this thread's scratch array; only grow when the size changes.
+        // At 720p this array is ~3.7MB, and allocating it per frame was the
+        // single largest source of GC pressure in the pipeline.
+        var pixels = pixelScratch.get()
+        if (pixels.size < count) {
+            pixels = IntArray(count)
+            pixelScratch.set(pixels)
+        }
+
         source.getPixels(pixels, 0, w, 0, 0, w, h)
 
         when (eff) {
-            "mono" -> grayscale(pixels)
-            "negative" -> invert(pixels)
-            "sepia" -> sepia(pixels)
-            "nightvision" -> nightVision(pixels)
+            "mono" -> grayscale(pixels, count)
+            "negative" -> invert(pixels, count)
+            "sepia" -> sepia(pixels, count)
+            "nightvision" -> nightVision(pixels, count)
             else -> return source // unknown → passthrough
         }
 
@@ -201,23 +448,23 @@ class CameraManager(
             .also { it.setPixels(pixels, 0, w, 0, 0, w, h) }
     }
 
-    private fun grayscale(p: IntArray) {
-        for (i in p.indices) {
+    private fun grayscale(p: IntArray, n: Int) {
+        for (i in 0 until n) {
             val c = p[i]
             val g = (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000
             p[i] = Color.argb(255, g, g, g)
         }
     }
 
-    private fun invert(p: IntArray) {
-        for (i in p.indices) {
+    private fun invert(p: IntArray, n: Int) {
+        for (i in 0 until n) {
             val c = p[i]
             p[i] = Color.argb(255, 255 - Color.red(c), 255 - Color.green(c), 255 - Color.blue(c))
         }
     }
 
-    private fun sepia(p: IntArray) {
-        for (i in p.indices) {
+    private fun sepia(p: IntArray, n: Int) {
+        for (i in 0 until n) {
             val c = p[i]
             val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
             val nr = ((r * 393 + g * 769 + b * 189) shr 8).coerceAtMost(255)
@@ -227,21 +474,32 @@ class CameraManager(
         }
     }
 
-    private fun nightVision(p: IntArray) {
-        val boost = 2.4f
-        val gamma = 0.65
-        val greenTint = 0.6f
-        for (i in p.indices) {
+    private fun nightVision(p: IntArray, n: Int) {
+        // Precomputed 256-entry LUT: Math.pow per channel per pixel is the
+        // difference between a smooth 30fps and a stuttering one.
+        val lut = nightVisionLut()
+        val gr = (1 - GREEN_TINT * 0.3f)
+        val gg = (1 + GREEN_TINT * 0.7f)
+        val gb = (1 - GREEN_TINT * 0.8f)
+        for (i in 0 until n) {
             val c = p[i]
-            var r = Color.red(c) * boost
-            var g = Color.green(c) * boost
-            var b = Color.blue(c) * boost
-            r = Math.pow((r.coerceAtMost(255f) / 255f).toDouble(), gamma).toFloat() * 255f
-            g = Math.pow((g.coerceAtMost(255f) / 255f).toDouble(), gamma).toFloat() * 255f
-            b = Math.pow((b.coerceAtMost(255f) / 255f).toDouble(), gamma).toFloat() * 255f
-            r *= (1 - greenTint * 0.3f); g *= (1 + greenTint * 0.7f); b *= (1 - greenTint * 0.8f)
-            p[i] = Color.argb(255, r.toInt().coerceIn(0, 255), g.toInt().coerceIn(0, 255), b.toInt().coerceIn(0, 255))
+            var r = lut[Color.red(c)] * gr
+            var g = lut[Color.green(c)] * gg
+            var b = lut[Color.blue(c)] * gb
+            p[i] = Color.argb(255, r.toInt(), g.toInt(), b.toInt())
         }
+    }
+
+    private fun nightVisionLut(): IntArray {
+        val cached = nightVisionLutCache
+        if (cached != null) return cached
+        val lut = IntArray(256)
+        for (i in 0 until 256) {
+            val boosted = (i * BOOST).coerceAtMost(255f) / 255f
+            lut[i] = (Math.pow(boosted.toDouble(), GAMMA).toFloat() * 255f).toInt().coerceIn(0, 255)
+        }
+        nightVisionLutCache = lut
+        return lut
     }
 
     // ─── Controls ───────────────────────────────────────────────
@@ -345,5 +603,19 @@ class CameraManager(
 
     companion object {
         const val DEFAULT_PORT = 8080
+
+        // Night-vision tone curve, hoisted to constants so the LUT is built once.
+        private const val BOOST = 2.4f
+        private const val GAMMA = 0.65
+        private const val GREEN_TINT = 0.6f
+
+        /**
+         * Encode jobs allowed to be in flight.
+         *
+         * Bounded on purpose: an unbounded queue would let encodes lag further
+         * and further behind, and the viewer would then be served increasingly
+         * stale frames. Dropping at the door keeps latency flat instead.
+         */
+        private const val MAX_PENDING_ENCODES = 3
     }
 }

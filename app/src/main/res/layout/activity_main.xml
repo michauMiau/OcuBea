@@ -15,6 +15,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
+            android:baselineAligned="false"
         android:gravity="center_vertical"
         android:background="#99000000"
         android:padding="10dp">
@@ -55,11 +56,18 @@
 
     </LinearLayout>
 
-    <!-- Bottom control bar -->
+    <!-- Bottom control bar.
+         This bar is pinned to the bottom edge with layout_gravity="bottom", which puts
+         it UNDER the system navigation bar. Its wrap_content height then gets clipped and
+         the vertical LinearLayout squeezes the LAST row down to ~20px, leaving those buttons
+         (night/motion/screen-off/settings/exit) untappable.
+         Fix: give the bar a fixed height that is explicitly tall enough for both rows
+         (8+46+46+8 = 108dp) and lift it clear of the navigation bar with a bottom margin. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
+        android:layout_marginBottom="72dp"
         android:orientation="vertical"
         android:background="#CC000000"
         android:padding="8dp">
@@ -67,76 +75,72 @@
         <!-- Row 1: primary controls -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:layout_height="46dp"
+            android:orientation="horizontal"
+            android:baselineAligned="false">
 
             <Button
                 android:id="@+id/btnToggleStream"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="46dp"
                 android:layout_weight="1.2"
                 android:layout_margin="2dp"
                 android:text="▶ Start"
                 android:textSize="11sp"
                 android:backgroundTint="#2E7D32"
                 android:textColor="#ffffff"
-                android:minHeight="46dp"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"/>
 
             <Button
                 android:id="@+id/btnTorch"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="46dp"
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="🔦"
                 android:textSize="13sp"
                 android:backgroundTint="#37474F"
                 android:textColor="#ffffff"
-                android:minHeight="46dp"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"/>
 
             <Button
                 android:id="@+id/btnFlip"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="46dp"
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="🔄"
                 android:textSize="13sp"
                 android:backgroundTint="#37474F"
                 android:textColor="#ffffff"
-                android:minHeight="46dp"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"/>
 
             <Button
                 android:id="@+id/btnZoomIn"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="46dp"
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="🔍+"
                 android:textSize="13sp"
                 android:backgroundTint="#37474F"
                 android:textColor="#ffffff"
-                android:minHeight="46dp"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"/>
 
             <Button
                 android:id="@+id/btnZoomOut"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="46dp"
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="🔍−"
                 android:textSize="13sp"
                 android:backgroundTint="#37474F"
                 android:textColor="#ffffff"
-                android:minHeight="46dp"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"/>
 
@@ -145,74 +149,75 @@
         <!-- Row 2: secondary controls -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
+            android:layout_height="46dp"
+            android:orientation="horizontal"
+            android:baselineAligned="false">
 
             <Button
                 android:id="@+id/btnNightVision"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="46dp"
                 android:layout_weight="1.2"
                 android:layout_margin="2dp"
                 android:text="🌙"
                 android:textSize="13sp"
                 android:backgroundTint="#37474F"
                 android:textColor="#ffffff"
-                android:minHeight="42dp"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"/>
 
             <Button
                 android:id="@+id/btnMotion"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="46dp"
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="🚨"
                 android:textSize="13sp"
                 android:backgroundTint="#37474F"
                 android:textColor="#ffffff"
-                android:minHeight="42dp"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"/>
 
             <Button
                 android:id="@+id/btnScreenOff"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="46dp"
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="🌑"
                 android:textSize="13sp"
                 android:backgroundTint="#37474F"
                 android:textColor="#ffffff"
-                android:minHeight="42dp"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"/>
 
             <Button
                 android:id="@+id/btnSettings"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="46dp"
                 android:layout_weight="1"
                 android:layout_margin="2dp"
                 android:text="⚙"
                 android:textSize="13sp"
                 android:backgroundTint="#37474F"
                 android:textColor="#ffffff"
-                android:minHeight="42dp"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"/>
 
-            <ImageButton
+            <Button
                 android:id="@+id/btnRealLauncher"
-                android:layout_width="42dp"
-                android:layout_height="42dp"
-                android:layout_gravity="center_vertical"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_weight="1"
                 android:layout_margin="2dp"
-                android:src="@android:drawable/ic_menu_manage"
-                android:contentDescription="Exit to launcher"
-                android:background="#37474F"/>
+                android:text="🏠"
+                android:textSize="13sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"
+                android:contentDescription="Exit to launcher"/>
 
         </LinearLayout>
 
