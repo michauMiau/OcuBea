@@ -23,7 +23,17 @@ class HlsSession(
 
     private companion object {
         const val TAG = "OcuBeaHLS"
-        const val RING_SIZE = 8          // ~2s of video retained for late joiners
+        // 20 segments at 250ms is ~5s of video retained for late joiners.
+        //
+        // The old value was 8 (~2s), which was too tight to survive a client
+        // that is not polling instantly: hls.js reads a playlist, then requests
+        // the segment it points at, and any segment older than the ring window
+        // answers 404. That is what the console showed:
+        // "GET /hls/seg141.m4s 404" for a sequence number the playlist had
+        // itself advertised moments earlier. The ring is the client's buffer
+        // and has to cover a slow poll, a stalled request and the initial
+        // seek-back, so it is sized in seconds, not in "segments".
+        const val RING_SIZE = 20
     }
 
     private val encoder = H264Encoder(width, height, fps, bitrate)
