@@ -66,6 +66,7 @@ class StreamServer(
     private fun route(session: IHTTPSession, uri: String, method: Method): Response = when {
         // ── Web UI ──
         uri == "/" || uri == "/index.html" || uri == "/mobile" || uri == "/login" -> serveWebpage()
+        uri == "/hls.min.js" -> serveAsset("hls.min.js", "application/javascript")
 
         // ── Streaming ──
         uri == "/video" || uri == "/videofeed" || uri == "/mjpeg" || uri.startsWith("/stream") -> handleMjpeg()
@@ -189,9 +190,6 @@ class StreamServer(
      * materialised, into a buffer allocated once.
      */
     private class MultipartWriter(private val boundary: String) {
-        private val head = StringBuilder(
-            "--$boundary\r\nContent-Type: image/jpeg\r\nContent-Length: "
-        )
         private val tail = "\r\n".toByteArray(Charsets.US_ASCII)
         private var headBytes: ByteArray = ByteArray(0)
 
@@ -200,11 +198,21 @@ class StreamServer(
         private var framePos = 0
         private var tailPos = 0
 
-        /** Prepares the next part; call once per frame, then read from it. */
+        /**
+         * Prepares the next part; call once per frame, then read from it.
+         *
+         * The header is rebuilt from scratch every time. An earlier version
+         * appended into a long-lived StringBuilder and never cleared it, so by
+         * the second frame the header contained every previous frame's metadata:
+         * the part length no longer matched, the client parsed the accumulated
+         * text as JPEG data, and the picture froze on frame one with everything
+         * after it black. A reusable StringBuilder is only safe if it is reset —
+         * `setLength(0)` — which is easy to forget, so build it locally instead.
+         */
         fun setFrame(jpeg: ByteArray) {
             frame = jpeg
-            headBytes = head.append(jpeg.size).append("\r\n\r\n").toString()
-                .toByteArray(Charsets.US_ASCII)
+            headBytes = ("--$boundary\r\nContent-Type: image/jpeg\r\nContent-Length: " +
+                jpeg.size + "\r\n\r\n").toByteArray(Charsets.US_ASCII)
             headPos = 0
             framePos = 0
             tailPos = 0
@@ -939,11 +947,21 @@ class StreamServer(
         return map["postData"] ?: ""
     }
 
-    private fun serveWebpage(): Response = try {
-        val bytes = context.assets.open("index.html").readBytes()
-        newFixedLengthResponse(Status.OK, "text/html; charset=utf-8", ByteArrayInputStream(bytes), bytes.size.toLong())
+    private fun serveWebpage(): Response = serveAsset("index.html", "text/html; charset=utf-8")
+
+    /**
+     * Serves a bundled asset from `app/src/main/assets`.
+     *
+     * hls.js is bundled rather than pulled from a CDN so the WebUI works on a
+     * LAN with no internet: the phone and the browser only ever need to reach
+     * each other. With a CDN, a missing uplink silently disabled HLS playback
+     * while the rest of the page still looked healthy.
+     */
+    private fun serveAsset(name: String, mime: String): Response = try {
+        val bytes = context.assets.open(name).readBytes()
+        newFixedLengthResponse(Status.OK, mime, ByteArrayInputStream(bytes), bytes.size.toLong())
     } catch (_: Exception) {
-        newFixedLengthResponse(Status.INTERNAL_ERROR, "text/plain", "Web UI missing")
+        newFixedLengthResponse(Status.NOT_FOUND, "text/plain", "Asset $name not found")
     }
 
     companion object {

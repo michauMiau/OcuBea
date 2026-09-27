@@ -235,6 +235,10 @@ function showHls(){
   livev.style.objectFit = 'cover';
   livev.style.position = 'absolute';
   livev.style.inset = '0';
+  // Without controls a muted autoplay video that gets paused (by the browser's
+  // autoplay policy, or by a fatal hls.js error) can never be brought back by
+  // the user: there is no play button. Autoplay alone is not enough.
+  livev.controls = true;
   startHls();
 }
 
@@ -484,10 +488,12 @@ setInterval(function(){ refresh(); refreshRec(); }, 3000);
 setInterval(refreshSensors, 15000);
 </script>
 
-<!-- hls.js enables hardware-H.264 playback in the browser. Loaded from CDN and
-     pinned to a specific version so a future release cannot change behaviour
-     under us. If it is unavailable, showMjpeg() falls back automatically. -->
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+<!-- hls.js enables hardware-H.264 playback in the browser, pinned to a
+     specific version. If it is unavailable, showMjpeg() falls back automatically. -->
+<!-- hls.js is served from the app's own assets, not a CDN. The phone and the
+     browser are on the LAN, and a captive portal or no uplink would otherwise
+     leave HLS mode permanently dead with a misleading "failed to load" hint. -->
+<script src="/hls.min.js"></script>
 
 </body>
 </html>
