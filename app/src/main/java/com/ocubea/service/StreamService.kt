@@ -133,6 +133,7 @@ class StreamService : LifecycleService() {
         if (!cameraRunning.compareAndSet(false, true)) return
         try {
             cameraManager.onFrameCaptured = { jpeg, _ -> onCameraFrame(jpeg) }
+            cameraManager.onFrameHeartbeat = { lastFrameAt = System.currentTimeMillis() }
             cameraManager.start { msg -> reportError(msg) }
             lastFrameAt = System.currentTimeMillis()
             updateNotification("Streaming on port ${config.port}")
@@ -167,6 +168,7 @@ class StreamService : LifecycleService() {
         MotionRecorder.lastHeight = cameraManager.currentTargetHeight
 
         cameraManager.onFrameCaptured = { jpeg, _ -> onCameraFrame(jpeg) }
+        cameraManager.onFrameHeartbeat = { lastFrameAt = System.currentTimeMillis() }
         cameraManager.start { msg -> reportError(msg) }
         cameraRunning.set(true)
 
