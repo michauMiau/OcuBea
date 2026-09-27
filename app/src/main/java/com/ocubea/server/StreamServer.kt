@@ -8,6 +8,8 @@ import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
 import com.ocubea.onvif.OnvifDiscovery
 import com.ocubea.onvif.OnvifSoap
+import com.ocubea.security.ClipRetention
+import com.ocubea.security.ClipStorage
 import com.ocubea.security.MotionDetector
 import com.ocubea.security.MotionRecorder
 import com.ocubea.sensors.DeviceSensors
@@ -121,6 +123,7 @@ class StreamServer(
         uri == "/hls/init.mp4" -> handleHlsInit()
         uri.startsWith("/hls/seg") && uri.endsWith(".m4s") -> handleHlsSegment(uri)
         uri.startsWith("/recordings") -> handleRecordings(session)
+        uri == "/clips" || uri.startsWith("/clips/") -> handleClips(session)
         uri == "/onvif/describe" -> newFixedLengthResponse(Status.OK, "text/plain", describe())
 
         else -> notFound(uri)
@@ -858,6 +861,191 @@ class StreamServer(
 
     private fun recordingsDir(): File =
         (context.getExternalFilesDir(null) ?: context.filesDir).resolve("recordings")
+
+    // ── Clip management ─────────────────────────────────────
+    //
+    // Separate from /recordings on purpose: /recordings is the IP Webcam
+    // compatibility surface and keeps serving Motion-JPEG AVI. Clips are fMP4
+    // from the hardware encoder, live in Android/media so the gallery can see
+    // them, and get byte-range playback.
+
+    private fun handleClips(session: IHTTPSession): Response {
+        val uri = session.uri ?: "/clips"
+        val rest = uri.removePrefix("/clips").trimStart('/').substringBefore('?')
+        val method = session.method
+
+        return try {
+            when {
+                rest.isEmpty() && method == Method.GET -> clipsIndex()
+                rest.isEmpty() && method == Method.POST -> badRequest("use /clips/record, /clips/delete or /clips/clear")
+
+                rest == "recording" -> clipsRecordingState()
+
+                rest == "record" && method == Method.POST -> clipsRecordStart(session)
+                rest == "record/stop" && method == Method.POST -> clipsRecordStop()
+
+                rest == "delete" && method == Method.POST -> clipsDeleteMany(session)
+                rest == "clear" && method == Method.POST -> clipsClear()
+                rest == "prune" && method == Method.POST -> clipsPrune()
+
+                rest.isNotEmpty() && method == Method.DELETE -> clipsDeleteOne(rest)
+                rest.endsWith("/download") -> serveClip(session, rest.removeSuffix("/download"), download = true)
+                rest.isNotEmpty() -> serveClip(session, rest, download = false)
+
+                else -> notFound(uri)
+            }
+        } catch (e: Exception) {
+            newFixedLengthResponse(Status.INTERNAL_ERROR, "text/plain", "clips error: ${e.message}")
+        }
+    }
+
+    private fun clipsIndex(): Response {
+        val files = ClipStorage.list(context)
+        // Built by hand rather than with a raw-string template per entry: a
+        // """...""" literal that starts a line with a brace-quote is easy to
+        // miscount, and a single missing colon here produced invalid JSON that
+        // silently broke the whole WebUI list.
+        val items = files.joinToString(",") { f ->
+            buildString {
+                append("{\"name\":\"").append(f.name)
+                append("\",\"size\":").append(f.length())
+                append(",\"modified\":").append(f.lastModified())
+                append(",\"recording\":")
+                append(f.name == cameraManager.clipWriter?.activeClip)
+                append('}')
+            }
+        }
+        val json = "{\"clips\":[$items],\"count\":${files.size}," +
+            "\"bytes\":${ClipStorage.totalBytes(context)}," +
+            "\"free\":${ClipStorage.usableBytes(context)}," +
+            "\"external\":${ClipStorage.isExternal(context)}}"
+        return newFixedLengthResponse(Status.OK, "application/json", json)
+    }
+
+    private fun clipsRecordingState(): Response {
+        val t = cameraManager.clipTelemetry()
+        fun num(key: String): Long = (t[key] as? Number)?.toLong() ?: 0L
+        val json = buildString {
+            append("{\"armed\":").append(t["armed"])
+            append(",\"active\":").append(t["active"])
+            append(",\"bytes\":").append(num("bytes"))
+            append(",\"frames\":").append(num("frames"))
+            append(",\"dropped\":").append(num("dropped"))
+            append(",\"file\":").append(jsonString(t["file"] as? String))
+            append(",\"error\":").append(jsonString(t["error"] as? String))
+            append('}')
+        }
+        return newFixedLengthResponse(Status.OK, "application/json", json)
+    }
+
+    private fun clipsRecordStart(session: IHTTPSession): Response {
+        // -d "seconds=6" arrives as a form-encoded body, not a query string, so
+        // parseParams alone yields an empty map and the clip records forever.
+        val params = parseBodyParams(session) + parseParams(session)
+        val seconds = params["seconds"]?.toIntOrNull()?.coerceIn(1, 3600) ?: 0
+        val started = cameraManager.startClipRecording(seconds)
+        val err = cameraManager.clipState
+        return if (started) {
+            newFixedLengthResponse(Status.OK, "application/json",
+                """{"recording":true,"seconds":$seconds}""")
+        } else {
+            newFixedLengthResponse(Status.CONFLICT, "application/json",
+                """{"recording":false,"error":${jsonString(err ?: "cannot start")}}""")
+        }
+    }
+
+    private fun clipsRecordStop(): Response {
+        cameraManager.stopClipRecording()
+        return newFixedLengthResponse(Status.OK, "application/json", """{"recording":false}""")
+    }
+
+    private fun clipsDeleteOne(name: String): Response {
+        // The active clip is held open by the writer; deleting it would leave a
+        // handle writing into a file no listing mentions.
+        if (name == cameraManager.clipWriter?.activeClip) {
+            return newFixedLengthResponse(Status.CONFLICT, "text/plain", "clip is being recorded")
+        }
+        val file = ClipStorage.resolve(context, name)
+            ?: return badRequest("invalid clip name")
+        return if (file.exists() && file.delete()) okText("deleted")
+               else notFound(name)
+    }
+
+    private fun clipsDeleteMany(session: IHTTPSession): Response {
+        // readBody() consumes the stream once, so calling parseBodyParams and
+        // then reading inputStream again would see an already-drained body.
+        // The WebUI posts JSON, curl users post a form; one read serves both.
+        val raw = readBody(session).ifBlank {
+            session.parms?.entries?.joinToString(",") { (k, v) -> "$k=$v" }.orEmpty()
+        }
+        val names = Regex("klip_[A-Za-z0-9_.\\-]+\\.mp4").findAll(raw).map { it.value }.toSet()
+        if (names.isEmpty()) return badRequest("no clip names given")
+        val active = cameraManager.clipWriter?.activeClip
+        var deleted = 0
+        var skipped = 0
+        for (name in names) {
+            if (name == active) { skipped++; continue }
+            ClipStorage.resolve(context, name)?.let { if (it.exists() && it.delete()) deleted++ }
+        }
+        return newFixedLengthResponse(Status.OK, "application/json",
+            """{"deleted":$deleted,"skipped":$skipped}""")
+    }
+
+    private fun clipsClear(): Response {
+        val active = cameraManager.clipWriter?.activeClip
+        var deleted = 0
+        for (f in ClipStorage.list(context)) {
+            if (f.name == active) continue
+            if (f.delete()) deleted++
+        }
+        return newFixedLengthResponse(Status.OK, "application/json", """{"deleted":$deleted}""")
+    }
+
+    private fun clipsPrune(): Response {
+        val open = cameraManager.clipWriter?.activeClip
+        val res = ClipRetention.prune(
+            context,
+            maxBytes = clipRetentionBytes(),
+            maxAgeMs = clipRetentionAgeMs(),
+            maxFiles = clipRetentionFiles(),
+            protectedNames = if (open != null) setOf(open) else emptySet(),
+        )
+        return newFixedLengthResponse(Status.OK, "application/json",
+            """{"removed":${res.removed},"freed":${res.freedBytes},"byAge":${res.byAge},"bySize":${res.bySize},"byCount":${res.byCount}}""")
+    }
+
+    private fun clipRetentionBytes(): Long {
+        val mb = config.clipMaxSpaceMb.coerceIn(64, 1024 * 64)
+        return mb * 1024L * 1024L
+    }
+
+    private fun clipRetentionAgeMs(): Long {
+        val hours = config.clipMaxAgeHours.coerceIn(1, 24 * 90)
+        return hours * 3600_000L
+    }
+
+    private fun clipRetentionFiles(): Int = config.clipMaxFiles.coerceIn(10, 5000)
+
+    private fun serveClip(session: IHTTPSession, name: String, download: Boolean): Response {
+        val file = ClipStorage.resolve(context, name) ?: return badRequest("invalid clip name")
+        if (!file.exists()) return notFound(name)
+        return try {
+            val res = ByteRanges.respond(file, session.headers["range"], ::newFixedLengthResponse)
+            if (download) {
+                res.addHeader("Content-Disposition", "attachment; filename=\"${file.name}\"")
+            }
+            res
+        } catch (e: Exception) {
+            newFixedLengthResponse(Status.INTERNAL_ERROR, "text/plain", "cannot read clip: ${e.message}")
+        }
+    }
+
+    private fun jsonString(s: String?): String =
+        if (s == null) "null"
+        else "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    /** The new MediaStore-visible directory, shared with the native UI. */
+    private fun clipsDir(): File = ClipStorage.root(context)
 
     // ── Upstream-compatible recording aliases ─────────────────
     //

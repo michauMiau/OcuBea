@@ -46,6 +46,32 @@
   code{font-family:ui-monospace,monospace;font-size:11px;background:#0d1117;padding:1px 5px;border-radius:4px;color:#79c0ff}
   .hint{font-size:11px;color:var(--dim);margin-top:6px}
   .rec{color:var(--warn);font-weight:600}
+
+  /* Clip grid. Thumbnails are <video preload=metadata> rather than <img>
+     because a clip's first frame is inside the first mdat, not in the init
+     segment — there is no separate poster image to point an <img> at. */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+  .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;
+        cursor:pointer;position:relative}
+  .tile:hover{border-color:var(--acc)}
+  .tile video{width:100%;aspect-ratio:16/9;background:#000;display:block;object-fit:cover}
+  .tile .meta{padding:7px 9px;font-size:11px;color:var(--dim);display:flex;
+              justify-content:space-between;gap:6px;align-items:center}
+  .tile .name{color:var(--txt);font-family:ui-monospace,monospace;font-size:10px;
+              overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tile .recDot{position:absolute;top:8px;left:8px;width:9px;height:9px;border-radius:50%;
+                background:var(--danger);animation:pulse 1.1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  .tile input[type=checkbox]{position:absolute;top:8px;right:8px;width:17px;height:17px;z-index:2}
+  .btn{display:inline-block;background:#21262d;color:var(--txt);border:1px solid var(--line);
+       border-radius:8px;padding:9px 12px;font-size:13px;cursor:pointer;text-decoration:none;font-family:inherit}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.82);display:flex;align-items:center;
+         justify-content:center;z-index:50;padding:16px}
+  .modalBox{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+            padding:14px;max-width:900px;width:100%;max-height:92vh;overflow:auto}
+  .modalBox video{width:100%;max-height:70vh;background:#000;border-radius:8px}
+  .modalBox h3{font-size:13px;margin:0 0 10px;font-family:ui-monospace,monospace;
+               overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .stream .badge{position:absolute;top:10px;left:10px;z-index:3;background:rgba(0,0,0,.6);
          border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:11px;color:var(--txt)}
   footer{text-align:center;color:var(--dim);font-size:11px;padding:20px}
@@ -168,6 +194,39 @@
     </table>
   </section>
 
+  <section id="clipsSection">
+    <h2>Clips <span class="pill" id="clipsCount">0</span></h2>
+
+    <div class="row" style="margin-bottom:10px">
+      <button id="bRecNow" class="primary">Record 30s</button>
+      <button id="bRecStop" class="danger" disabled>Stop</button>
+      <button id="bRefreshClips">Refresh</button>
+      <button id="bPruneClips">Apply limits</button>
+      <button id="bClearClips" class="danger">Delete all</button>
+    </div>
+
+    <p class="hint" id="clipsState" style="margin-bottom:8px">idle</p>
+    <p class="hint" id="clipsSpace" style="margin-bottom:12px"></p>
+
+    <div id="clipsEmpty" class="hint" style="display:none">No clips yet.</div>
+    <div id="clipsGrid" class="grid"></div>
+  </section>
+
+  <!-- Clip player. One dialog for every clip, so a click anywhere opens the
+       same controls instead of a pile of inline <video> elements fighting
+       over bandwidth. -->
+  <div id="clipModal" class="modal" style="display:none">
+    <div class="modalBox">
+      <h3 id="clipName">–</h3>
+      <video id="clipVideo" controls preload="metadata" playsinline></video>
+      <div class="row" style="margin-top:10px">
+        <a id="clipDownload" class="btn" download>Download</a>
+        <button id="clipDelete" class="danger">Delete</button>
+        <button id="clipClose">Close</button>
+      </div>
+    </div>
+  </div>
+
   <section>
     <h2>Device</h2>
     <dl class="kv" id="devKv"></dl>
@@ -195,7 +254,18 @@ var T = new URLSearchParams(location.search).get('token') || localStorage.getIte
 var debounce = null;
 
 function url(p){ return T ? p + (p.indexOf('?')>=0?'&':'?') + 'token=' + encodeURIComponent(T) : p; }
-function api(p){ return fetch(url(p), {method:'POST'}); }
+/* opts is optional and additive: existing callers pass just a path and keep
+   getting a plain POST. Clips need method/body/method:'DELETE', and a second
+   helper for those would be a worse name than one flexible one. */
+function api(p, opts){
+  var o = opts || {};
+  var init = {method: o.method || 'POST'};
+  if(o.body !== undefined){
+    init.body = o.body;
+    init.headers = {'Content-Type': 'application/x-www-form-urlencoded'};
+  }
+  return fetch(url(p), init);
+}
 function get(p){ return fetch(url(p)); }
 function $(id){ return document.getElementById(id); }
 function bytes(n){
@@ -482,6 +552,196 @@ $('live').onclick = function(e){
   var x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
   api('/focus?x=' + x.toFixed(3) + '&y=' + y.toFixed(3));
 };
+
+/* ── Clip management ────────────────────────────────────────────── */
+
+var clips = [];
+var clipPollTimer = null;
+var thumbObserver = null;
+
+/* Only re-render the grid when the set of clips actually changed. A full
+   innerHTML = '' plus rebuild every 4s tore down live <video> elements and
+   restarted their range requests, which is where the ERR_ABORTED spam came
+   from — and it would also re-download thumbnails for 500 clips forever. */
+function renderClips(){
+  var grid = $('clipsGrid');
+  grid.innerHTML = '';
+  clips.forEach(function(c){
+    var t = document.createElement('div');
+    t.className = 'tile';
+    // preload=metadata pulls the moov (init segment) only — enough for a
+    // duration, not enough for a frame, and not enough to seek. preload=auto
+    // fetches the first chunks, which is what makes the thumbnail and the
+    // seek in openClip() work.
+    t.innerHTML =
+      '<video preload="auto" muted playsinline src="/clips/' + encodeURIComponent(c.name) + '"></video>' +
+      '<div class="meta"><span class="name">' + c.name.replace(/^klip_/, '') + '</span>' +
+      '<span>' + bytes(c.size) + '</span></div>';
+    t.onclick = function(e){
+      if(e.target.type === 'checkbox') return;
+      openClip(c.name);
+    };
+    grid.appendChild(t);
+    if(thumbObserver) thumbObserver.observe(t);
+  });
+}
+
+/* Signature of the current listing, ignoring the fields that change while a
+   recording is running: a growing byte count would otherwise re-render the
+   whole grid on every poll. */
+function clipsSignature(){
+  return clips.map(function(c){ return c.name; }).join('|');
+}
+
+function refreshClips(){
+  return fetch('/clips').then(function(r){ return r.json(); }).then(function(d){
+    var sig = (d.clips || []).map(function(c){ return c.name; }).join('|');
+    var changed = sig !== clipsSignature();
+    clips = d.clips || [];
+
+    $('clipsCount').textContent = d.count;
+    $('clipsEmpty').style.display = d.count ? 'none' : 'block';
+    $('clipsSpace').textContent = d.external
+      ? bytes(d.bytes) + ' on disk · ' + bytes(d.free) + ' free'
+      : bytes(d.bytes) + ' in app storage — clips are deleted on uninstall';
+
+    if(changed || !$('clipsGrid').firstChild) renderClips();
+    return d;
+  }).catch(function(){ return null; });
+}
+
+/* Load thumbnails only for tiles the user can actually see. preload=auto on
+   every tile would fetch hundreds of clips the moment the section scrolls into
+   view — on a phone that is also streaming, that is the fastest way to make
+   the stream stutter. loadThumbnails uses a real viewport check via
+   getBoundingClientRect, and an IntersectionObserver keeps it current as the
+   grid grows. */
+function loadThumbnails(){
+  var tiles = document.querySelectorAll('#clipsGrid .tile');
+  var vh = window.innerHeight || 800;
+  tiles.forEach(function(tile){
+    var v = tile.querySelector('video');
+    if(!v || v.dataset.loaded) return;
+    var r = tile.getBoundingClientRect();
+    if(r.bottom < 0 || r.top > vh) return;      // off screen: leave it lazy
+    v.dataset.loaded = '1';
+    v.preload = 'auto';
+    v.load();
+  });
+}
+
+if('IntersectionObserver' in window){
+  thumbObserver = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(!e.isIntersecting) return;
+      var v = e.target.querySelector('video');
+      if(v && !v.dataset.loaded){
+        v.dataset.loaded = '1';
+        v.preload = 'auto';
+        v.load();
+      }
+    });
+  }, {rootMargin: '200px'});
+}
+
+function refreshClipState(){
+  return fetch('/clips/recording').then(function(r){ return r.json(); }).then(function(s){
+    var recording = s.active;
+    $('bRecStop').disabled = !recording && !s.armed;
+    $('bRecNow').disabled = recording;
+    if(recording){
+      $('clipsState').innerHTML = '<span class="rec">● REC</span> ' +
+        bytes(s.bytes) + ' · ' + s.frames + ' frames' +
+        (s.dropped ? ' · ' + s.dropped + ' dropped' : '') +
+        (s.file ? ' · ' + s.file : '');
+    } else if(s.armed){
+      $('clipsState').textContent = 'waiting for first frame…';
+    } else {
+      $('clipsState').textContent = s.error ? ('idle — ' + s.error) : 'idle';
+    }
+    return s;
+  }).catch(function(){ return null; });
+}
+
+function openClip(name){
+  var v = $('clipVideo');
+  $('clipName').textContent = name;
+  v.src = '/clips/' + encodeURIComponent(name);
+  $('clipDownload').href = '/clips/' + encodeURIComponent(name) + '/download';
+  $('clipVideo').dataset.name = name;
+  $('clipModal').style.display = 'flex';
+  // Autoplay with sound is blocked until the user interacts, and a click is
+  // that interaction — so the click that opened the dialog counts.
+  v.play().catch(function(){});
+}
+
+function closeClip(){
+  var v = $('clipVideo');
+  v.pause();
+  v.removeAttribute('src');
+  v.load();
+  $('clipModal').style.display = 'none';
+}
+
+$('clipClose').onclick = closeClip;
+$('clipModal').onclick = function(e){ if(e.target === this) closeClip(); };
+$('clipDelete').onclick = function(){
+  var name = $('clipVideo').dataset.name;
+  if(!name) return;
+  api('/clips/' + encodeURIComponent(name), {method:'DELETE'}).then(function(){
+    closeClip(); refreshClips();
+  });
+};
+
+$('bRefreshClips').onclick = function(){ refreshClips(); refreshClipState(); };
+
+$('bRecNow').onclick = function(){
+  api('/clips/record', {method:'POST', body:'seconds=30'}).then(function(){
+    refreshClipState();
+  });
+};
+
+$('bRecStop').onclick = function(){
+  api('/clips/record/stop', {method:'POST'}).then(function(){
+    refreshClipState(); refreshClips();
+  });
+};
+
+$('bClearClips').onclick = function(){
+  if(!clips.length) return;
+  if(!confirm('Delete all ' + clips.length + ' clips? This cannot be undone.')) return;
+  api('/clips/clear', {method:'POST'}).then(function(){ refreshClips(); });
+};
+
+$('bPruneClips').onclick = function(){
+  api('/clips/prune', {method:'POST'}).then(function(r){ return r.text(); }).then(function(t){
+    $('clipsState').textContent = 'prune: ' + t;
+    refreshClips();
+  });
+};
+
+/* Poll only while the clips section is actually on screen: a hidden tab
+   refreshing every 3s is pure waste on a phone that is also streaming. */
+function startClipPolling(){
+  if(clipPollTimer) return;
+  refreshClips(); refreshClipState();
+  clipPollTimer = setInterval(function(){
+    if(document.hidden) return;
+    refreshClipState();
+    refreshClips();
+  }, 4000);
+}
+function stopClipPolling(){
+  if(clipPollTimer){ clearInterval(clipPollTimer); clipPollTimer = null; }
+}
+
+if('IntersectionObserver' in window){
+  new IntersectionObserver(function(entries){
+    entries[0].isIntersecting ? startClipPolling() : stopClipPolling();
+  }, {threshold:0.05}).observe($('clipsSection'));
+} else {
+  startClipPolling();
+}
 
 refresh(); refreshSensors(); refreshRec();
 setInterval(function(){ refresh(); refreshRec(); }, 3000);
