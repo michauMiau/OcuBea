@@ -84,13 +84,19 @@ class H264Encoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            // Half a second between IDRs. Every HLS segment must open on a
-            // random-access point, so with 250ms segments the encoder has to
-            // produce a keyframe at least twice per segment duration. One
-            // second was too sparse: several segments in a row were forced to
-            // wait for the next IDR and the ring drained, which showed up as an
-            // empty playlist and a client that never starts playing.
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            // An IDR on every frame. Every HLS segment must open on a
+            // random-access point, and with TARGET_SEGMENT_MS = 250 a longer
+            // keyframe interval means most segments would have to wait for the
+            // next IDR, so the segment length and the advertised #EXTINF
+            // disagree and the playlist drains.
+            //
+            // An IDR per frame was previously fatal only because Fmp4Writer
+            // treated an in-segment keyframe as "discard what I have", so every
+            // frame threw away the previous one and nothing was ever flushed.
+            // Now the keyframe closes the open segment and opens the next one,
+            // so the cost of a dense GOP is only bitrate, and the segment length
+            // still tracks TARGET_SEGMENT_MS.
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
         }
 

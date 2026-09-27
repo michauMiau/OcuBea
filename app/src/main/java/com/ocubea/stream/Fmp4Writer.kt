@@ -85,14 +85,25 @@ class Fmp4Writer {
             // here so the keyframe is the FIRST sample, not merely present.
             segmentStartsWithKey = sample.keyframe
         } else if (sample.keyframe) {
-            // Keyframe inside an open segment: drop the partial segment we have
-            // accumulated and restart from this keyframe. A 250ms window of
-            // undecodable frames is worse than one slightly long segment.
-            pendingSamples.clear()
-            pendingSamples.add(sample)
+            // Keyframe inside an open segment: close the open segment first, so
+            // the keyframe opens the NEXT one.
+            //
+            // The previous version cleared pendingSamples and returned null,
+            // throwing the partial segment away. With
+            // MediaFormat.KEY_I_FRAME_INTERVAL = 0 every single frame is an IDR,
+            // so EVERY append took this branch: each frame discarded the
+            // previous one and nothing was ever flushed. The playlist froze on
+            // the last segment before the session began growing, and a client
+            // that had already read a higher sequence number from an earlier
+            // playlist got a 404 for a segment that was dropped moments before
+            // it asked. Closing here keeps the IDR as the first sample of the
+            // next segment, which is the actual requirement.
+            val closed = flush()
             segmentStartPtsUs = sample.ptsUs
             segmentStartsWithKey = true
-            return null
+            lastPtsUs = sample.ptsUs
+            pendingSamples.add(sample)
+            return closed
         }
         pendingSamples.add(sample)
         lastPtsUs = sample.ptsUs
@@ -116,7 +127,13 @@ class Fmp4Writer {
         val durationUs = (endUs - startUs).coerceAtLeast(1000L)
 
         val mdatPayload = buildFragment(samples, startUs, durationUs)
-        val segment = initSegment!! + mdatPayload
+        // A CMAF media segment is moof+mdat ONLY. The ftyp+moov belongs to the
+        // init segment the player fetches via #EXT-X-MAP, and must not be
+        // repeated in every segment: appending the init to each one makes the
+        // demuxer report "Found duplicated MOOV Atom" and "overread end of atom
+        // 'dref'" once per segment, which is what a real client sees as a
+        // stream that never gets past the first fragment.
+        val segment = mdatPayload
         sequence++
         segmentsWritten++
         return Segment(sequence, segment, durationUs / 1000)
@@ -311,7 +328,15 @@ class Fmp4Writer {
         // tfdt: base media decode time
         val tfdt = java.io.ByteArrayOutputStream()
         val b = startUs.toLong()
-        tfdt.write(byteArrayOf(0, 0, 0, 1))     // version 1, 64-bit
+        // A FullBox is ONE version byte plus THREE flags bytes. The previous
+        // code wrote byteArrayOf(0, 0, 0, 1) — a little-endian int 1 — which
+        // put the version in the LAST byte and left the real version at 0 with
+        // flags 0x000001. A version-0 tfdt is 8 bytes of payload, so the
+        // demuxer read the first 4 bytes of the 64-bit timestamp as the decode
+        // time: every segment claimed baseMediaDecodeTime=3 (microseconds in),
+        // all eight sat on top of each other, and a player decoded exactly one
+        // frame no matter how many segments it fetched.
+        tfdt.write(byteArrayOf(1, 0, 0, 0))     // version 1, flags 0
         tfdt.write(byteArrayOf(
             ((b ushr 56) and 0xFF).toByte(), ((b ushr 48) and 0xFF).toByte(),
             ((b ushr 40) and 0xFF).toByte(), ((b ushr 32) and 0xFF).toByte(),
@@ -323,8 +348,13 @@ class Fmp4Writer {
         // trun: one entry per sample. Duration is per-sample, not the whole
         // fragment, because players need it to pace playback.
         val trunBody = java.io.ByteArrayOutputStream()
-        // flags 0x000701 = data-offset-present | sample-duration-present
-        // | sample-size-present | sample-flags-present.
+        // flags 0x000701 = data-offset-present (0x0001) | sample-duration-present
+        // (0x0100) | sample-size-present (0x0200) | sample-flags-present (0x0400).
+        //
+        // 0x0400 is sample-flags-present, NOT first-sample-flags-present — that
+        // one is 0x0004, and setting it would insert an extra field that shifts
+        // every sample entry. With 0x0400 each sample entry carries its own
+        // flags, which is what marks the IDR at the head of the segment.
         trunBody.write(byteArrayOf(0, 0, 0x07, 0x01))  // version 0, flags 0x000701
         trunBody.write(int(samples.size))
         // data_offset is patched below, after the moof size is known.
@@ -528,12 +558,27 @@ class Fmp4Writer {
         return box("trak", t.toByteArray())
     }
 
+    /**
+     * Builds dinf → dref → one self-contained 'url ' entry.
+     *
+     * A dref entry is a FULL box: 4 bytes of size, 4 of type, then version and
+     * flags — 12 bytes total. The previous version wrote version/flags and the
+     * bare type with no size at all, so the demuxer read the entry's size as
+     * 0x000000de (it ran into the following box) and reported "overread end of
+     * atom 'dref' by 1970433052 bytes". The moov still parsed far enough to
+     * report codec and dimensions, which is why ffprobe looked healthy while a
+     * player could not use the stream.
+     *
+     * box() supplies the size and type, so the payload is only version+flags.
+     */
     private fun urlBox(): ByteArray {
-        val u = java.io.ByteArrayOutputStream()
-        u.write(int(0))                                    // version + flags
-        u.write(int(1))                                    // self-contained (no URL)
-        u.putAll(typeBytes("url "))                        // type is 'url ' with a pad byte
-        return box("dref", u.toByteArray())
+        val dref = java.io.ByteArrayOutputStream()
+        dref.write(int(0))                                  // version + flags
+        dref.write(int(1))                                  // entry_count = 1
+        val entry = java.io.ByteArrayOutputStream()
+        entry.write(int(1))                                 // version 0, flags 1 = self-contained
+        dref.putAll(box("url ", entry.toByteArray()))        // 8 + 4 = 12 bytes
+        return box("dref", dref.toByteArray())
     }
 
     // ─── primitives ────────────────────────────────────────────
