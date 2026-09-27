@@ -307,31 +307,26 @@ class StreamServer(
     }
 
     private fun handleTorch(on: Boolean): Response {
-        val ok = setTorch(on)
-        return if (ok) okText(if (on) "torch on" else "torch off")
-        else newFixedLengthResponse(Status.BAD_REQUEST, "text/plain", "No torch on this device")
+        val reason = setTorch(on)
+        return if (reason == null) okText(if (on) "torch on" else "torch off")
+        else newFixedLengthResponse(Status.BAD_REQUEST, "text/plain", "Torch failed: $reason")
     }
 
-    private fun setTorch(on: Boolean): Boolean = try {
-        val cm = context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
-        val torchId = cm.cameraIdList.firstOrNull { id ->
-            runCatching {
-                val ch = cm.getCameraCharacteristics(id)
-                ch.get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
-                    ch.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) ==
-                    android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK
-            }.getOrDefault(false)
-        }
-        if (torchId == null) {
-            false
-        } else {
-            cm.setTorchMode(torchId, on)
+    /**
+     * Delegates to CameraManager, which drives the torch through CameraX.
+     *
+     * The previous implementation called CameraManager.setTorchMode() directly
+     * and reported "No torch on this device" for every request while streaming:
+     * the platform refuses a torch request on a camera that is already in use,
+     * so the feature looked absent on hardware that has a perfectly good flash.
+     */
+    private fun setTorch(on: Boolean): String? {
+        val reason = cameraManager.setTorch(on)
+        if (reason == null) {
             torchOn = on
             config.torchOn = on
-            true
         }
-    } catch (_: Exception) {
-        false
+        return reason
     }
 
     private fun paramBool(session: IHTTPSession, default: Boolean): Boolean =
@@ -707,6 +702,14 @@ class StreamServer(
      *
      * The encoder starts lazily on the first playlist request, so a client that
      * never asks for HLS never pays for it.
+     *
+     * A brand-new session has produced no frames yet, so the playlist would be
+     * empty. hls.js reads an empty playlist as "nothing to play", never asks for
+     * a segment, and therefore never triggers the SPS/PPS callback that would
+     * make /hls/init.mp4 available — a deadlock in which HLS never starts. The
+     * playlist is therefore withheld until the init segment exists, and 503 is
+     * returned instead: hls.js retries a 503 and comes back once the encoder has
+     * produced its first keyframe.
      */
     private fun handleHlsPlaylist(session: IHTTPSession): Response {
         if (!cameraManager.isStreaming) {
@@ -718,10 +721,17 @@ class StreamServer(
                 "No hardware H.264 encoder available"
             )
         }
-        cameraManager.hlsSession?.clientJoined()
+        val hls = cameraManager.hlsSession
+            ?: return newFixedLengthResponse(Status.SERVICE_UNAVAILABLE, "text/plain", "HLS not started")
+        if (hls.initSegment() == null) {
+            return newFixedLengthResponse(
+                Status.SERVICE_UNAVAILABLE, "text/plain",
+                "Encoder warming up — first keyframe not encoded yet"
+            )
+        }
+        hls.clientJoined()
         return newFixedLengthResponse(
-            Status.OK, "application/vnd.apple.mpegurl",
-            cameraManager.hlsSession?.playlist() ?: ""
+            Status.OK, "application/vnd.apple.mpegurl", hls.playlist()
         )
     }
 

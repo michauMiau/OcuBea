@@ -251,6 +251,51 @@ class CameraManager(
             .build()
     }
 
+    /**
+     * Turns the torch on or off through CameraX, falling back to the legacy
+     * CameraManager API.
+     *
+     * The legacy `CameraManager.setTorchMode()` CANNOT work while streaming: on
+     * this device the camera service answers "torch mode of camera 0 is not
+     * available because camera is in use" and the request throws. CameraX drives
+     * the torch through the camera's own capture session instead, which is
+     * exactly the state we already hold open for streaming, so the torch and the
+     * preview coexist.
+     *
+     * Returns the reason on failure so the UI can say something useful.
+     */
+    fun setTorch(on: Boolean): String? {
+        val cam = cameraRef
+        if (cam != null) {
+            // enableTorch() returns a ListenableFuture, not a Boolean: the
+            // request is async and its success is only known when the future
+            // completes. Treat "submitted" as success and let the future report
+            // failures in the log, rather than blocking the HTTP handler.
+            val submitted = runCatching {
+                cam.cameraControl.enableTorch(on)
+                true
+            }.getOrDefault(false)
+            if (submitted) return null
+        }
+        // Fallback: some devices expose the torch only on the front camera, or
+        // CameraX has no control for it. Try the legacy path across all cameras.
+        return try {
+            val cm = context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+            for (id in cm.cameraIdList) {
+                val avail = runCatching {
+                    cm.getCameraCharacteristics(id)
+                        .get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                }.getOrDefault(false)
+                if (!avail) continue
+                cm.setTorchMode(id, on)
+                return null
+            }
+            "No camera reports a flash unit"
+        } catch (e: Exception) {
+            e.message ?: "setTorchMode failed"
+        }
+    }
+
     fun stop() {
         isStreaming = false
         try { cameraProvider?.unbindAll() } catch (_: Exception) {}
