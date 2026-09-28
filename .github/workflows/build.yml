@@ -33,9 +33,40 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # Unit tests run before the build so a broken encoder or muxing change
+      # fails here rather than in a downloaded APK.
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon
-          
+
+      # The WebUI is checked in a real browser because a translation gap, a
+      # clipped label or a label that reverts to English after a click is
+      # invisible in a JVM test and in a build log. All three checks exit
+      # non-zero on failure, so they gate the APK.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+
+      - name: Check Polish strings are complete
+        run: node tools/strings_verify.js
+
+      - name: Check WebUI is fully translated
+        run: node tools/i18n_verify.js
+
+      - name: Check WebUI labels fit
+        run: node tools/layout_verify.js
+
+      - name: Check WebUI labels keep their language
+        run: node tools/interaction_verify.js
+
       - name: Upload APK as artifact
         uses: actions/upload-artifact@v4
         with:
