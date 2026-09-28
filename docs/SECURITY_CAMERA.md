@@ -358,6 +358,52 @@ Podobnie: `MultipartWriter` **nie** wyciekał widza — NanoHTTPD wywołuje
 - Android 6 (docelowy telefon) nie był testowany: USB nie jest przekazane do
   kontenera, a ten telefon nie wspiera wireless debugging.
 
+### HLS: playlista kłamała o długości segmentów
+
+`HlsSession.playlist()` pisała `#EXTINF` ze stałego `segmentMs` (0,25 s),
+ignorując `Segment.durationMs`, który muxer już znał. Muxer tnie segment
+przy każdym IDR, a `KEY_I_FRAME_INTERVAL = 0` oznacza IDR na każdej klatce,
+więc segmenty realnie trwają jedną klatkę.
+
+Zmierzone na urządzeniu: playlista mówiła `0.25`, a `tfdt` kolejnych
+segmentów różnił się o **176–185 ms**. Teraz `#EXTINF` pochodzi z muxerа,
+a `#EXT-X-TARGETDURATION` jest liczone z najdłuższego wpisu.
+
+### Uwaga: przecinek dziesiętny w `#EXTINF`
+
+Pierwsza wersja poprawki użyła `"%.3f".format(...)`, co idzie przez locale.
+Na telefonie to dało `#EXTINF:0,183,` — **przecinek jest nieprawidłowy w
+HLS**. ffmpeg: `Cannot get correct #EXTINF value of segment ... set to
+default value to 1ms`, czyli każdy segment dostawał 1 ms i strumień tracił
+sync. Formatowanie jest teraz ręczne (`formatExtInf`), z testem
+`HlsPlaylistFormatTest` przełączającym locale pl/DE/TR.
+
+To był błąd ukryty: stare `segmentMs / 1000f` też szło przez locale, więc
+playlista **nigdy** nie była poprawna pod tym względem.
+
+### Ring trzyma tylko około 3,5 s wideo
+
+`RING_SIZE = 20` przy ~185 ms na segment. Zrzucenie playlisty na dysk
+i odtworzenie po chwili daje 404 na wszystkich segmentach — to nie jest bug,
+to projekt. Do weryfikacji użyto skryptu podążającego za żywą playlistą:
+**152 segmenty, wszystkie zaczynają się od `moof`**, struktura segmentu to
+dokładnie `moof` + `mdat` (bez powtórzonego `ftyp`/`moov`), a ffmpeg
+odtwarza H.264 1920×1080 bez błędów dekodowania.
+
+### Segment długości jako parametr
+
+`TARGET_SEGMENT_MS` był `const` wewnątrz `Fmp4Writer`, więc długość
+segmentu decydowała się w muxerze, a `HlsSession.segmentMs` opisywał ją
+tylko w playliście — dwa niezależne źródła prawdy, które mogły się rozjechać
+i rozjechały się. Teraz `Fmp4Writer(requestedFps, targetSegmentMs)`, a sesja
+przekazuje tę samą wartość.
+
+To otwiera drogę do celowo dłuższego segmentu: skoro i tak nie osiągaliśmy
+250 ms, a realne jest ~185 ms, to świadome wzięcie 1–2 s w zamian za normalny
+GOP (enkoder przestaje generować IDR na każdej klatce) jest uczciwym
+zamianą opóźnienia na bitrate. **Nie wdrożone** — wymaga zmiany
+`KEY_I_FRAME_INTERVAL`, która zmienia zachowanie całego HLS.
+
 ## Kryterium sukcesu
 
 Test: nagraj 3 minuty z ruchem, potem godzinę bez. Sprawdź na urządzeniu:
