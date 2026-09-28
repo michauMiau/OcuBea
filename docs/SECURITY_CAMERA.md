@@ -172,6 +172,66 @@ ten błąd, który naprawialiśmy.
 Zmierzone na urządzeniu po 4-sekundowym nagraniu: `ffprobe` dał
 `duration=3.265`, Chromium `video.duration=3.265` przy `readyState=4`.
 
+### Brandy `ftyp`
+
+`major_brand = isom`, `minor_version = 0x0200`, `compatible_brands = isom, iso2,
+iso5, iso6, mp41, avc1, cmfc`.
+
+To nie jest kosmetyka. Klip z samymi `iso6` i `cmfc` był **poprawny** — `ffprobe`
+czytał go bez słowa, WebUI go odtwarzał, struktura pudełek była zgodna
+(24-mołowy `moov` z `mvex`, `moof`/`mdat` co 250 ms) — a
+`MediaMetadataRetriever` na Androidzie 13 odrzucał go z
+`setDataSource failed: status = 0x80000000`. Najwęższy dekoder w stosie po
+prostu nie rozpoznał pliku po zadeklarowanych brandach.
+
+Nie da się tego wykryć bez telefonu: `ffprobe` patrzy na zawartość, a Stagefright
+na deklarację.
+
+### Zdarzenie: prawdziwy bug `tkhd`
+
+Między `duration` a macierzą w `tkhd` jest `reserved(8)`, `layer(2)`,
+`alternate_group(2)`, `volume(2)`, `reserved(2)` — czyli **16 bajtów**. Run
+był pisany parami `int()`, czyli 4 bajty szeroko, więc wychodziło 24. Macierz
+lądowała na offsecie 60 zamiast 52, `w/h` na 96 zamiast 88, a cały box miał
+**112 bajtów zamiast 104**.
+
+`ffprobe` tego nie widzi, bo bierze rozmiar z `stsd`, nie z `tkhd`. Plik
+wyglądał poprawnie i był zły.
+
+Wykrył to dopiero `testy JVM`: `assertEquals("tkhd body is 96 bytes", 96, size)`.
+Offsety zweryfikowane cross-checkiem na pliku wyprodukowanym przez ffmpeg, gdzie
+`tkhd` jest w wersji 0 i ta sama macierz zaczyna się na offsecie 40
+(52 − 12, bo wersja 0 ma 4 bajty krótsze `creation`, `modification` i `duration`).
+
+## Stan na 2026-09-28, po teście na Redmi Note 10 Pro (Android 13)
+
+Sprawdzone **na urządzeniu**, nie wywnioskowane:
+
+- `ClipActivity` otwiera się z `MainActivity`, siatka 2-kolumnowa renderuje klipy
+  z datą i rozmiarem, nagłówek pokazuje `4 klip(y) · 16,8 MB · wolne 18,3 GB`
+- `POST /clips/record?start&seconds=4` nagrywa, klip pojawia się na liście w
+  trakcie nagrywania (polling co 4 s)
+- `DELETE /clips/<nazwa>` kasuje pojedynczy klip — potwierdzone na 4 plikach
+- `mvhd`/`tkhd`/`mdhd` w wersji 1, `tkhd` 96 bajtów ciała, macierz tożsamościowa
+  na offsecie 52, `w/h = 1920×1080` jako 16.16
+- `ffprobe` na nagranym z telefonu pliku: `duration=3.604925`, H.264 1920×1080
+- `MediaMetadataRetriever` dekoduje klatkę: `frame=1920x1080`, miniatury w siatce
+  pokazują realną treść (220 unikalnych poziomów jasności na kafelku, wobec 26
+  dla gradientu tła)
+- Stagefright **odrzuca** klipy zapisane przed poprawką brandów `ftyp` — dlatego
+  cztery stare klipy zostały usunięte, a nie odtworzone
+
+### Nadal niesprawdzone
+
+- Odtwarzanie w natywnym `ExoPlayer` (kafelek otwiera odtwarzacz, ale nie
+  obejrzałem klatki wideo — `PlayerView` i tak nie raportuje stanu do logu)
+- Long-press → zaznaczanie → „USUŃ ZAZNACZONE"
+- Retencja na urządzeniu (testy JVM pokrywają reguły, nie integrację z
+  harmonogramem)
+- Klip w galerii MIUI (katalog `Android/media/com.ocubea/klipy` jest poprawny,
+  ale nie otwierałem go w galerii)
+- Zachowanie termiczne przy dłuższym nagrywaniu
+
 ## Testy
 
 `app/src/test/java/com/ocubea/stream/Fmp4WriterBoxTest.kt` — 14 testów JVM
