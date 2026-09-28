@@ -190,7 +190,7 @@ class MotionRecorder(outputDir: File) {
                 // of preRecordSeconds, and the buffer is a deque of full JPEGs:
                 // at 1080p that is ~87KB per frame, so an unbounded setting is
                 // an OOM rather than a slow path.
-                val maxFrames = MotionLimits.effectivePreRecordFrames(
+                val maxFrames = MotionLimits.effectivePreRecordSeconds(
                     preRecordSeconds, currentFps, jpeg.size
                 ) * currentFps
                 while (preBuffer.size > maxFrames) preBuffer.removeFirst()

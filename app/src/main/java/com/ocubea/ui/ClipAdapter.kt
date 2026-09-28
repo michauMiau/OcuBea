@@ -173,8 +173,22 @@ class ClipAdapter(
             return "http://127.0.0.1:${cfg.port}"
         }
 
-        fun uriFor(ctx: Context, item: ClipItem): Uri =
-            Uri.parse("${baseUrl(ctx)}/clips/${Uri.encode(item.name)}")
+        /**
+         * Clip URL for the in-app player, carrying the access token.
+         *
+         * Without it every clip request came back 401 as soon as a token was
+         * set, so the native list could not play anything. Read through the
+         * same endpoint the browser uses, so the player gets the exact byte
+         * ranges it would get in a browser and there is only one file-reading
+         * path to keep correct.
+         */
+        fun uriFor(ctx: Context, item: ClipItem): Uri {
+            val cfg = OcuBeaConfig(ctx)
+            val path = "${baseUrl(ctx)}/clips/${Uri.encode(item.name)}"
+            val token = cfg.accessToken
+            return if (token.isEmpty()) Uri.parse(path)
+                   else Uri.parse("$path?token=${Uri.encode(token)}")
+        }
 
         fun prettyTime(ms: Long): String = fmt().format(Date(ms))
 

@@ -46,7 +46,11 @@ object ByteRanges {
                 else Request((total - suffix).coerceAtLeast(0), total - 1, true)
             } else {
                 val start = startText.toLong()
-                if (start < 0 || start >= total) null
+                // `return`, not a bare `null`. As an expression the null was
+                // discarded and control fell through to the coerceIn below,
+                // where start > total - 1 made it throw - so a seek past the
+                // end of a clip came back as HTTP 500 instead of a 416.
+                if (start < 0 || start >= total) return null
                 val end = if (endText.isEmpty()) total - 1
                           else endText.toLong().coerceIn(start, total - 1)
                 Request(start, end, true)
