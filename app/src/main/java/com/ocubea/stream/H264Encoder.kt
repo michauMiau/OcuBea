@@ -26,7 +26,19 @@ class H264Encoder(
     private val width: Int,
     private val height: Int,
     private val fps: Int,
-    private val bitrate: Int
+    private val bitrate: Int,
+    /**
+     * Seconds between IDR frames. 0 means every frame is an IDR, which is what
+     * HLS needs when a segment must open on a random-access point.
+     *
+     * A dense GOP is expensive under VBR: with an IDR on every frame the
+     * encoder cannot spend bits on inter-prediction, so it refuses to go
+     * below its floor and KEY_BIT_RATE is only an upper bound. Measured on the
+     * Redmi: asking for 1200 kbps still produced 4.25 Mbps at 15fps 1080p.
+     * Recording a clip does not need 250ms segments, so it can use a longer
+     * GOP and actually get the bitrate it was asked for.
+     */
+    private val keyFrameIntervalSec: Int = 0
 ) {
 
     data class Sample(val data: ByteArray, val ptsUs: Long, val keyframe: Boolean)
@@ -84,7 +96,7 @@ class H264Encoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            // An IDR on every frame. Every HLS segment must open on a
+            // An IDR on every frame by default. Every HLS segment must open on a
             // random-access point, and with TARGET_SEGMENT_MS = 250 a longer
             // keyframe interval means most segments would have to wait for the
             // next IDR, so the segment length and the advertised #EXTINF
@@ -96,7 +108,11 @@ class H264Encoder(
             // Now the keyframe closes the open segment and opens the next one,
             // so the cost of a dense GOP is only bitrate, and the segment length
             // still tracks TARGET_SEGMENT_MS.
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
+            //
+            // A caller that does not need short segments (clip recording) passes
+            // a longer interval, which is what actually lets the encoder follow
+            // KEY_BIT_RATE down.
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, keyFrameIntervalSec)
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
         }
 
