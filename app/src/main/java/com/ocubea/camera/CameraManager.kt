@@ -427,8 +427,14 @@ class CameraManager(
         // meant 8.3 Mbps at 1080p, measured at 62 MB per recorded minute —
         // the clip path is the one that fills the card, and it had no setting
         // to lower it.
+        // Both GOP length and segment length travel together. The comment in
+        // H264Encoder used to promise that a clip passes a longer keyframe
+        // interval; nothing did, so the clip encoder got the 0 default - an
+        // IDR on every frame - and paid the dense-GOP bitrate cost that
+        // keyFrameIntervalSec exists to avoid.
         val enc = com.ocubea.stream.H264Encoder(
-            w, h, fps, com.ocubea.model.BitrateBounds.bpsFromKbps(config.videoBitrateKbps)
+            w, h, fps, com.ocubea.model.BitrateBounds.bpsFromKbps(config.videoBitrateKbps),
+            com.ocubea.model.HlsProfile.CLIP_KEY_FRAME_INTERVAL_SEC,
         )
         if (!enc.start()) {
             clipState = "encoder: ${enc.lastError}"

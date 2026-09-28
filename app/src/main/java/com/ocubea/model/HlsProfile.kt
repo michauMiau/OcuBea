@@ -29,6 +29,11 @@ data class HlsProfile(
     val maxBufferLength: Int
 ) {
     companion object {
+        /** Seconds between IDR frames for clip recording. Deliberately not a
+         *  profile: a clip is written in one pass, so a 1s interval has no
+         *  playlist whose #EXTINF it could disagree with. */
+        const val CLIP_KEY_FRAME_INTERVAL_SEC = 1
+
         /**
          * The default: ~250ms segments with an IDR every half second.
          *
