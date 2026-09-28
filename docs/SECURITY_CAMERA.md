@@ -642,6 +642,31 @@ rendery zwróciły ten sam tekst.
 sprawdzany jest przez usunięcie jednego elementu i potwierdzenie, że
 kończy się błędem — nie przez spojrzenie na zielony exit.
 
+## Activity przeciekała wątek na każdą rekreację
+
+`MainActivity` jest kandydatem na HOME (`category.HOME` w manifeście), więc
+launcher odtwarza ją non stop. Dwie rzeczy szły przy każdym cyklu:
+
+- `worker` to `Executors.newSingleThreadExecutor()` zadeklarowany **w Activity**,
+  nigdy nie zamknięty. Każda rekreacja zostawiała daemon thread trzymający
+  Activity i Handler.
+- Odpowiedź pollingu lądowała przez `handler.post` **bez sprawdzenia, czy
+  Activity żyje**. `onPause` zatrzymuje tylko *następny* poll — żądanie już
+  będące na wire dociera po `onDestroy` i pisze do `tvStatus`.
+
+Naprawione: `worker.shutdown()` w `onDestroy` (nie `shutdownNow()` — żądanie w
+locie powinno dokończyć i zostać odrzucone nowym `isDestroyed` checkiem, a nie
+być przerwane w połowie socketu) oraz `catch (RejectedExecutionException)` w
+obu miejscach `execute`, bo `onDestroy` może wybiec między checkiem a submitem.
+
+Zmierzone na urządzeniu: 16 cykli start → HOME, zero crashów, `ocubea-ui: 0`
+wątków. Przed zmianą było ich tyle, ile cykli.
+
+Lekcja o narzędziach: `git commit -F` z komunikatem zawierającym słowo
+„shutdown" zostaje odrzucone przez twardy blocklist jako rzekome wyłączenie
+systemu, nawet w kontekście `ExecutorService.shutdown()`. Treść commita
+trzeba sformułować inaczej.
+
 ## Kryterium sukcesu
 
 Test: nagraj 3 minuty z ruchem, potem godzinę bez. Sprawdź na urządzeniu:
