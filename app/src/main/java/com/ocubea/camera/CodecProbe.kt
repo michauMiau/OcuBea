@@ -74,10 +74,7 @@ object CodecProbe {
         )
     }
 
-    @Suppress("DEPRECATION")
-    private fun isHardware(info: MediaCodecInfo): Boolean = try {
-        info.isHardwareAccelerated
-    } catch (_: Exception) { false }
+    private fun isHardware(info: MediaCodecInfo): Boolean = isHardwareAvcCapableOf(info)
 
     /** Tried largest first. */
     private val CANDIDATE_SIZES = listOf(
@@ -97,10 +94,7 @@ object CodecProbe {
     private fun tryConfigureAvc(width: Int, height: Int, fps: Int): Boolean = try {
         val codec = MediaCodecList(MediaCodecList.REGULAR_CODECS)
             .codecInfos.firstOrNull {
-                it.isEncoder && runCatching {
-                    @Suppress("DEPRECATION")
-                    it.isHardwareAccelerated
-                }.getOrDefault(false) &&
+                it.isEncoder && isHardwareAvcCapableOf(it) &&
                     it.supportedTypes.any { t -> t.equals(MIME_AVC, true) }
             }
         if (codec == null) {

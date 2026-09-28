@@ -14,7 +14,36 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class ApiAuth(private val tokenProvider: () -> String) {
 
-    private val failures = ConcurrentHashMap<String, IntArray>() // ip -> [count, windowStart]
+    /**
+     * Failed attempts per client, for rate limiting.
+     *
+     * A mutable holder class rather than an `IntArray` because the window start
+     * is epoch milliseconds and does not fit in an Int: `now.toInt()` truncated
+     * 1790610600000 to -390762432, so `now - rec[1]` was ~1.79e12 and always
+     * exceeded the 60s window. The counter was therefore reset on every single
+     * failure and the lockout threshold was unreachable — the limiter existed
+     * and did nothing, in the one configuration where the user believes they
+     * are protected.
+     *
+     * `computeIfAbsent` needs API 24, so the entry is created with a plain
+     * get/put instead.
+     */
+    private class Attempts {
+        var count: Int = 0
+        var windowStartMs: Long = 0L
+    }
+
+    private val failures = ConcurrentHashMap<String, Attempts>()
+
+    private fun attemptsFor(ip: String, now: Long): Attempts {
+        val existing = failures[ip]
+        if (existing != null) return existing
+        val fresh = Attempts().also { it.windowStartMs = now }
+        // putIfAbsent is API 24 too; a plain put can race and overwrite a
+        // concurrently created entry, which only costs a count, never security.
+        val prior = failures.put(ip, fresh)
+        return prior ?: fresh
+    }
 
     fun token(): String = tokenProvider().trim()
 
@@ -55,32 +84,51 @@ class ApiAuth(private val tokenProvider: () -> String) {
         return constantTimeEquals(supplied, token)
     }
 
-    fun clientIp(session: NanoHTTPD.IHTTPSession): String =
-        session.headers["x-forwarded-for"]?.split(',')?.firstOrNull()?.trim()
-            ?: session.headers["http-client-ip"]?.substringBefore(':')
-            ?: "unknown"
+    /**
+     * The address to count failures against.
+     *
+     * The socket's own remote address, NOT `X-Forwarded-For`. There is no proxy
+     * in front of this server, so that header is attacker-controlled: a
+     * brute-forcer sending a fresh value per request previously got a brand-new
+     * rate-limit bucket every time, which made the limiter inert even once the
+     * arithmetic was fixed. NanoHTTPD fills `remoteIp` from the accepted socket.
+     *
+     * `X-Forwarded-For` is still read as a fallback for the case of a real
+     * reverse proxy, but only when the socket address is loopback — i.e. when
+     * the connection genuinely came from something local.
+     */
+    fun clientIp(session: NanoHTTPD.IHTTPSession): String {
+        val socketIp = session.remoteIpAddress?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+        if (socketIp != null && !isLoopback(socketIp)) return socketIp
+        val forwarded = session.headers["x-forwarded-for"]?.split(',')?.firstOrNull()?.trim()
+        return forwarded?.takeIf { it.isNotEmpty() } ?: socketIp ?: "unknown"
+    }
+
+    private fun isLoopback(ip: String): Boolean =
+        ip == "127.0.0.1" || ip == "::1" || ip.startsWith("127.")
 
     private fun recordFailure(ip: String) {
         val now = System.currentTimeMillis()
-        val rec = failures.computeIfAbsent(ip) { intArrayOf(0, now.toInt()) }
+        val rec = attemptsFor(ip, now)
         synchronized(rec) {
-            // 60s window
-            if (now - rec[1] > 60_000) {
-                rec[0] = 0
-                rec[1] = now.toInt()
+            // 60s window, compared as Long. Truncating to Int here is what made
+            // the reset fire on every failure.
+            if (now - rec.windowStartMs > 60_000L) {
+                rec.count = 0
+                rec.windowStartMs = now
             }
-            rec[0]++
+            rec.count++
         }
     }
 
     private fun isRateLimited(ip: String): Boolean {
         val rec = failures[ip] ?: return false
         val now = System.currentTimeMillis()
-        if (now - rec[1] > 60_000) {
+        if (now - rec.windowStartMs > 60_000L) {
             failures.remove(ip)
             return false
         }
-        return rec[0] >= 10
+        return rec.count >= 10
     }
 
     fun clearFailures() = failures.clear()

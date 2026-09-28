@@ -85,7 +85,12 @@ class CameraManager(
      * caused the GC pressure in the first place. Each pooled thread reuses
      * its own buffer, grown only when the frame size changes.
      */
-    private val pixelScratch = ThreadLocal.withInitial { IntArray(0) }
+    // ThreadLocal.withInitial is API 26. The initialValue form works on API 23
+    // and behaves identically here, because the array is empty and grow() is
+    // called on the frame path anyway.
+    private val pixelScratch = object : ThreadLocal<IntArray>() {
+        override fun initialValue(): IntArray = IntArray(0)
+    }
 
     /** Frames dropped because the encoder pool was already saturated. */
     @Volatile var droppedSaturated = 0L; private set

@@ -355,9 +355,10 @@ class H264Encoder(
         }
     }
 
-    @Suppress("DEPRECATION")
+    // The API-29 call and its guard now live in one place:
+    // com.ocubea.camera.isHardwareAvcCapable().
     private fun isHardware(info: MediaCodecInfo): Boolean =
-        try { info.isHardwareAccelerated } catch (_: Exception) { false }
+        com.ocubea.camera.isHardwareAvcCapableOf(info)
 
     /**
      * Chooses the color format whose input buffer can actually hold a frame.

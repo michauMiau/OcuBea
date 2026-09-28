@@ -3,6 +3,7 @@ package com.ocubea.server
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
+import android.annotation.SuppressLint
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import java.util.concurrent.Executors
@@ -63,11 +64,23 @@ class AudioStreamManager(private val context: Context) {
 
     private fun dropClient(client: Client, alreadyCounted: Boolean) {
         if (!alreadyCounted) clients.decrementAndGet()
-        else clients.updateAndGet { if (it > 0) it - 1 else 0 }
+        // updateAndGet is API 24. The compare-and-set loop below is the same
+        // thing on API 23, and unlike decrementAndGet it cannot drive the
+        // counter negative when a client is dropped twice.
+        while (true) {
+            val cur = clients.get()
+            val next = if (cur > 0) cur - 1 else 0
+            if (clients.compareAndSet(cur, next)) break
+        }
         try { client.onDisconnect() } catch (_: Exception) {}
         if (clients.get() <= 0) stop()
     }
 
+    // canRecord() below checks the permission and throws SecurityException if
+    // it is not held, which is exactly the handling lint asks for. The check is
+    // a separate function, so lint cannot see the guard and reports
+    // MissingPermission on the AudioRecord constructor.
+    @SuppressLint("MissingPermission")
     private fun ensureCapture() {
         if (capturing) return
         if (!canRecord()) throw SecurityException("RECORD_AUDIO permission not granted")

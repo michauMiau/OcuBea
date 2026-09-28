@@ -90,10 +90,37 @@ data class HlsProfile(
         fun of(lowLatency: Boolean): HlsProfile = if (lowLatency) LOW_LATENCY else DEFAULT
 
         /**
+         * The API's names for the profiles, in one place.
+         *
+         * The HTTP handler used to carry its own copy of this `when`, which is
+         * how the names and the model could drift apart without anyone noticing.
+         * Returns null for an unknown name so the caller can answer 400.
+         */
+        fun of(name: String): HlsProfile? = when (name.trim().lowercase()) {
+            "low", "on", "true" -> LOW_LATENCY
+            "high", "quality" -> HIGH_QUALITY
+            "default", "off", "false", "" -> DEFAULT
+            else -> null
+        }
+
+        /** The name this profile answers to in `of(name)` and the API reply. */
+        fun name(profile: HlsProfile): String = when (profile) {
+            LOW_LATENCY -> "low"
+            HIGH_QUALITY -> "high"
+            else -> "default"
+        }
+
+        /**
          * Validates a profile that arrived from the API rather than from the
          * app, starting from [base] so the player-facing numbers survive.
          */
         fun sanitized(
+            base: HlsProfile,
+            segmentMs: Int,
+            keyFrameIntervalSec: Int
+        ): HlsProfile = buildFrom(base, segmentMs, keyFrameIntervalSec)
+
+        private fun buildFrom(
             base: HlsProfile,
             segmentMs: Int,
             keyFrameIntervalSec: Int
