@@ -299,6 +299,41 @@ Ograniczenie jest znane i świadome: nadmiar dostaje zerwane gniazdo
 po odrzuceniu. Klient dostaje błąd natychmiast zamiast zawieszenia — to jest
 zmiana względem stanu sprzed limitu.
 
+### Każdy klip ruchu rzucał wyjątek przy zamykaniu
+
+Subagent zgłosił to jako podejrzenie; potwierdziłem **uruchomieniem**. `AviWriter`
+jest czystym `java.io` (żadnych importów Androida), więc da się go testować na
+JVM — i test wywalony był natychmiast:
+
+```
+java.lang.IllegalArgumentException: header overflow 224
+```
+
+`buildHeader()` pisał **224 B**, a `HEADER_PLACEHOLDER_SIZE` wynosiło **200 B**,
+więc `require(it.size <= 200)` rzucał przy **każdym** `close()` z co najmniej
+jedną klatką. Ścieżka jest żywa: `SecurityCamera.startClip()` tworzy `AviWriter`
+dla każdego nagrania ruchu, więc `/recordings` było martwe.
+
+Placeholder podniesiony do 224 (policzone bajt po bajcie, nie zgadnięte).
+Przy okazji naprawione trzy rzeczy obok:
+
+- `strh` deklarował 56 B, a pisał 54 — brakujące bajty paddingu zastąpione
+  bełkotem `while (out.size() < ...) {}` o pustym ciele;
+- `biCompression` był `0` (BI_RGB) przy klatkach JPEG — plik twierdził, że
+  niesie surowe piksele, a zawierał JPEG-y. Teraz `'MJPG'`;
+- `moviDataSize` nie liczył 4 B fourcc `movi`, przez co **każdy offset w `idx1`
+  był przesunięty** i indeks wskazywał w środek chunków.
+
+Testy: `AviWriterTest` (8 testów, w tym brakujący `00dc` w pliku, wyrównanie do
+słowa, obecność tagów) plus `AviWriterFfprobeTest`, który pyta **ffprobe** —
+narzędzie niewiedzące nic o tym kodzie — czy plik jest czytelny. Potwierdzone:
+`codec_name=mjpeg`, `width=16`, `height=16`, `nb_read_frames=12`, zero błędów
+dekodowania.
+
+Ręcznie policzone sumy bajtów w testach okazały się zgadywanką i trzykrotnie
+mylne — testy sprawdzają teraz niezmienniki odczytane z pliku (obecność
+`00dc`, parzystość offsetu), a nie własną arytmetykę.
+
 ### Pre-roll bez limitu potrafi zjeść całą pamięć telefonu
 
 `pre_record_seconds` i `max_clip_seconds` trafiały prosto do `MotionRecorder`

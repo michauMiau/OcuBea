@@ -45,7 +45,13 @@ object MotionLimits {
      *
      * Called on the frame path, so it must stay cheap and allocation-free.
      */
-    fun effectivePreRecordSeconds(
+    /**
+     * Frames the pre-roll buffer may hold, bounded by both time and memory.
+     *
+     * Returns a frame COUNT, not seconds: the caller multiplies by fps, and a
+     * name saying "seconds" here would be a trap for the next reader.
+     */
+    fun effectivePreRecordFrames(
         requestedSeconds: Int,
         fps: Int,
         frameBytes: Int,

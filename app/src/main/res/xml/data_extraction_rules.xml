@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+Android 12 and newer: the cloud-backup half of the backup rules.
+
+Same reasoning as res/xml/backup_rules.xml, expressed for the newer schema. A
+device-to-device transfer is allowed, because moving a configured camera to a
+replacement phone is exactly the second-life case this app is built for; a
+cloud backup is not, because that would put the footage and the API token on a
+server the owner did not choose.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="recordings" />
+        <exclude domain="external" path="." />
+        <exclude domain="database" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="recordings" />
+    </device-transfer>
+</data-extraction-rules>

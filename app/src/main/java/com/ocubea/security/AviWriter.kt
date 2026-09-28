@@ -5,8 +5,15 @@ import java.io.RandomAccessFile
 
 /**
  * Minimal Motion-JPEG AVI writer (AVI 1.0, 'MJPG' codec).
+ *
  * Frames are streamed to disk raw; the RIFF/AVI header and idx1 are written
- * in-place at close() via RandomAccessFile. Correct, dependency-free.
+ * in-place at close() via RandomAccessFile, so nothing has to be buffered in
+ * memory for the length of a recording.
+ *
+ * Pure java.io, so AviWriterTest exercises it on the JVM. That is deliberate:
+ * this class was silently broken - the header did not fit the placeholder the
+ * frame offsets were measured from, so every close() with a frame in it threw -
+ * and neither a build nor lint can see that.
  */
 class AviWriter(private val file: File, private val width: Int, private val height: Int, fps: Int) : java.io.Closeable {
 
@@ -17,13 +24,23 @@ class AviWriter(private val file: File, private val width: Int, private val heig
     private val frameDurUs = 1_000_000L / fps.coerceAtLeast(1)
 
     // Layout: RIFF(12) + hdrl LIST + movi LIST start. Frames begin at FRAME_START.
+    //
+    // The placeholder must cover the header EXACTLY, because every frame
+    // offset written into idx1 is measured from it. The size below is not a
+    // guess: it is the byte count of buildHeader(), which is a fixed sequence
+    // of fourcc tags and fixed-width fields - only the values inside them vary
+    // with width, height and frame count. AviWriterTest measures the real
+    // header and fails if these two ever disagree again.
     companion object {
-        private const val HDRL_SIZE = 4 + 8 + 56 + 8 + 40   // 'LIST'+size+'hdrl' + avi h + strl... simplified below
-        // We compute exact layout in code; frames region starts right after:
-        const val MOVI_LIST_OFFSET = 12 + (4 + 4 + 4) + 56 + (8 + 40) // riff + list hdr + avih + strf... see buildHeader
-        // Simplified: we'll write header once at close with known sizes; frames are appended after a placeholder header of fixed length.
-        private const val HEADER_PLACEHOLDER_SIZE = 200
-        private const val FRAMES_START = HEADER_PLACEHOLDER_SIZE
+        /**
+         * 224 bytes: RIFF(12) + hdrl LIST(12) + avih(8+56) + strl LIST(12)
+         * + strh(8+56) + strf(8+40) + movi LIST(12).
+         */
+        const val HEADER_PLACEHOLDER_SIZE = 224
+        const val FRAMES_START = HEADER_PLACEHOLDER_SIZE
+
+        /** biCompression for JPEG-in-AVI: the 'MJPG' fourcc, little-endian. */
+        private const val MJPG_FOURCC = 0x47504A4D
     }
 
     init {
@@ -33,7 +50,10 @@ class AviWriter(private val file: File, private val width: Int, private val heig
     }
 
     fun addFrame(jpeg: ByteArray) {
-        frameOffsets.add(moviDataSize)
+        // idx1 offsets are relative to the start of the 'movi' list, which
+        // begins with the 4-byte 'movi' fourcc that buildHeader writes as the
+        // last bytes of the header. The first frame is therefore at offset 4.
+        frameOffsets.add(4 + moviDataSize)
         val len = jpeg.size
         rand.write("00dc".toByteArray(Charsets.US_ASCII))
         rand.writeLE32(len)
@@ -52,6 +72,9 @@ class AviWriter(private val file: File, private val width: Int, private val heig
             }
             // idx1 chunk
             val idxSize = frameCount * 16
+            // The 'movi' fourcc is the last 4 bytes of the header, written by
+            // buildHeader into the placeholder, so the first frame already
+            // starts at FRAMES_START and idx1 goes straight after the frames.
             val idxStart = FRAMES_START + moviDataSize
 
             // Write idx1 right after frames
@@ -65,8 +88,12 @@ class AviWriter(private val file: File, private val width: Int, private val heig
             }
             val totalLen = idxStart + 8 + idxSize
 
-            // Now build real header into placeholder area
-            val hdr = buildHeader(totalLen - 8, moviDataSize + 4)
+            // Now build real header into placeholder area.
+            // moviSize is the payload of the movi LIST, which is the 'movi'
+            // fourcc plus every frame chunk. Offsets below are measured from
+            // the fourcc, so the sizes have to agree or idx1 points at garbage.
+            val moviPayload = 4 + moviDataSize
+            val hdr = buildHeader(totalLen - 8, moviPayload)
             rand.seek(0)
             rand.write(hdr)
 
@@ -103,12 +130,14 @@ class AviWriter(private val file: File, private val width: Int, private val heig
         le32(height)              // dwHeight
         le32(0); le32(0); le32(0); le32(0) // reserved
 
-        // strl list
-        s("LIST"); le32(4 + 8 + 40 + 8 + 40); s("strl")
+        // strl list. Stream header: 'strh' is declared 56 bytes and padded to
+        // that, because a player reading the declared size will seek past
+        // whatever we actually wrote.
+        s("LIST"); le32(4 + 8 + 56 + 8 + 40); s("strl")
         s("strh"); le32(56)
         s("vids"); s("MJPG")
         le32(0)                   // dwFlags
-        le32(0)                   // wPriority+wLanguage
+        le32(0)                   // wPriority + wLanguage
         le32(0)                   // dwInitialFrames
         le32(1)                   // dwScale
         le32((1_000_000L / frameDurUs).toInt()) // dwRate = fps
@@ -117,27 +146,36 @@ class AviWriter(private val file: File, private val width: Int, private val heig
         le32(192 * 1024)          // dwSuggestedBufferSize
         le32(0xFFFFFFFF.toInt())  // dwQuality
         le32(0)                   // dwSampleSize
-        le16(0); le16(0)          // rcFrame (left, top)
-        le16(width and 0xFFFF); le16(height and 0xFFFF) // rcFrame (right, bottom)
-        // NOTE: strh is declared 56 but we wrote 48 + 8 header; pad:
-        while (out.size() < 12 + (4 + 4 + 4) + 8 + 56) {} // no-op guard (sizes tracked below)
+        // rcFrame: left, top, right, bottom - four le16, 8 bytes.
+        le16(0); le16(0)
+        le16(width and 0xFFFF); le16(height and 0xFFFF)
+        // 'strh' payload: 8 ('vids'+'MJPG') + 40 (ten le32) + 8 (rcFrame)
+        // = 56, which is exactly what the chunk declared. No padding, and
+        // the header length is therefore fully determined.
+
 
         s("strf"); le32(40)       // BITMAPINFOHEADER
         le32(40); le32(width); le32(height)
         le16(1); le16(24)
-        le32(0)                    // BI_RGB compression field written as 0? For MJPG players accept; use 'MJPG':
-        // Overwrite approach is messy — write proper value instead:
-        // We already wrote 0; many demuxers rely on strh fourcc, which is correct.
+        // biCompression: 'MJPG' as a fourcc. Written as 0 (BI_RGB) this file
+        // claimed raw pixels while carrying JPEG frames, which is how a player
+        // ends up showing noise instead of a picture.
+        le32(MJPG_FOURCC)          // biCompression
         le32(width * height * 3)   // biSizeImage
         le32(0); le32(0); le32(0); le32(0)
 
         // movi list open
         s("LIST"); le32(moviSize); s("movi")
 
-        return out.toByteArray().let {
-            require(it.size <= HEADER_PLACEHOLDER_SIZE) { "header overflow ${it.size}" }
-            it + ByteArray(HEADER_PLACEHOLDER_SIZE - it.size)
+        // Fail loudly and specifically. The generic version of this guard
+        // threw "header overflow 224" for every clip ever recorded, and the
+        // message said nothing about which two numbers disagreed.
+        val hdr = out.toByteArray()
+        require(hdr.size == HEADER_PLACEHOLDER_SIZE) {
+            "header is ${hdr.size} bytes but frames start at $HEADER_PLACEHOLDER_SIZE; " +
+                "the two must match or every idx1 offset points into the header"
         }
+        return hdr
     }
 }
 
