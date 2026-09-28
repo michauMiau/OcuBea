@@ -159,13 +159,37 @@ Wszystkie cztery pozycje są zrobione:
 
 ### Prawdziwy czas trwania
 
-`mvhd` i `tkhd` są wersji 1 z 64-bitowym czasem. Przy zamknięciu klipu init
-segment jest przebudowywany w miejscu (rozmiar się nie zmienia), więc gotowy
-plik ma prawdziwy `mvhd.duration` dla galerii i przeglądarki. HLS zostawia
-czas zerowy, bo liczy go playlista.
+`mvhd`, `tkhd` i `mdhd` są **zawsze** w wersji 1 z 64-bitowymi polami.
+Wersja 0 ma `duration` 32-bitowe, czyli inną długość — a przy zamknięciu
+klipu init segment jest przebudowywany w miejscu, więc oba muszą mieć
+identyczny rozmiar. Wariantowanie według tego, czy plik jest otwarty,
+uniemożliwiałoby tę operację: `rebuildInitWithDuration` po prostu zwracałby
+`null` i czas trwania nigdy nie zostałby dopisany.
+
+`durationUs <= 0` jest odrzucane — zamknięty plik z zerowym czasem to dokładnie
+ten błąd, który naprawialiśmy.
 
 Zmierzone na urządzeniu po 4-sekundowym nagraniu: `ffprobe` dał
 `duration=3.265`, Chromium `video.duration=3.265` przy `readyState=4`.
+
+## Testy
+
+`app/src/test/java/com/ocubea/stream/Fmp4WriterBoxTest.kt` — 14 testów JVM
+bez telefonu. `Fmp4Writer` nie importuje nic z Androida, więc logika pudełek
+da się sprawdzić na maszynie.
+
+Testy pilnują rzeczy, których `ffprobe` nie zauważy: wersji `mvhd`, 64-bitowego
+zaokrąglenia czasu, zgodności `mdhd` z `mvhd`, identycznego rozmiaru init
+przed i po przebudowie, oraz poziomu AVC w `avcC`.
+
+Fixture to **prawdziwe** SPS/PPS wyciągnięte z klipu nagranego na urządzeniu
+(`67 64 00 0a ac 1b …` / `68 ea 43 cb`), a nie syntetyczny. Zsyntetyczny
+SPS wygląda sensownie, ale testuje założenia testu zamiast parsera.
+
+Sama wersja poprzednia tego kodu **nie przechodziła** tych testów: `rebuild`
+zwracał `null`, bo rozmiar różnił się o 8 bajtów na każdym z `mvhd`/`tkhd`.
+Telefon pokazałby to jako „klip bez czasu trwania" dopiero po nagraniu —
+test wykrył to natychmiast.
 
 ## Kryterium sukcesu
 
