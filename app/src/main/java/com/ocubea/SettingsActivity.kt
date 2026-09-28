@@ -133,7 +133,7 @@ class SettingsActivity : AppCompatActivity() {
 
         seekSensitivity.max = 100
         seekSensitivity.progress = config.motionSensitivity
-        labelSensitivity.text = "Sensitivity: ${config.motionSensitivity}"
+        labelSensitivity.text = getString(R.string.sensitivity_label, config.motionSensitivity)
 
         seekPreRecord.max = 10
         seekPreRecord.progress = config.preRecordSeconds
@@ -184,7 +184,7 @@ class SettingsActivity : AppCompatActivity() {
 
         seekSensitivity.setOnSeekBarChangeListener(object : SimpleSeekListener() {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                labelSensitivity.text = "Sensitivity: $progress"
+                labelSensitivity.text = getString(R.string.sensitivity_label, progress)
                 if (fromUser) config.motionSensitivity = progress
             }
             override fun onStopTrackingTouch(sb: SeekBar) {
@@ -232,7 +232,7 @@ class SettingsActivity : AppCompatActivity() {
                 editTextPort.setText(port.toString())
                 updateInfoLabels()
                 if (StreamService.instance != null) {
-                    toast("Port saved — restart the stream to apply")
+                    toast(getString(R.string.port_saved))
                 }
             }
         }
@@ -243,7 +243,7 @@ class SettingsActivity : AppCompatActivity() {
                 if (config.accessToken.isEmpty()) editTextToken.setText("")
                 updateInfoLabels()
                 if (StreamService.instance != null) {
-                    toast("Token saved — restart the stream to apply")
+                    toast(getString(R.string.token_saved))
                 }
             }
         }
@@ -272,10 +272,10 @@ class SettingsActivity : AppCompatActivity() {
         btnRestartCamera.setOnClickListener {
             val svc = StreamService.instance
             if (svc == null) {
-                toast("Stream is not running")
+                toast(getString(R.string.stream_not_running))
             } else {
                 svc.restartCameraNow()
-                toast("Camera restarting…")
+                toast(getString(R.string.camera_restarting))
             }
         }
 
@@ -301,8 +301,11 @@ class SettingsActivity : AppCompatActivity() {
      * encoders.
      */
     private fun qualityLabel(progress: Int): String =
-        "Quality ${QualityScale.jpegQualityFor(progress)}%  ·  " +
-            "${QualityScale.bitrateKbpsFor(progress) / 1000} Mbps video"
+        getString(
+            R.string.quality_label,
+            QualityScale.jpegQualityFor(progress),
+            QualityScale.bitrateKbpsFor(progress) / 1000,
+        )
 
     /** Push a setting to the running service; harmless when streaming is off. */
     private fun pushLive(name: String, value: String) {
@@ -328,25 +331,25 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun renderRunning() {
-        tvStatus.text = "Streaming"
-        btnStartStop.text = "⏹ Stop"
+        tvStatus.text = getString(R.string.streaming_started_short)
+        btnStartStop.text = getString(R.string.stop_stream)
     }
 
     private fun renderStopped() {
-        tvStatus.text = "Stopped"
-        btnStartStop.text = "▶ Start"
+        tvStatus.text = getString(R.string.status_stopped)
+        btnStartStop.text = getString(R.string.start_stream)
     }
 
     private fun updateInfoLabels() {
         val ip = localIpAddress()
-        val base = if (ip == "0.0.0.0") "<no-wifi>" else ip
+        val base = if (ip == "0.0.0.0") getString(R.string.no_wifi) else ip
         val port = config.port
         val q = if (config.accessToken.isEmpty()) "" else "?token=${config.accessToken}"
-        tvInfoWebUI.text = "Web UI:    http://$base:$port/$q"
-        tvInfoStream.text = "Stream:    http://$base:$port/video$q"
-        tvInfoSnapshot.text = "Snapshot:  http://$base:$port/shot.jpg$q"
-        tvInfoAudio.text = "Audio:     http://$base:$port/audio.wav$q"
-        tvInfoOnvif.text = "ONVIF:     $base:$port/onvif/device_service"
+        tvInfoWebUI.text = getString(R.string.addr_web_ui_value, base, port, q)
+        tvInfoStream.text = getString(R.string.addr_stream_value, base, port, q)
+        tvInfoSnapshot.text = getString(R.string.addr_snapshot_value, base, port, q)
+        tvInfoAudio.text = getString(R.string.addr_audio_value, base, port, q)
+        tvInfoOnvif.text = getString(R.string.onvif_value, base, port)
     }
 
     private fun localIpAddress(): String {

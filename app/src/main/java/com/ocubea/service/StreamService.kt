@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
+import com.ocubea.R
 import com.ocubea.camera.CameraManager
 import com.ocubea.CrashLogger
 import com.ocubea.model.OcuBeaConfig
@@ -144,7 +145,7 @@ class StreamService : LifecycleService() {
             cameraManager.onFrameHeartbeat = { lastFrameAt = System.currentTimeMillis() }
             cameraManager.start { msg -> reportError(msg) }
             lastFrameAt = System.currentTimeMillis()
-            updateNotification("Streaming on port ${config.port}")
+            updateNotification(getString(R.string.streaming_started, config.port))
         } catch (e: Exception) {
             cameraRunning.set(false)
             reportError("Camera start failed: ${e.message}")
@@ -201,7 +202,7 @@ class StreamService : LifecycleService() {
         onvifDiscovery.start()
 
         startWatchdog()
-        updateNotification("Streaming on port $port")
+        updateNotification(getString(R.string.streaming_started, port))
     }
 
     private fun onCameraFrame(jpeg: ByteArray) {
@@ -294,7 +295,7 @@ class StreamService : LifecycleService() {
         try { cameraManager.stopHls() } catch (_: Exception) {}
         try { cameraManager.stop() } catch (_: Exception) {}
         try { motionRecorder.finishClip() } catch (_: Exception) {}
-        updateNotification("Camera stopped")
+        updateNotification(getString(R.string.streaming_stopped))
     }
 
     /** Full teardown: camera, server, discovery, wakelock. */

@@ -98,8 +98,8 @@ class MainActivity : AppCompatActivity() {
                 if (ok) {
                     torchOn = !torchOn
                     config.torchOn = torchOn
-                    toast(if (torchOn) "Torch on" else "Torch off")
-                } else toast("No torch on this device")
+                    toast(getString(if (torchOn) R.string.torch_on else R.string.torch_off))
+                } else toast(getString(R.string.torch_missing))
             }
         }
 
@@ -107,7 +107,7 @@ class MainActivity : AppCompatActivity() {
             callServer("settings/ffc?set=toggle") { ok ->
                 if (ok) {
                     config.frontCamera = !config.frontCamera
-                    toast(if (config.frontCamera) "Front camera" else "Back camera")
+                    toast(getString(if (config.frontCamera) R.string.cam_front else R.string.cam_back))
                 }
             }
         }
@@ -119,14 +119,14 @@ class MainActivity : AppCompatActivity() {
             nightOn = !nightOn
             config.nightVision = nightOn
             callServer("settings/night_vision?set=" + if (nightOn) "on" else "off")
-            toast(if (nightOn) "Night vision on" else "Night vision off")
+            toast(getString(if (nightOn) R.string.night_on else R.string.night_off))
         }
 
         findViewById<Button>(R.id.btnMotion).setOnClickListener {
             motionOn = !motionOn
             config.securityEnabled = motionOn
             callServer("settings/motion_detection?set=" + if (motionOn) "on" else "off")
-            toast(if (motionOn) "Motion recording armed" else "Motion detection off")
+            toast(getString(if (motionOn) R.string.motion_armed else R.string.motion_off))
         }
 
         findViewById<Button>(R.id.btnScreenOff).setOnClickListener { screenOff() }
@@ -147,7 +147,7 @@ class MainActivity : AppCompatActivity() {
         val ceiling = if (maxZoom > 1f) maxZoom else 1f
         val next = (zoom + delta).coerceIn(1f, ceiling)
         if (next == zoom) {
-            toast(if (delta > 0) "Max zoom" else "Min zoom")
+            toast(getString(if (delta > 0) R.string.zoom_max else R.string.zoom_min))
             return
         }
         zoom = next
@@ -177,7 +177,7 @@ class MainActivity : AppCompatActivity() {
         ) {
             startStreaming()
         } else {
-            toast("Camera permission is required")
+            toast(getString(R.string.camera_permission_required))
         }
     }
 
@@ -231,7 +231,7 @@ class MainActivity : AppCompatActivity() {
             handler.post {
                 pollBusy = false
                 if (body == null) {
-                    tvStatus.text = "Offline"
+                    tvStatus.text = getString(R.string.status_offline)
                     tvStatus.setTextColor(0xFFFF5252.toInt())
                 } else {
                     applyStatus(body)
@@ -249,7 +249,7 @@ class MainActivity : AppCompatActivity() {
         val max = numField(json, "max")
         if (max != null && max > 1f) maxZoom = max
         if (torch != torchOn) torchOn = torch
-        tvStatus.text = "● $fps fps · $viewers viewer(s) · $frames frames"
+        tvStatus.text = getString(R.string.status_live, fps, viewers, frames)
         tvStatus.setTextColor(0xFF4CAF50.toInt())
     }
 
@@ -266,7 +266,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderStopped() {
-        tvStatus.text = "Stopped"
+        tvStatus.text = getString(R.string.status_stopped)
         tvStatus.setTextColor(0xFF9E9E9E.toInt())
         btnToggle.text = getString(R.string.start_stream)
     }
@@ -355,7 +355,7 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {
             // No device admin: dim and let the normal screen timeout finish the job
             window.attributes = window.attributes.apply { screenBrightness = 0f }
-            toast("Dimmed — grant device admin for true screen-off")
+            toast(getString(R.string.screen_dimmed))
         }
         moveTaskToBack(true)
     }
@@ -386,7 +386,7 @@ class MainActivity : AppCompatActivity() {
             )
             return
         }
-        toast("No other launcher found")
+        toast(getString(R.string.no_launcher_found))
         startActivity(Intent(android.provider.Settings.ACTION_HOME_SETTINGS))
     }
 
