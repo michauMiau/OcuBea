@@ -141,13 +141,31 @@ z innego wątku.
   pliki bez `mfro` starsze niż 1 h.
 - **Odmount karty SD** → te same `IOException`, plus `mkdirs` na starcie.
 
-## Kolejność implementacji
+## Kolejność implementacji — stan na 2026-09-27
 
-1. Rotacja klipów + `ClipInfo` + retencja po **czasie** (najprostsze, daje
-   wartość od razu)
-2. Limit **miejsca** na tej samej liście
-3. Detekcja **ruchu** jako gate zapisu
-4. `mfra` i sprzątanie plików po crashu
+Wszystkie cztery pozycje są zrobione:
+
+1. **Rotacja klipów + `ClipInfo` + retencja po czasie** — `ClipWriter`,
+   `ClipStorage`, `ClipRetention`. Kryteria wieku, rozmiaru i liczby plików
+   są niezależne (OR, nie AND): wystarczy przekroczyć jedno.
+2. **Limit miejsca** — `clip_max_space_mb` w `OcuBeaConfig`.
+3. **Ruch jako gate zapisu** — `StreamService` steruje `ClipWriter` przez
+   `CameraManager.startClipRecording(sekundy, onDemand = false)`. Koniec
+   klip po `MOTION_POST_FRAMES` nieruchomych klatek (30).
+4. **Sprzątanie** — `mfra`/`mfro` świadomie pominięte: klipy są krótkie,
+   `moof` na końcu daje pełną nawigację, a dopisywanie `mfra` po zamknięciu
+   wymagałoby przepisania rozmiarów w `moov`. Pliki po crashu łapi `startup`
+   w `ClipRetentionScheduler`.
+
+### Prawdziwy czas trwania
+
+`mvhd` i `tkhd` są wersji 1 z 64-bitowym czasem. Przy zamknięciu klipu init
+segment jest przebudowywany w miejscu (rozmiar się nie zmienia), więc gotowy
+plik ma prawdziwy `mvhd.duration` dla galerii i przeglądarki. HLS zostawia
+czas zerowy, bo liczy go playlista.
+
+Zmierzone na urządzeniu po 4-sekundowym nagraniu: `ffprobe` dał
+`duration=3.265`, Chromium `video.duration=3.265` przy `readyState=4`.
 
 ## Kryterium sukcesu
 

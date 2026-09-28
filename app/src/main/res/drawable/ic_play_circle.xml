@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Neutral placeholder standing in for a clip thumbnail.
+
+     A real poster frame would mean decoding a frame out of the fMP4 for every
+     clip on every list refresh, which on this hardware costs more than the
+     benefit; tapping the card plays the clip immediately anyway. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#5A5A66">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M8,5v14l11,-7z" />
+</vector>

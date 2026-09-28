@@ -50,6 +50,16 @@
             android:label="OcuBea Settings"
             android:parentActivityName=".MainActivity"/>
 
+        <!-- Native clip management. Needs network permission for the loopback
+             player; that permission is already held for the live stream. -->
+        <activity
+            android:name=".ui.ClipActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.OcuBea.NoActionBar"
+            android:label="@string/clips"
+            android:parentActivityName=".MainActivity"/>
+
         <service
             android:name=".service.StreamService"
             android:exported="false"

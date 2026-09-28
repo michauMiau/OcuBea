@@ -16,6 +16,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.ocubea.model.OcuBeaConfig
 import com.ocubea.service.StreamService
+import com.ocubea.ui.ClipActivity
 import com.ocubea.ui.LivePreviewView
 import java.net.NetworkInterface
 import java.net.URL
@@ -130,8 +131,11 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnScreenOff).setOnClickListener { screenOff() }
 
-        findViewById<Button>(R.id.btnSettings).setOnClickListener {
+        findViewById<View>(R.id.btnSettings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        findViewById<View>(R.id.btnClips).setOnClickListener {
+            startActivity(Intent(this, ClipActivity::class.java))
         }
 
         // Two ways out of kiosk mode, identical behaviour
