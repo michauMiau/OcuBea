@@ -13,6 +13,7 @@ import com.ocubea.security.ClipStorage
 import com.ocubea.security.MotionDetector
 import com.ocubea.security.MotionRecorder
 import com.ocubea.sensors.DeviceSensors
+import com.ocubea.security.MotionLimits
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.Response.Status as Status
 import java.io.ByteArrayInputStream
@@ -42,6 +43,25 @@ class StreamServer(
     private val auth = ApiAuth { config.accessToken }
     private val sensors = DeviceSensors(context.applicationContext)
     private val audio = AudioStreamManager(context.applicationContext)
+
+    /**
+     * Bounded connection handling. NanoHTTPD's default spawns one Thread per
+     * socket with no ceiling, and a `/video` connection keeps its thread for
+     * hours - on a 512MB phone a few tabs is enough to kill the camera. Set in
+     * init because it has to be in place before start().
+     */
+    private val connectionRunner = BoundedAsyncRunner()
+
+    init {
+        setAsyncRunner(connectionRunner)
+    }
+
+    /** Live connection stats for status.json. */
+    fun connectionStats(): Map<String, Int> = mapOf(
+        "active" to connectionRunner.activeConnections(),
+        "refused" to connectionRunner.refusedConnections(),
+        "max_threads" to BoundedAsyncRunner.DEFAULT_MAX_THREADS,
+    )
 
     // Torch state, toggled through Camera2
     private var torchOn = false
@@ -554,15 +574,27 @@ class StreamServer(
                 if (!on) motionRecorder.stopAllIfIdle()
                 okText("ok")
             }
+            // Both recording lengths were unclamped, so a single request from
+            // any device on the LAN could set a value that made the pre-roll
+            // buffer allocate gigabytes and OOM the camera. The pre-roll is
+            // preRecordSeconds * fps JPEGs held in RAM - at 1080p that is ~87KB
+            // per frame, so 300s was already 401MB before anything else was
+            // running. MOTION_LIMITS exists because a seconds-only bound is not
+            // enough: the cost depends on the frame size, which the user can
+            // change.
             "pre_record_seconds" -> {
-                motionRecorder.preRecordSeconds = value.toIntOrNull() ?: 2
-                config.preRecordSeconds = motionRecorder.preRecordSeconds
-                okText("ok")
+                val secs = (value.toIntOrNull() ?: MotionLimits.DEFAULT_PRE_RECORD_SECONDS)
+                    .coerceIn(MotionLimits.MIN_PRE_RECORD_SECONDS, MotionLimits.MAX_PRE_RECORD_SECONDS)
+                motionRecorder.preRecordSeconds = secs
+                config.preRecordSeconds = secs
+                okText("ok $secs")
             }
             "max_clip_seconds" -> {
-                motionRecorder.maxClipSeconds = value.toIntOrNull() ?: 300
-                config.maxClipSeconds = motionRecorder.maxClipSeconds
-                okText("ok")
+                val secs = (value.toIntOrNull() ?: MotionLimits.DEFAULT_MAX_CLIP_SECONDS)
+                    .coerceIn(MotionLimits.MIN_MAX_CLIP_SECONDS, MotionLimits.MAX_MAX_CLIP_SECONDS)
+                motionRecorder.maxClipSeconds = secs
+                config.maxClipSeconds = secs
+                okText("ok $secs")
             }
             "audio_enabled", "audio" -> {
                 config.audioEnabled = value != "off" && value != "false" && value != "0"
@@ -663,6 +695,13 @@ class StreamServer(
             append("\"pipeline\":" + pipelineJson() + ",")
             append("\"hls\":" + hlsJson() + ",")
             append("\"viewers\":${cfg["viewers"]},")
+            // Refused connections are the visible half of BoundedAsyncRunner:
+            // without them a device hammering the camera looks like a healthy
+            // server that happens to be slow.
+            append("\"connections\":{" +
+                "\"active\":${connectionStats()["active"]}," +
+                "\"refused\":${connectionStats()["refused"]}," +
+                "\"max_threads\":${connectionStats()["max_threads"]}},")
             append("\"jpeg_quality\":${cfg["jpeg_quality"]},")
             append("\"video_bitrate_kbps\":${cfg["video_bitrate_kbps"]},")
             append("\"night_vision\":${cfg["night_vision"]},")

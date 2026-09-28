@@ -184,7 +184,16 @@ class MotionRecorder(outputDir: File) {
             currentFps = fps.coerceIn(1, 30)
             if (!recording && !isMotion) {
                 preBuffer.addLast(jpeg)
-                while (preBuffer.size > preRecordSeconds * currentFps) preBuffer.removeFirst()
+                // The ceiling is applied here rather than only at the HTTP
+                // layer, because this is where the memory is actually held. A
+                // limit enforced only on input still trusts every other caller
+                // of preRecordSeconds, and the buffer is a deque of full JPEGs:
+                // at 1080p that is ~87KB per frame, so an unbounded setting is
+                // an OOM rather than a slow path.
+                val maxFrames = MotionLimits.effectivePreRecordSeconds(
+                    preRecordSeconds, currentFps, jpeg.size
+                ) * currentFps
+                while (preBuffer.size > maxFrames) preBuffer.removeFirst()
                 return
             }
             if (!recording) startClip()
