@@ -275,6 +275,48 @@ Wszystkie liczby poniżej są zmierzone na urządzeniu, nie oszacowane. Pomiar
 procesu: `top -b -n 1`, PSS: `dumpsys meminfo`, klatki: walidacja
 multipart (SOI/EOI + zgodność `Content-Length`).
 
+### Głęboka kolejka NanoHTTPD zamieniała „za dużo pracy" w „brak odpowiedzi"
+
+NanoHTTPD nie ma własnego limitu połączeń — każde gniazdo dostaje wątek.
+Przed zmianą `/status.json` i `/config.json` **wisiały po 6 s** przy sześciu
+otwartych `/video`, a FPS spadł z 15 do 6. Powód: strumień trzyma wątek
+godzinami, więc głęboka kolejka nie była buforem, tylko kolejką oczekującą na
+wątek, który nie nadjdzie.
+
+| wariant | `status.json` | `config.json` | FPS | odrzucone |
+|---|---|---|---|---|
+| 4 wątki, kolejka 8 (przed) | timeout 6 s | timeout 6 s | 6 | 0 |
+| 8 wątków, kolejka 1 | 27 ms | 18 ms | 15 | 6 |
+
+Ostatecznie: `DEFAULT_MAX_THREADS = 8`, `DEFAULT_MAX_QUEUED = 1`. Krótka
+kolejka jest celem — **odmówić szybciej niż czekać**. Nadmiar gniazd jest
+zamykany natychmiast, a licznik pokazuje się w `status.json` jako
+`connections: {active, refused, max_threads}`, bo inaczej urządzenie zalewające
+serwer wygląda po prostu na „niewidoczny".
+
+Ograniczenie jest znane i świadome: nadmiar dostaje zerwane gniazdo
+(`HTTP 000`), nie 503, bo NanoHTTPD nie pozwala odpowiedzieć z `AsyncRunner`
+po odrzuceniu. Klient dostaje błąd natychmiast zamiast zawieszenia — to jest
+zmiana względem stanu sprzed limitu.
+
+### Pre-roll bez limitu potrafi zjeść całą pamięć telefonu
+
+`pre_record_seconds` i `max_clip_seconds` trafiały prosto do `MotionRecorder`
+bez ograniczeń. Bufor przed-roll to `ArrayDeque<ByteArray>` pełnych JPEG-ów —
+przy 1080p i 15 fps to około 87 KB na klatkę. Ustawienie `2000` sekund
+oznaczało około **2,6 GB** klatek, czyli natychmiastowy OOM na 512 MB.
+
+Ograniczenia są teraz w jednym miejscu (`MotionLimits`):
+- `preRecordSeconds`: 0–30 s, domyślnie 5;
+- `maxClipSeconds`: 5–600 s, domyślnie 30;
+- `maxBufferedFrames`: twardy limit 600 klatek (~52 MB), niezależny od
+  ustawionych sekund — sekundy nie wystarczają, bo rozmiar klatki zależy od
+  rozdzielczości i jakości JPEG.
+
+Limit jest egzekwowany **na ścieżce klatek**, nie tylko przy ustawieniu:
+`SecurityCamera` przyciina `preBuffer` po każdej dodanej klatce. `MotionLimitsTest`
+wymusza, żeby 2 000 000 sekund dało 30, a nie 30 milionów klatek.
+
 ### Detekcja ruchu dekodowała pełną klatkę
 
 `StreamService` dekodował **cały JPEG 1920×1080** (`BitmapFactory.decodeByteArray`),
