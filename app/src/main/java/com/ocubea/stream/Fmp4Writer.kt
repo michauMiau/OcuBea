@@ -14,7 +14,19 @@ import java.nio.ByteBuffer
  * Every segment begins with a random-access point, so a client that joins at
  * segment N never has to decode from the stream's beginning.
  */
-class Fmp4Writer(requestedFps: Int = 30) {
+class Fmp4Writer(
+    requestedFps: Int = 30,
+    /**
+     * Target segment length, in milliseconds.
+     *
+     * This is what actually decides where segments are cut, so it lives here
+     * rather than only in the playlist writer. A caller that advertises a
+     * longer segment in #EXTINF without passing a matching value gets
+     * one-frame segments described as long ones, and the player's clock
+     * drifts away from the media timeline.
+     */
+    private val targetSegmentMs: Long = DEFAULT_SEGMENT_MS
+) {
 
     data class Segment(val sequence: Int, val bytes: ByteArray, val durationMs: Long)
 
@@ -32,7 +44,17 @@ class Fmp4Writer(requestedFps: Int = 30) {
         // bytes are all individually valid, which is why ffprobe and ffmpeg read
         // the same segments without complaint while no browser would play them.
         const val MOV_TIMESCALE = TIMESCALE
-        const val TARGET_SEGMENT_MS = 250L       // 4 segments/sec: ~0.5s latency
+
+        /**
+         * 4 segments/sec: ~0.5s latency.
+         *
+         * This is a starting point, not a target the muxer always hits. A
+         * segment is also cut whenever an IDR arrives, so with an IDR on every
+         * frame segments are one frame long no matter what is asked for here.
+         * The fix for a real target is a longer keyframe interval in the
+         * encoder, not a number in this file.
+         */
+        const val DEFAULT_SEGMENT_MS = 250L
         const val SAMPLE_FLAGS_SYNC = 0x02000000
     }
 
@@ -228,7 +250,7 @@ class Fmp4Writer(requestedFps: Int = 30) {
         val elapsedMs = (sample.ptsUs - segmentStartPtsUs) / 1000
         // Only cut on time when the segment already opens with a keyframe;
         // otherwise keep buffering until one arrives.
-        val mustCut = elapsedMs >= TARGET_SEGMENT_MS && segmentStartsWithKey
+        val mustCut = elapsedMs >= targetSegmentMs && segmentStartsWithKey
         if (!mustCut) return null
         return flush()
     }

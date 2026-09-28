@@ -3,6 +3,7 @@ package com.ocubea.stream
 import android.media.MediaFormat
 import android.util.Log
 import androidx.camera.core.ImageProxy
+import com.ocubea.stream.Fmp4Writer.Segment
 import java.util.ArrayDeque
 
 /**
@@ -44,8 +45,8 @@ class HlsSession(
     // consecutive segments left six separate 193ms gaps in SourceBuffer.buffered
     // and the decoder never saw a continuous range — readyState stayed at 1 and
     // nothing painted, even though every segment was accepted and buffered.
-    private val muxer = Fmp4Writer(fps)
-    private val ring = ArrayDeque<Pair<Int, ByteArray>>()
+    private val muxer = Fmp4Writer(fps, segmentMs.toLong())
+    private val ring = ArrayDeque<Segment>()
 
     @Volatile private var initReady = false
     @Volatile var mediaSequence = 0
@@ -136,7 +137,7 @@ class HlsSession(
             if (measuredFps > 0.0) muxer.setMeasuredFps(measuredFps)
             muxer.append(sample)?.let { seg ->
                 synchronized(ring) {
-                    ring.addLast(seg.sequence to seg.bytes)
+                    ring.addLast(seg)
                     while (ring.size > RING_SIZE) ring.removeFirst()
                 }
                 mediaSequence = seg.sequence
@@ -149,7 +150,7 @@ class HlsSession(
 
     /** Segment bytes by sequence number, or null if it has aged out of the ring. */
     fun segment(seq: Int): ByteArray? = synchronized(ring) {
-        ring.firstOrNull { it.first == seq }?.second
+        ring.firstOrNull { it.sequence == seq }?.bytes
     }
 
     /**
@@ -160,26 +161,55 @@ class HlsSession(
      * media sequence stop it from treating this as a VOD file it can buffer.
      */
     fun playlist(): String {
-        // Snapshot just the sequence numbers, not the payload. The previous
-        // version copied the whole ring (megabytes of segment data) on every
-        // playlist poll — hls.js polls roughly twice a second, so a few clients
-        // turned that into sustained allocation and eventually an OOM.
-        val seqs: List<Int> = synchronized(ring) { ring.map { it.first } }
-        val first = seqs.firstOrNull() ?: mediaSequence
+        // Snapshot the metadata, not the payload. The previous version copied
+        // the whole ring (megabytes of segment data) on every playlist poll —
+        // hls.js polls roughly twice a second, so a few clients turned that
+        // into sustained allocation and eventually an OOM.
+        val entries: List<Segment> = synchronized(ring) { ring.toList() }
+        val first = entries.firstOrNull()?.sequence ?: mediaSequence
 
-        val sb = StringBuilder(64 + seqs.size * 32)
+        // #EXTINF must state the segment's real duration. Writing a fixed
+        // segmentMs for every entry made the player compute its buffer and
+        // latency from a number that did not match the bytes: the muxer cuts
+        // a segment as soon as an IDR arrives, so with one IDR per frame
+        // segments really are one frame long, and a playlist claiming 0.25s
+        // for a 0.16s segment desynchronises the player's clock from the
+        // media timeline.
+        //
+        // #EXT-X-TARGETDURATION has to be the largest advertised duration,
+        // rounded up, or a client is allowed to reject the playlist outright.
+        val longestMs = entries.maxOfOrNull { it.durationMs } ?: 0L
+
+        val sb = StringBuilder(64 + entries.size * 32)
         sb.append("#EXTM3U\n")
         sb.append("#EXT-X-VERSION:7\n")
-        sb.append("#EXT-X-TARGETDURATION:").append(Math.max(1, segmentMs / 1000)).append('\n')
+        sb.append("#EXT-X-TARGETDURATION:")
+            .append(if (longestMs <= 0L) 1 else (longestMs + 999) / 1000)
+            .append('\n')
         sb.append("#EXT-X-MEDIA-SEQUENCE:").append(first).append('\n')
         sb.append("#EXT-X-PLAYLIST-TYPE:EVENT\n")
         sb.append("#EXT-X-INDEPENDENT-SEGMENTS\n")
         sb.append("#EXT-X-MAP:URI=\"init.mp4\"\n")
-        for (seq in seqs) {
-            sb.append("#EXTINF:").append(segmentMs / 1000f).append(",\n")
-            sb.append("seg").append(seq).append(".m4s\n")
+        for (seg in entries) {
+            // "." not a locale separator. String.format follows the default
+            // locale, and a comma here is invalid HLS: ffmpeg reports
+            // "Cannot get correct #EXTINF value" for every segment and
+            // substitutes 1ms, which is enough to lose sync. The playlist is
+            // a wire format, so it is written in a fixed locale.
+            sb.append("#EXTINF:")
+                .append(formatExtInf(seg.durationMs))
+                .append(",\n")
+            sb.append("seg").append(seg.sequence).append(".m4s\n")
         }
         return sb.toString()
+    }
+
+    /** #EXTINF seconds, always with a dot, rounded to milliseconds. */
+    private fun formatExtInf(durationMs: Long): String {
+        val millis = durationMs.coerceAtLeast(0L)
+        val whole = millis / 1000
+        val frac = millis % 1000
+        return "$whole." + frac.toString().padStart(3, '0')
     }
 
     fun clientJoined() { clients++ }
