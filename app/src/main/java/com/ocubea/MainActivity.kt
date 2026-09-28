@@ -249,7 +249,15 @@ class MainActivity : AppCompatActivity() {
         val max = numField(json, "max")
         if (max != null && max > 1f) maxZoom = max
         if (torch != torchOn) torchOn = torch
-        tvStatus.text = getString(R.string.status_live, fps, viewers, frames)
+        tvStatus.text = getString(
+            R.string.status_live,
+            // %d rejects a Float outright - Formatter throws rather than
+            // printing a decimal - and numField returns null when a field is
+            // absent, so a missing value must become 0 and not a crash.
+            fps?.toInt() ?: 0,
+            viewers?.toInt() ?: 0,
+            frames?.toInt() ?: 0,
+        )
         tvStatus.setTextColor(0xFF4CAF50.toInt())
     }
 
