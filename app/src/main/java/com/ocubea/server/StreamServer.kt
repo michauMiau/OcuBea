@@ -356,20 +356,17 @@ class StreamServer(
         if (set == null) {
             val p = cameraManager.hlsProfile
             return okText(
-                "profile=${if (p == com.ocubea.model.HlsProfile.LOW_LATENCY) "low" else
-                    if (p == com.ocubea.model.HlsProfile.HIGH_QUALITY) "high" else "default"} " +
+                "profile=${com.ocubea.model.HlsProfile.name(p)} " +
                     "segment_ms=${p.segmentMs} keyframe_sec=${p.keyFrameIntervalSec} " +
                     "sync=${p.liveSyncDurationCount} buffer=${p.maxBufferLength}"
             )
         }
-        val profile = when (set.lowercase()) {
-            "low", "on", "true" -> com.ocubea.model.HlsProfile.LOW_LATENCY
-            "high", "quality" -> com.ocubea.model.HlsProfile.HIGH_QUALITY
-            "default", "off", "false" -> com.ocubea.model.HlsProfile.DEFAULT
-            else -> return badRequest(
-                "set must be low, high or default (got \"$set\")"
-            )
-        }
+        // HlsProfile.of() owns the names AND validates, so this handler cannot
+        // drift from the model. It used to re-implement the name matching in its
+        // own `when`, which meant HlsProfile.sanitized() was tested but never
+        // reached from a path a client could take.
+        val profile = com.ocubea.model.HlsProfile.of(set)
+            ?: return badRequest("set must be low, high or default (got \"$set\")")
         cameraManager.hlsProfile = profile
         // Only restart if HLS is actually running; otherwise the new profile
         // takes effect the next time a client asks for a playlist.

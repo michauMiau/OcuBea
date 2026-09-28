@@ -38,6 +38,15 @@ jobs:
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --no-daemon
 
+      # Lint is here because minSdk is 23 and the app has to run on Android 6.
+      # An API introduced after 23 throws NoSuchMethodError on that device, and
+      # compileSdk 34 resolves the symbol so the build stays green. This found
+      # four such calls that had shipped: isHardwareAccelerated (API 29),
+      # computeIfAbsent (API 24), updateAndGet (API 24) and withInitial (API 26).
+      # abortOnError is set in build.gradle.kts, so this step fails the job.
+      - name: Run Android lint
+        run: ./gradlew lintDebug --no-daemon
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon
 

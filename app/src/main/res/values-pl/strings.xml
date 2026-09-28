@@ -44,7 +44,6 @@
 
     <!-- SettingsActivity -->
     <string name="settings">Ustawienia</string>
-    <string name="stream_url" formatted="false">Adres: %s:%d</string>
     <string name="resolution">Rozdzielczość</string>
     <string name="fps">FPS</string>
     <string name="bitrate">Bitrate (kbps)</string>
@@ -93,9 +92,9 @@
 
     <!-- Adresy wypełniane z kodu. Wyrównanie spacjami: to TextView o stałej
          szerokości, bez tabeli, i kolumna ma się zgadzać wizualnie. -->
-    <string name="addr_web_ui_value" formatted="false">Web UI:    http://%1$s:%2$d/%3$s</string>
-    <string name="addr_stream_value" formatted="false">Strumień:  http://%1$s:%2$d/video%3$s</string>
-    <string name="addr_snapshot_value" formatted="false">Zrzut:     http://%1$s:%2$d/shot.jpg%3$s</string>
-    <string name="addr_audio_value" formatted="false">Audio:     http://%1$s:%2$d/audio.wav%3$s</string>
-    <string name="onvif_value" formatted="false">ONVIF:     %1$s:%2$d/onvif/device_service</string>
+    <string name="addr_web_ui_value">Web UI:    http://%1$s:%2$d/%3$s</string>
+    <string name="addr_stream_value">Strumień:  http://%1$s:%2$d/video%3$s</string>
+    <string name="addr_snapshot_value">Zrzut:     http://%1$s:%2$d/shot.jpg%3$s</string>
+    <string name="addr_audio_value">Audio:     http://%1$s:%2$d/audio.wav%3$s</string>
+    <string name="onvif_value">ONVIF:     %1$s:%2$d/onvif/device_service</string>
 </resources>

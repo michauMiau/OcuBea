@@ -49,6 +49,37 @@ android {
     buildFeatures {
         viewBinding = true
     }
+
+    // minSdk is 23, and the app is expected to run on Android 6. An API
+    // introduced after 23 throws NoSuchMethodError at runtime on that device —
+    // an Error, so `catch (_: Exception)` does not catch it and the process
+    // dies instead of falling back.
+    //
+    // Lint's NewApi check finds these, but it only runs under `./gradlew lint`,
+    // never as part of `assembleDebug`. With compileSdk 34 the symbols resolve,
+    // so the app built cleanly and shipped two such calls: isHardwareAccelerated
+    // (API 29) and ConcurrentHashMap.computeIfAbsent (API 24). Both are fixed,
+    // and abortOnError makes the next one a build failure rather than a crash
+    // found on a phone.
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = true
+        // NewApi is the point of this block; a baseline would hide the very
+        // regressions it exists to catch, so none is used.
+        warningsAsErrors = false
+        disable += setOf(
+            "GradleDependency",
+            "OldTargetApi",
+            // Checked instead by tools/strings_verify.js, which compares the
+            // English and Polish resource sets for coverage and placeholders.
+            "UnusedResources",
+            // The remaining HardcodedText hits are emoji used as button icons,
+            // the app's own name, and layout placeholders. None is prose, so
+            // none belongs in a translated resource.
+            "HardcodedText",
+            "ButtonStyle",
+        )
+    }
 }
 
 dependencies {

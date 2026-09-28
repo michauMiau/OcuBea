@@ -16,10 +16,33 @@ class QualityScaleTest {
     fun `jpeg quality spans its declared range exactly`() {
         assertEquals(QualityScale.MIN_QUALITY, QualityScale.jpegQualityFor(0))
         assertEquals(QualityScale.MAX_QUALITY, QualityScale.jpegQualityFor(QualityScale.MAX_PROGRESS))
-        // Normalising over 0..100 instead of the slider's real travel would
-        // leave the top third of the bitrate range unreachable.
-        assertTrue(QualityScale.bitrateKbpsFor(QualityScale.MAX_PROGRESS)
-            > QualityScale.bitrateKbpsFor(100) * 0.95)
+    }
+
+    @Test
+    fun `the top of the slider reaches the top of the bitrate range`() {
+        // This replaced an assertion that compared bitrateKbpsFor(MAX_PROGRESS)
+        // with bitrateKbpsFor(100). MAX_PROGRESS is 60 and bitrateKbpsFor
+        // coerces into 0..60, so both sides were 12000 — the comparison reduced
+        // to 12000 > 11400 and could never fail. It was written to catch a
+        // normalisation over 0..100 that left the top of the slider short, and
+        // it would not have caught it.
+        assertEquals(QualityScale.MAX_BITRATE_KBPS, QualityScale.bitrateKbpsFor(QualityScale.MAX_PROGRESS))
+    }
+
+    @Test
+    fun `a normalisation over 0 to 100 would strand the top of the slider`() {
+        // The regression the test above used to guard, stated as something that
+        // can actually fail: if the curve were divided by 100 instead of by
+        // MAX_PROGRESS, progress 60 would land at 0.36 of the range instead of
+        // the top. This asserts that the two differ, so the constant cannot
+        // silently change meaning.
+        val asIfDividedBy100 = QualityScale.MIN_BITRATE_KBPS +
+            ((QualityScale.MAX_BITRATE_KBPS - QualityScale.MIN_BITRATE_KBPS) * 60 / 100)
+        assertTrue(
+            "if these are equal the curve is normalised over 0..100 and the top " +
+                "of the slider is stranded",
+            asIfDividedBy100 < QualityScale.bitrateKbpsFor(QualityScale.MAX_PROGRESS) - 1000,
+        )
     }
 
     @Test
