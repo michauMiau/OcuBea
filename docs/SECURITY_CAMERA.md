@@ -423,6 +423,70 @@ GOP (enkoder przestaje generować IDR na każdej klatce) jest uczciwym
 zamianą opóźnienia na bitrate. **Nie wdrożone** — wymaga zmiany
 `KEY_I_FRAME_INTERVAL`, która zmienia zachowanie całego HLS.
 
+## Język interfejsu
+
+Aplikacja ma dwa języki. Angielski jest domyślny i jest tym, co zobaczysz przy
+braku tłumaczenia — `values/strings.xml` to kompletny interfejs, nie tylko
+etykiety. Polski leży w `values-pl/strings.xml` i ma dokładnie tę samą listę
+81 nazw.
+
+WebUI serwowane z telefonu **nie zna ustawień języka telefonu** — może je
+otworzyć dowolna przeglądarka w sieci. Dlatego samo wybiera język po stronie
+klienta: z `localStorage`, inaczej z `?lang=` w adresie, inaczej z
+`navigator.language`. `document.documentElement.lang` dostaje wybrany kod, więc
+CSS i skrypt widzą, w czym są.
+
+### Napisy składane w JavaScript nie wracają do tłumaczenia
+
+`translatePage()` chodzi po węzłach tekstowych co 3 s. Każdy przycisk, który
+sam przestawia własną etykietę, omija to całkowicie — i wraca do angielskiego
+przy pierwszym kliknięciu. Dotyczyło to `bMode` i `bLL`, które składały napis
+przez konkatenację.
+
+Zasada: **napisu, który JS ustawia przez `textContent`, nie składa się
+konkatenacją.** Wybiera się klucz, a tłumaczenie robi `t()`:
+
+```js
+this.textContent = t(lowLatency ? 'Low latency: on' : 'Low latency: off');
+```
+
+Ten sam wyścig dotyczył dwóch timerów: `refresh()` i `translatePage()` obie co
+3 s przestawiały status, więc przycisk streamu raz na jakiś czas wracał do
+angielskiego zależnie od kolejności w kolejce. Dlatego te napisy tłumaczy
+`refresh()`, a nie `translatePage()`.
+
+### `strings.xml` nie zgłasza brakujących tłumaczeń
+
+Android podmienia `values/`, gdy w `values-pl/` brakuje nazwy — bez błędu, bez
+ostrzeżenia. Polski użytkownik po prostu przeczyta angielski. Dlatego
+`tools/strings_verify.js` porównuje oba pliki mechanicznie: brak nazwy,
+zdublowana nazwa, zmieniony `%1$s` i napis identyczny z angielskim (chyba że
+wyszczególniony z powodem).
+
+## Weryfikatory WebUI
+
+Cztery skrypty w `tools/`, każdy z kodem wyjścia różnym od zera — są w CI
+między testami jednostkowymi a zapisem APK. Trzy z nich renderują WebUI w
+Chromium, bo napisu spoza DOM-u nie da się sprawdzić testem JVM.
+
+| Skrypt | Co sprawdza | Dlaczego nie da się tego zrobić testem JVM |
+|---|---|---|
+| `strings_verify.js` | kompletność `values-pl/`, `%s`, duplikaty | brak tłumaczenia nie jest błędem Androida |
+| `i18n_verify.js` | każdy widoczny napis ma polski odpowiednik | napis spoza DOM-u nie istnieje bez renderu |
+| `layout_verify.js` | 5 szerokości × 2 języki, brak uciętych etykiet | polskie słowo bywa dłuższe niż angielskie |
+| `interaction_verify.js` | etykieta po kliknięciu zostaje w języku | kliknięcie to jedyny sposób, żeby to sprawdzić |
+
+**Porównywanie zamiast zgadywania.** Pierwsza wersja `i18n_verify.js`
+rozpoznawała „wygląda po angielsku" heurystyką i zgłaszała polskie `Klatki`,
+`Plik`, `Obraz` — słowa bez znaków diakrytycznych — jako brakujące tłumaczenia.
+Test oceniał sam siebie i przechodził, nie tłumacząc nic. Teraz renderuje stronę
+dwa razy i porównuje: linia jest nietłumaczona dokładnie wtedy, gdy oba
+rendery zwróciły ten sam tekst.
+
+**Test, który nie potrafi złapać regresji, nie jest testem.** Każdy z czterech
+sprawdzany jest przez usunięcie jednego elementu i potwierdzenie, że
+kończy się błędem — nie przez spojrzenie na zielony exit.
+
 ## Kryterium sukcesu
 
 Test: nagraj 3 minuty z ruchem, potem godzinę bez. Sprawdź na urządzeniu:

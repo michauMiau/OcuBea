@@ -17,3 +17,7 @@ local.properties
 
 # gradle build state
 .gradle/
+
+# Narzedzia do weryfikacji WebUI (jsdom/playwright)
+node_modules/
+package-lock.json
