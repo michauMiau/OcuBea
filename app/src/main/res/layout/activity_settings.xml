@@ -14,7 +14,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Settings"
+            android:text="@string/settings"
             android:textSize="24sp"
             android:textStyle="bold"
             android:textColor="#4CAF50"
@@ -24,7 +24,7 @@
             android:id="@+id/tvStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Stopped"
+            android:text="@string/status_stopped"
             android:textSize="14sp"
             android:textColor="#8b949e"
             android:layout_marginBottom="12dp"/>
@@ -33,16 +33,16 @@
             android:id="@+id/btnStartStop"
             android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:text="▶ Start Stream"
+            android:text="@string/start_stream"
             android:textSize="15sp"
             android:textColor="#ffffff"
             android:backgroundTint="#2E7D32"
             android:layout_marginBottom="20dp"/>
 
         <!-- Server -->
-        <TextView style="@style/SectionHead" android:text="SERVER"/>
+        <TextView style="@style/SectionHead" android:text="@string/sec_server"/>
 
-        <TextView style="@style/Label" android:text="Port"/>
+        <TextView style="@style/Label" android:text="@string/lbl_port"/>
         <EditText
             android:id="@+id/editTextPort"
             android:layout_width="match_parent"
@@ -55,7 +55,7 @@
             android:textColorHint="#8b949e"
             android:textSize="15sp"/>
 
-        <TextView style="@style/Label" android:text="Access token (blank = open camera)"/>
+        <TextView style="@style/Label" android:text="@string/lbl_access_token"/>
         <EditText
             android:id="@+id/editTextToken"
             android:layout_width="match_parent"
@@ -63,20 +63,20 @@
             android:background="@drawable/input_bg"
             android:padding="12dp"
             android:inputType="textPassword"
-            android:hint="leave empty for no auth"
+            android:hint="@string/hint_token_empty"
             android:textColor="#e6edf3"
             android:textColorHint="#8b949e"
             android:textSize="15sp"/>
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="When set, every request needs ?token=… or an Authorization header. A new port or token needs a restart."
+            android:text="@string/hint_access_token"
             android:textSize="11sp"
             android:textColor="#8b949e"
             android:layout_marginTop="4dp"
             android:layout_marginBottom="12dp"/>
 
-        <TextView style="@style/Label" android:text="Device name (ONVIF)"/>
+        <TextView style="@style/Label" android:text="@string/lbl_device_name"/>
         <EditText
             android:id="@+id/editTextDeviceName"
             android:layout_width="match_parent"
@@ -91,9 +91,9 @@
             android:layout_marginBottom="12dp"/>
 
         <!-- Video -->
-        <TextView style="@style/SectionHead" android:text="VIDEO"/>
+        <TextView style="@style/SectionHead" android:text="@string/sec_video"/>
 
-        <TextView style="@style/Label" android:text="Resolution"/>
+        <TextView style="@style/Label" android:text="@string/lbl_resolution"/>
         <Spinner
             android:id="@+id/spinnerResolution"
             android:layout_width="match_parent"
@@ -102,7 +102,7 @@
             android:padding="10dp"
             android:layout_marginBottom="12dp"/>
 
-        <TextView style="@style/Label" android:text="Frame rate"/>
+        <TextView style="@style/Label" android:text="@string/lbl_frame_rate"/>
         <Spinner
             android:id="@+id/spinnerFPS"
             android:layout_width="match_parent"
@@ -114,7 +114,7 @@
         <TextView
             android:id="@+id/labelQuality"
             style="@style/Label"
-            android:text="JPEG quality: 82"/>
+            android:text="@string/quality_label"/>
         <SeekBar
             android:id="@+id/seekQuality"
             android:layout_width="match_parent"
@@ -124,40 +124,40 @@
             android:layout_marginBottom="12dp"/>
 
         <!-- Toggles -->
-        <TextView style="@style/SectionHead" android:text="FEATURES"/>
+        <TextView style="@style/SectionHead" android:text="@string/sec_features"/>
 
         <CheckBox
             android:id="@+id/checkboxNightVision"
             style="@style/Check"
-            android:text="Night vision enhancement"/>
+            android:text="@string/chk_night_vision"/>
 
         <CheckBox
             android:id="@+id/checkboxMic"
             style="@style/Check"
-            android:text="Microphone / audio streaming"/>
+            android:text="@string/chk_mic"/>
 
         <CheckBox
             android:id="@+id/checkboxSecurity"
             style="@style/Check"
-            android:text="Security camera (motion detection)"/>
+            android:text="@string/chk_security"/>
 
         <CheckBox
             android:id="@+id/checkboxAutostart"
             style="@style/Check"
-            android:text="Start automatically after boot"/>
+            android:text="@string/chk_autostart"/>
 
         <CheckBox
             android:id="@+id/checkboxPowerSaving"
             style="@style/Check"
-            android:text="Power saving (lower quality when hot/low battery)"/>
+            android:text="@string/chk_power_saving"/>
 
         <!-- Security detail -->
-        <TextView style="@style/SectionHead" android:text="MOTION RECORDING"/>
+        <TextView style="@style/SectionHead" android:text="@string/sec_motion"/>
 
         <TextView
             android:id="@+id/labelSensitivity"
             style="@style/Label"
-            android:text="Sensitivity: 50"/>
+            android:text="@string/sensitivity_label"/>
         <SeekBar
             android:id="@+id/seekSensitivity"
             android:layout_width="match_parent"
@@ -166,7 +166,7 @@
             android:progress="50"
             android:layout_marginBottom="12dp"/>
 
-        <TextView style="@style/Label" android:text="Pre-record seconds"/>
+        <TextView style="@style/Label" android:text="@string/lbl_pre_record"/>
         <SeekBar
             android:id="@+id/seekPreRecord"
             android:layout_width="match_parent"
@@ -175,7 +175,7 @@
             android:progress="2"
             android:layout_marginBottom="12dp"/>
 
-        <TextView style="@style/Label" android:text="Max clip length (seconds)"/>
+        <TextView style="@style/Label" android:text="@string/lbl_max_clip"/>
         <SeekBar
             android:id="@+id/seekMaxClip"
             android:layout_width="match_parent"
@@ -185,17 +185,17 @@
             android:layout_marginBottom="16dp"/>
 
         <!-- Diagnostics -->
-        <TextView style="@style/SectionHead" android:text="DIAGNOSTICS"/>
+        <TextView style="@style/SectionHead" android:text="@string/sec_diagnostics"/>
 
         <Button
             android:id="@+id/btnRestartCamera"
             style="@style/ActionBtn"
-            android:text="Restart camera"/>
+            android:text="@string/btn_restart_camera"/>
 
         <Button
             android:id="@+id/btnShowLog"
             style="@style/ActionBtn"
-            android:text="Show log"/>
+            android:text="@string/btn_show_log"/>
 
         <TextView
             android:id="@+id/tvLog"
@@ -210,24 +210,24 @@
             android:layout_marginBottom="16dp"/>
 
         <!-- Addresses -->
-        <TextView style="@style/SectionHead" android:text="ADDRESSES"/>
+        <TextView style="@style/SectionHead" android:text="@string/sec_addresses"/>
 
         <TextView
             android:id="@+id/tvInfoWebUI"
             style="@style/InfoLine"
-            android:text="Web UI: –"/>
+            android:text="@string/addr_web_ui"/>
         <TextView
             android:id="@+id/tvInfoStream"
             style="@style/InfoLine"
-            android:text="Stream: –"/>
+            android:text="@string/addr_stream"/>
         <TextView
             android:id="@+id/tvInfoSnapshot"
             style="@style/InfoLine"
-            android:text="Snapshot: –"/>
+            android:text="@string/addr_snapshot"/>
         <TextView
             android:id="@+id/tvInfoAudio"
             style="@style/InfoLine"
-            android:text="Audio: –"/>
+            android:text="@string/addr_audio"/>
         <TextView
             android:id="@+id/tvInfoOnvif"
             style="@style/InfoLine"

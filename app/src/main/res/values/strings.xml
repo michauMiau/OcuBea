@@ -1,28 +1,100 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="clips">Klipy</string>
-    <string name="clip_status">%1$d klip(y) · %2$s · wolne %3$s</string>
+    <string name="clip_status">%1$d klipów · %2$s · wolne %3$s</string>
     <string name="clip_selected">Zaznaczono: %1$d</string>
-    <string name="clip_empty">Brak klipów.\nNagraj pierwszy przyciskiem poniżej albo włącz wykrywanie ruchu.</string>
+    <string name="clip_empty">Jeszcze nie ma klipów.\nNagraj pierwszy przyciskiem niżej albo włącz wykrywanie ruchu.</string>
     <string name="clip_record">Nagraj 10 s</string>
-    <string name="clip_prune">Usuń stare</string>
+    <string name="clip_prune">Usuń najstarsze</string>
     <string name="clip_delete_selected">Usuń zaznaczone</string>
     <string name="clip_delete_one">Usuń klip</string>
     <string name="clip_close_player">Zamknij odtwarzacz</string>
     <string name="clip_thumb">Miniatura klipu</string>
     <string name="recording_badge">● REC</string>
     <string name="app_name">OcuBea</string>
-    <string name="streaming_started">Streaming started on port %d</string>
-    <string name="streaming_stopped">Streaming stopped</string>
-    <string name="camera_permission_required">Camera permission is required to start streaming</string>
-    <string name="start_stream">Start Stream</string>
-    <string name="stop_stream">Stop Stream</string>
-    <string name="no_wifi">Wi-Fi not connected</string>
-    <string name="settings">Settings</string>
-    <string name="stream_url" formatted="false">Stream URL: %s:%d</string>
-    <string name="resolution">Resolution</string>
+
+    <!-- MainActivity -->
+    <string name="streaming_started">Streaming działa na porcie %1$d</string>
+    <!-- Ten sam stan, ale bez numeru portu: ekran ustawień pokazuje port niżej. -->
+    <string name="streaming_started_short">Streaming działa</string>
+    <string name="streaming_stopped">Streaming zatrzymany</string>
+    <string name="camera_permission_required">Do włączenia kamery potrzebne jest uprawnienie</string>
+    <string name="start_stream">▶ Start</string>
+    <string name="stop_stream">■ Stop</string>
+    <string name="no_wifi">Brak Wi-Fi</string>
+    <string name="status_live">● %1$d fps · %2$d widzów · %3$d klatek</string>
+    <string name="status_offline">Offline</string>
+    <string name="status_stopped">Zatrzymane</string>
+    <string name="torch_on">Latarka włączona</string>
+    <string name="torch_off">Latarka wyłączona</string>
+    <string name="torch_missing">To urządzenie nie ma latarki</string>
+    <string name="cam_front">Przednia kamera</string>
+    <string name="cam_back">Tylna kamera</string>
+    <string name="night_on">Tryb nocny włączony</string>
+    <string name="night_off">Tryb nocny wyłączony</string>
+    <string name="motion_armed">Nagrywanie po ruchu czeka</string>
+    <string name="motion_off">Wykrywanie ruchu wyłączone</string>
+    <string name="zoom_max">Maksymalny zoom</string>
+    <string name="zoom_min">Minimalny zoom</string>
+    <string name="screen_dimmed">Przygaszony. Pełne uśpienie ekranu wymaga uprawnień administratora.</string>
+    <string name="no_launcher_found">Nie znaleziono innego launchera</string>
+    <string name="exit_kiosk">Wyjdź z trybu kiosku</string>
+    <string name="exit_to_launcher">Wyjdź do launchera</string>
+
+    <!-- SettingsActivity -->
+    <string name="settings">Ustawienia</string>
+    <string name="stream_url" formatted="false">Adres: %s:%d</string>
+    <string name="resolution">Rozdzielczość</string>
     <string name="fps">FPS</string>
     <string name="bitrate">Bitrate (kbps)</string>
-    <string name="codec">Codec</string>
-    <string name="port">HTTP Port</string>
+    <string name="codec">Kodek</string>
+    <string name="port">Port HTTP</string>
+
+    <!-- Etykieta nad suwakiem jakości: dwie liczby, bo suwak ustawia oba enkodery. -->
+    <string name="quality_label">Jakość %1$d%% · %2$d Mbps wideo</string>
+    <string name="sensitivity_label">Czułość: %1$d</string>
+
+    <string name="port_saved">Port zapisany. Zatrzymaj i uruchom strumień, żeby zastosować.</string>
+    <string name="token_saved">Token zapisany. Zatrzymaj i uruchom strumień, żeby zastosować.</string>
+    <string name="stream_not_running">Strumień nie działa</string>
+    <string name="camera_restarting">Restartuję kamerę…</string>
+
+    <!-- Ustawienia: nazwy sekcji i etykiet z layoutów -->
+    <string name="sec_server">SERWER</string>
+    <string name="sec_video">WIDEO</string>
+    <string name="sec_features">FUNKCJE</string>
+    <string name="sec_motion">NAGRYWANIE PO RUCHU</string>
+    <string name="sec_diagnostics">DIAGNOSTYKA</string>
+    <string name="sec_addresses">ADRESY</string>
+
+    <string name="lbl_port">Port</string>
+    <string name="lbl_access_token">Token dostępu (puste = bez logowania)</string>
+    <string name="hint_access_token">Każde żądanie potrzebuje ?token=… albo nagłówka Authorization. Nowy port albo token wymaga restartu.</string>
+    <string name="hint_token_empty">zostaw puste, żeby wyłączyć logowanie</string>
+    <string name="lbl_device_name">Nazwa urządzenia (ONVIF)</string>
+    <string name="lbl_resolution">Rozdzielczość</string>
+    <string name="lbl_frame_rate">Liczba klatek</string>
+    <string name="lbl_pre_record">Czas przed nagraniem (s)</string>
+    <string name="lbl_max_clip">Długość klipu (s)</string>
+
+    <string name="chk_night_vision">Wzmocnienie w trybie nocnym</string>
+    <string name="chk_mic">Mikrofon i strumień audio</string>
+    <string name="chk_security">Kamera bezpieczeństwa (wykrywanie ruchu)</string>
+    <string name="chk_autostart">Uruchamiaj po restarcie urządzenia</string>
+    <string name="chk_power_saving">Oszczędzanie energii. Obraz pogarsza się, gdy urządzenie jest gorące albo bateria słaba.</string>
+
+    <string name="btn_restart_camera">Restartuj kamerę</string>
+    <string name="btn_show_log">Pokaż log</string>
+    <string name="addr_web_ui">Web UI: –</string>
+    <string name="addr_stream">Strumień: –</string>
+    <string name="addr_snapshot">Zrzut: –</string>
+    <string name="addr_audio">Audio: –</string>
+
+    <!-- Adresy wypełniane z kodu. Wyrównanie spacjami: to TextView o stałej
+         szerokości, bez tabeli, i kolumna ma się zgadzać wizualnie. -->
+    <string name="addr_web_ui_value" formatted="false">Web UI:    http://%1$s:%2$d/%3$s</string>
+    <string name="addr_stream_value" formatted="false">Strumień:  http://%1$s:%2$d/video%3$s</string>
+    <string name="addr_snapshot_value" formatted="false">Zrzut:     http://%1$s:%2$d/shot.jpg%3$s</string>
+    <string name="addr_audio_value" formatted="false">Audio:     http://%1$s:%2$d/audio.wav%3$s</string>
+    <string name="onvif_value" formatted="false">ONVIF:     %1$s:%2$d/onvif/device_service</string>
 </resources>

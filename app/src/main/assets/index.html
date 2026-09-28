@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pl">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -82,133 +82,133 @@
 
 <header>
   <h1>Ocu<span style="color:var(--txt)">Bea</span></h1>
-  <span class="pill" id="statusPill">connecting…</span>
+  <span class="pill" id="statusPill">łączę…</span>
 </header>
 
 <main>
 
   <div class="stream">
-    <img id="live" src="/video" alt="Live stream">
+    <img id="live" src="/video" alt="Strumień na żywo">
     <video id="livev" playsinline autoplay muted style="display:none;width:100%;height:100%;object-fit:cover"></video>
-    <div class="off" id="streamOff">stream offline</div>
+    <div class="off" id="streamOff">strumień wyłączony</div>
     <div class="badge" id="modeBadge">MJPEG</div>
   </div>
 
   <div class="row" style="margin-top:8px">
-    <button id="bStream" class="primary">Start stream</button>
+    <button id="bStream" class="primary">Włącz strumień</button>
   </div>
   <div class="row" style="margin-top:8px">
-    <button id="bMode">Mode: MJPEG</button>
-    <button id="bLL">Low latency: off</button>
+    <button id="bMode">Tryb: MJPEG</button>
+    <button id="bLL">Niskie opóźnienie: wyłączone</button>
   </div>
   <div class="row" style="margin-top:8px">
-    <button id="bTorch">Torch</button>
-    <button id="bFlip">Flip cam</button>
-    <button id="bShot">Snapshot</button>
+    <button id="bTorch">Latarka</button>
+    <button id="bFlip">Odwróć kamerę</button>
+    <button id="bShot">Zrzut</button>
   </div>
   <p class="hint" id="modeHint">
-    MJPEG: every viewer gets its own JPEG frames, works everywhere.
-    HLS: one hardware H.264 encode shared by all viewers, far less CPU.
+    MJPEG: każdy widz dostaje własne klatki JPEG. Działa wszędzie.
+    HLS: jedno kodowanie H.264 sprzętowe dla wszystkich widzów, dużo mniej obciążenia.
   </p>
 
   <div class="grid g2" style="margin-top:12px">
     <section>
-      <h2>Optics</h2>
-      <label>Zoom <span id="zoomVal" style="float:right;color:var(--txt)">1.0×</span></label>
+      <h2>Optyka</h2>
+      <label>Powiększenie <span id="zoomVal" style="float:right;color:var(--txt)">1.0×</span></label>
       <input type="range" id="zoom" min="1" max="10" step="0.1" value="1">
-      <label>Focus</label>
+      <label>Ostrość</label>
       <div class="row">
-        <button id="bFocus">Autofocus center</button>
+        <button id="bFocus">Auto-ostrość w centrum</button>
       </div>
-      <p class="hint">Tap anywhere on the video to focus that spot.</p>
+      <p class="hint">Dotknij miejsca na obrazie, żeby ustawić na nim ostrość.</p>
     </section>
 
     <section>
-      <h2>Image</h2>
-      <label>Effect</label>
+      <h2>Obraz</h2>
+      <label>Efekt</label>
       <select id="effect">
-        <option value="none">None</option>
-        <option value="mono">Monochrome</option>
-        <option value="negative">Negative</option>
+        <option value="none">Bez efektu</option>
+        <option value="mono">Monochromatyczny</option>
+        <option value="negative">Negatyw</option>
         <option value="sepia">Sepia</option>
-        <option value="nightvision">Night vision</option>
+        <option value="nightvision">Tryb nocny</option>
       </select>
-      <label>Quality</label>
+      <label>Jakość</label>
       <select id="quality">
         <option value="320">320×240 (QVGA)</option>
         <option value="480">640×480 (VGA)</option>
         <option value="720" selected>1280×720 (HD)</option>
         <option value="1080">1920×1080 (FullHD)</option>
       </select>
-      <label>Night vision</label>
+      <label>Tryb nocny</label>
       <div class="row">
-        <button id="bNight">Toggle</button>
+        <button id="bNight">Przełącz</button>
       </div>
     </section>
   </div>
 
   <div class="grid g2">
     <section>
-      <h2>Security camera</h2>
+      <h2>Kamera bezpieczeństwa</h2>
       <div class="row">
-        <button id="bMotion">Motion detect</button>
-        <button id="bRec">Record on motion</button>
+        <button id="bMotion">Wykrywanie ruchu</button>
+        <button id="bRec">Nagrywaj po ruchu</button>
       </div>
-      <label>Sensitivity <span id="sensVal" style="float:right;color:var(--txt)">50</span></label>
+      <label>Czułość <span id="sensVal" style="float:right;color:var(--txt)">50</span></label>
       <input type="range" id="sens" min="0" max="100" value="50">
-      <label>Pre-record <span id="preVal" style="float:right;color:var(--txt)">2s</span></label>
+      <label>Czas przed nagraniem <span id="preVal" style="float:right;color:var(--txt)">2s</span></label>
       <input type="range" id="pre" min="0" max="10" value="2">
-      <label>Max clip <span id="clipVal" style="float:right;color:var(--txt)">300s</span></label>
+      <label>Długość klipu <span id="clipVal" style="float:right;color:var(--txt)">300s</span></label>
       <input type="range" id="clip" min="10" max="1800" step="10" value="300">
-      <p class="hint" id="motionState">motion: idle</p>
+      <p class="hint" id="motionState">ruch: spokój</p>
     </section>
 
     <section>
       <h2>Status</h2>
       <dl class="kv">
         <dt>FPS</dt><dd id="sFps">–</dd>
-        <dt>Viewers</dt><dd id="sViewers">0</dd>
-        <dt>Frames</dt><dd id="sFrames">0</dd>
-        <dt>Dropped</dt><dd id="sDropped">0</dd>
-        <dt>Encoder</dt><dd id="sCodec">–</dd>
-        <dt>HLS segments</dt><dd id="sSegs">0</dd>
-        <dt>Resolution</dt><dd id="sRes">–</dd>
-        <dt>Uptime</dt><dd id="sUptime">–</dd>
-        <dt>Battery</dt><dd id="sBattery">–</dd>
-        <dt>Audio clients</dt><dd id="sAudio">0</dd>
-        <dt>Recordings</dt><dd id="sRec">0</dd>
+        <dt>Widzowie</dt><dd id="sViewers">0</dd>
+        <dt>Klatki</dt><dd id="sFrames">0</dd>
+        <dt>Pominięte</dt><dd id="sDropped">0</dd>
+        <dt>Enkoder</dt><dd id="sCodec">–</dd>
+        <dt>Segmenty HLS</dt><dd id="sSegs">0</dd>
+        <dt>Rozdzielczość</dt><dd id="sRes">–</dd>
+        <dt>Czas pracy</dt><dd id="sUptime">–</dd>
+        <dt>Bateria</dt><dd id="sBattery">–</dd>
+        <dt>Klienci audio</dt><dd id="sAudio">0</dd>
+        <dt>Nagrania</dt><dd id="sRec">0</dd>
       </dl>
     </section>
   </div>
 
   <section>
-    <h2>Recordings</h2>
+    <h2>Nagrania</h2>
     <div class="row" style="margin-bottom:10px">
-      <button id="bRefreshRec">Refresh</button>
-      <button id="bDelAll" class="danger">Delete all</button>
+      <button id="bRefreshRec">Odśwież</button>
+      <button id="bDelAll" class="danger">Usuń wszystko</button>
     </div>
-    <div id="recEmpty" class="hint" style="display:none">No recordings yet.</div>
+    <div id="recEmpty" class="hint" style="display:none">Nagrań jeszcze nie ma.</div>
     <table id="recTable" style="display:none">
-      <thead><tr><th>File</th><th>Size</th><th>Recorded</th><th></th></tr></thead>
+      <thead><tr><th>Plik</th><th>Rozmiar</th><th>Nagrano</th><th></th></tr></thead>
       <tbody id="recBody"></tbody>
     </table>
   </section>
 
   <section id="clipsSection">
-    <h2>Clips <span class="pill" id="clipsCount">0</span></h2>
+    <h2>Klipy <span class="pill" id="clipsCount">0</span></h2>
 
     <div class="row" style="margin-bottom:10px">
-      <button id="bRecNow" class="primary">Record 30s</button>
-      <button id="bRecStop" class="danger" disabled>Stop</button>
-      <button id="bRefreshClips">Refresh</button>
-      <button id="bPruneClips">Apply limits</button>
-      <button id="bClearClips" class="danger">Delete all</button>
+      <button id="bRecNow" class="primary">Nagraj 30 s</button>
+      <button id="bRecStop" class="danger" disabled>Zatrzymaj</button>
+      <button id="bRefreshClips">Odśwież</button>
+      <button id="bPruneClips">Zastosuj limity</button>
+      <button id="bClearClips" class="danger">Usuń wszystko</button>
     </div>
 
-    <p class="hint" id="clipsState" style="margin-bottom:8px">idle</p>
+    <p class="hint" id="clipsState" style="margin-bottom:8px">spokój</p>
     <p class="hint" id="clipsSpace" style="margin-bottom:12px"></p>
 
-    <div id="clipsEmpty" class="hint" style="display:none">No clips yet.</div>
+    <div id="clipsEmpty" class="hint" style="display:none">Klipów jeszcze nie ma.</div>
     <div id="clipsGrid" class="grid"></div>
   </section>
 
@@ -220,34 +220,34 @@
       <h3 id="clipName">–</h3>
       <video id="clipVideo" controls preload="metadata" playsinline></video>
       <div class="row" style="margin-top:10px">
-        <a id="clipDownload" class="btn" download>Download</a>
-        <button id="clipDelete" class="danger">Delete</button>
-        <button id="clipClose">Close</button>
+        <a id="clipDownload" class="btn" download>Pobierz</a>
+        <button id="clipDelete" class="danger">Usuń</button>
+        <button id="clipClose">Zamknij</button>
       </div>
     </div>
   </div>
 
   <section>
-    <h2>Device</h2>
+    <h2>Urządzenie</h2>
     <dl class="kv" id="devKv"></dl>
   </section>
 
   <section>
     <h2>API</h2>
-    <p class="hint" style="margin-bottom:8px">IP Webcam compatible API. Common endpoints:</p>
+    <p class="hint" style="margin-bottom:8px">API zgodne z IP Webcam. Najczęstsze adresy:</p>
     <div class="kv">
-      <dt><code>GET /video</code></dt><dd style="text-align:left">MJPEG stream</dd>
-      <dt><code>GET /shot.jpg</code></dt><dd style="text-align:left">snapshot</dd>
-      <dt><code>GET /audio.wav</code></dt><dd style="text-align:left">microphone</dd>
-      <dt><code>GET /status.json</code></dt><dd style="text-align:left">telemetry</dd>
-      <dt><code>GET /sensors.json</code></dt><dd style="text-align:left">battery, thermal, storage</dd>
+      <dt><code>GET /video</code></dt><dd style="text-align:left">strumień MJPEG</dd>
+      <dt><code>GET /shot.jpg</code></dt><dd style="text-align:left">zrzut ekranu</dd>
+      <dt><code>GET /audio.wav</code></dt><dd style="text-align:left">mikrofon</dd>
+      <dt><code>GET /status.json</code></dt><dd style="text-align:left">telemetria</dd>
+      <dt><code>GET /sensors.json</code></dt><dd style="text-align:left">bateria, temperatura, pamięć</dd>
       <dt><code>POST /onvif/device_service</code></dt><dd style="text-align:left">ONVIF SOAP</dd>
     </div>
   </section>
 
 </main>
 
-<footer>OcuBea — reliability first</footer>
+<footer>OcuBea — najpierw niezawodność</footer>
 
 <script>
 var T = new URLSearchParams(location.search).get('token') || localStorage.getItem('ocubea_token') || '';
@@ -325,7 +325,7 @@ function showHls(){
 function startHls(){
   if(typeof Hls === 'undefined'){
     $('modeHint').textContent =
-      'hls.js failed to load (no internet?), staying on MJPEG.';
+      'hls.js się nie wczytał (brak internetu?), zostaję na MJPEG.';
     showMjpeg();
     return;
   }
@@ -347,7 +347,7 @@ function startHls(){
       } else if(data.type === Hls.ErrorTypes.MEDIA_ERROR){
         hls.recoverMediaError();
       } else {
-        $('modeHint').textContent = 'HLS fatal: ' + data.details + ' — falling back to MJPEG';
+        $('modeHint').textContent = 'HLS padło: ' + data.details + ' — wracam do MJPEG';
         showMjpeg();
       }
     }
@@ -363,14 +363,14 @@ function stopHls(){
 
 $('bMode').onclick = function(){
   mode = (mode === 'mjpeg') ? 'hls' : 'mjpeg';
-  this.textContent = 'Mode: ' + mode.toUpperCase();
+  this.textContent = 'Tryb: ' + mode.toUpperCase();
   $('modeBadge').textContent = mode.toUpperCase();
   if(mode === 'hls') showHls(); else showMjpeg();
 };
 
 $('bLL').onclick = function(){
   lowLatency = !lowLatency;
-  this.textContent = 'Low latency: ' + (lowLatency ? 'on' : 'off');
+  this.textContent = 'Niskie opóźnienie: ' + (lowLatency ? 'włączone' : 'wyłączone');
   this.className = lowLatency ? 'on' : '';
   if(mode === 'hls') startHls();
 };
@@ -379,13 +379,13 @@ $('bLL').onclick = function(){
 function refresh(){
   get('/status.json').then(function(r){ return r.json(); }).then(function(s){
     var cam = s.camera_active;
-    $('bStream').textContent = cam ? 'Stop stream' : 'Start stream';
+    $('bStream').textContent = cam ? 'Zatrzymaj strumień' : 'Włącz strumień';
     $('bStream').className = cam ? 'danger' : 'primary';
     $('streamOff').style.display = cam ? 'none' : 'flex';
     if(!cam && live.naturalWidth === 0){ live.src = url('/video') + '?t=' + Date.now(); }
 
     var pill = $('statusPill');
-    pill.textContent = cam ? '● live · ' + (s.fps || 0) + ' fps' : '○ stopped';
+    pill.textContent = cam ? '● live · ' + (s.fps || 0) + ' fps' : '○ zatrzymany';
     pill.className = 'pill ' + (cam ? 'on' : 'off');
 
     $('sFps').textContent = s.fps;
@@ -411,11 +411,11 @@ function refresh(){
     $('sRec').textContent = (s.recording && s.recording.count) || 0;
 
     if(s.recording && s.recording.active){
-      $('motionState').innerHTML = '<span class="rec">● recording clip…</span>';
+      $('motionState').innerHTML = '<span class="rec">● nagrywam klip…</span>';
     } else if(s.motion && s.motion.detected){
-      $('motionState').innerHTML = '<span class="rec">motion detected</span>';
+      $('motionState').innerHTML = '<span class="rec">wykryto ruch</span>';
     } else {
-      $('motionState').textContent = 'motion: idle · sensitivity ' + s.motion.sensitivity;
+      $('motionState').textContent = 'ruch: spokój · czułość ' + s.motion.sensitivity;
     }
 
     if(s.zoom){
@@ -437,7 +437,8 @@ function refresh(){
 function uptime(s){
   if(s == null) return '–';
   var h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
-  return h ? h + 'h ' + m + 'm' : m + 'm';
+  if(h) return h + ' godz. ' + m + ' min';
+  return m + ' min';
 }
 
 /* ── Sensors ────────────────────────────────────────────────── */
@@ -449,14 +450,14 @@ function refreshSensors(){
     $('devKv').innerHTML =
       kv('Model', dev.model) +
       kv('Android', dev.android + ' (API ' + dev.sdk + ')') +
-      kv('Battery', b.level + '%' + (b.charging ? ' ⚡' : '')) +
-      kv('Temp', b.temperature_c != null ? b.temperature_c + '°C' : '–') +
-      kv('Health', b.health) +
-      kv('Storage', st.free_mb + ' MB free') +
-      kv('RAM', mem.available_mb + ' MB free') +
-      kv('Thermal', th) +
-      kv('Network', net.interface + ' ' + (net.wifi ? 'Wi-Fi' : 'mobile') + (net.metered ? ' metered' : '')) +
-      kv('Cameras', (cam.ids || []).join(', ') + ' · torch ' + (cam.torch_capable ? 'yes' : 'no'));
+      kv('Bateria', b.level + '%' + (b.charging ? ' ⚡' : '')) +
+      kv('Temperatura', b.temperature_c != null ? b.temperature_c + '°C' : '–') +
+      kv('Stan baterii', b.health) +
+      kv('Pamięć', st.free_mb + ' MB wolne') +
+      kv('RAM', mem.available_mb + ' MB wolne') +
+      kv('Przegrzanie', th) +
+      kv('Sieć', net.interface + ' ' + (net.wifi ? 'Wi-Fi' : 'dane mobilne') + (net.metered ? ', płatny transfer' : '')) +
+      kv('Kamery', (cam.ids || []).join(', ') + ' · latarka ' + (cam.torch_capable ? 'tak' : 'nie'));
   }).catch(function(){});
 }
 function kv(k, v){ return '<dt>' + k + '</dt><dd>' + (v == null ? '–' : v) + '</dd>'; }
@@ -486,8 +487,8 @@ function refreshRec(){
 // label never changed and the stream never stopped.
 $('bStream').onclick = function(){
   var label = this.textContent;
-  var running = label.indexOf('Stop') === 0;
-  $('statusPill').textContent = running ? 'stopping…' : 'starting…';
+  var running = label.indexOf('Zatrzymaj') === 0;
+  $('statusPill').textContent = running ? 'zatrzymuję…' : 'włączam…';
   api(running ? '/settings/force_stop' : '/settings/force_start').then(function(){
     // The service restart is asynchronous, so poll until the state actually
     // flips rather than assuming the click took effect.
@@ -532,7 +533,7 @@ $('clip').oninput = function(){
 
 $('bRefreshRec').onclick = refreshRec;
 $('bDelAll').onclick = function(){
-  if(!confirm('Delete all recordings?')) return;
+  if(!confirm('Usunąć wszystkie nagrania?')) return;
   get('/recordings').then(function(r){ return r.json(); }).then(function(d){
     (d.recordings || []).forEach(function(f){
       fetch(url('/recordings/' + f.name), {method:'DELETE'});
@@ -542,7 +543,7 @@ $('bDelAll').onclick = function(){
 };
 $('recBody').onclick = function(e){
   var name = e.target.getAttribute('data-del');
-  if(!name || !confirm('Delete ' + name + '?')) return;
+  if(!name || !confirm('Usunąć ' + name + '?')) return;
   fetch(url('/recordings/' + name), {method:'DELETE'}).then(refreshRec);
 };
 
@@ -602,8 +603,8 @@ function refreshClips(){
     $('clipsCount').textContent = d.count;
     $('clipsEmpty').style.display = d.count ? 'none' : 'block';
     $('clipsSpace').textContent = d.external
-      ? bytes(d.bytes) + ' on disk · ' + bytes(d.free) + ' free'
-      : bytes(d.bytes) + ' in app storage — clips are deleted on uninstall';
+      ? bytes(d.bytes) + ' na dysku · wolne ' + bytes(d.free)
+      : bytes(d.bytes) + ' w pamięci aplikacji — klipy znikną przy odinstalowaniu';
 
     if(changed || !$('clipsGrid').firstChild) renderClips();
     return d;
@@ -655,7 +656,7 @@ function refreshClipState(){
         (s.dropped ? ' · ' + s.dropped + ' dropped' : '') +
         (s.file ? ' · ' + s.file : '');
     } else if(s.armed){
-      $('clipsState').textContent = 'waiting for first frame…';
+      $('clipsState').textContent = 'czekam na pierwszą klatkę…';
     } else {
       $('clipsState').textContent = s.error ? ('idle — ' + s.error) : 'idle';
     }
@@ -709,13 +710,13 @@ $('bRecStop').onclick = function(){
 
 $('bClearClips').onclick = function(){
   if(!clips.length) return;
-  if(!confirm('Delete all ' + clips.length + ' clips? This cannot be undone.')) return;
+  if(!confirm('Usunąć wszystkie klipy (' + clips.length + ')? Nie da się tego cofnąć.')) return;
   api('/clips/clear', {method:'POST'}).then(function(){ refreshClips(); });
 };
 
 $('bPruneClips').onclick = function(){
   api('/clips/prune', {method:'POST'}).then(function(r){ return r.text(); }).then(function(t){
-    $('clipsState').textContent = 'prune: ' + t;
+    $('clipsState').textContent = 'usunięte: ' + t;
     refreshClips();
   });
 };

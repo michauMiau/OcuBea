@@ -50,7 +50,7 @@
             android:id="@+id/tvStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Stopped"
+            android:text="@string/status_stopped"
             android:textSize="13sp"
             android:textColor="#ffffff"/>
 
@@ -85,7 +85,7 @@
                 android:layout_height="46dp"
                 android:layout_weight="1.2"
                 android:layout_margin="2dp"
-                android:text="▶ Start"
+                android:text="@string/start_stream"
                 android:textSize="11sp"
                 android:backgroundTint="#2E7D32"
                 android:textColor="#ffffff"
@@ -230,7 +230,7 @@
                 android:textColor="#ffffff"
                 android:paddingLeft="2dp"
                 android:paddingRight="2dp"
-                android:contentDescription="Exit to launcher"/>
+                android:contentDescription="@string/exit_to_launcher"/>
 
         </LinearLayout>
 
@@ -245,7 +245,7 @@
         android:layout_marginTop="58dp"
         android:layout_marginEnd="10dp"
         android:src="@android:drawable/ic_menu_close_clear_cancel"
-        android:contentDescription="Exit kiosk"
+        android:contentDescription="@string/exit_kiosk"
         android:alpha="0.3"
         android:background="?attr/selectableItemBackgroundBorderless"/>
 
