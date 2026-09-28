@@ -409,19 +409,59 @@ to projekt. Do weryfikacji użyto skryptu podążającego za żywą playlistą:
 dokładnie `moof` + `mdat` (bez powtórzonego `ftyp`/`moov`), a ffmpeg
 odtwarza H.264 1920×1080 bez błędów dekodowania.
 
-### Segment długości jako parametr
+### Wdrożone: profil segmentu jako jedna wartość
 
-`TARGET_SEGMENT_MS` był `const` wewnątrz `Fmp4Writer`, więc długość
-segmentu decydowała się w muxerze, a `HlsSession.segmentMs` opisywał ją
-tylko w playliście — dwa niezależne źródła prawdy, które mogły się rozjechać
-i rozjechały się. Teraz `Fmp4Writer(requestedFps, targetSegmentMs)`, a sesja
-przekazuje tę samą wartość.
+`HlsSession.segmentMs` był parametrem, którego nikt nie przekazywał — `CameraManager`
+wołał konstruktor bez niego, więc zawsze obowiązywał default 250. A `Fmp4Writer`
+dostał `targetSegmentMs` i używał go do cięcia. Dwa miejsca, jedna wartość,
+ktoś musi pamiętać — i nikt nie pamiętał.
 
-To otwiera drogę do celowo dłuższego segmentu: skoro i tak nie osiągaliśmy
-250 ms, a realne jest ~185 ms, to świadome wzięcie 1–2 s w zamian za normalny
-GOP (enkoder przestaje generować IDR na każdej klatce) jest uczciwym
-zamianą opóźnienia na bitrate. **Nie wdrożone** — wymaga zmiany
-`KEY_I_FRAME_INTERVAL`, która zmienia zachowanie całego HLS.
+Teraz `HlsProfile` trzyma obie liczby razem, bo **nie są niezależne**: segment
+może zacząć się tylko na IDR, więc GOP dłuższy niż segment oznacza, że
+większość segmentów czeka na klatkę kluczową, której nie będzie. Playlista
+obiecuje wtedy długości, które nigdy nie nadchodzą, i odtwarzacz się opróżnia.
+Test `HlsProfileTest.gop never exceeds the segment it has to fit in` pilnuje
+tej nierówności; przy złamanym klempie padają dwa testy.
+
+| Profil | Segment | GOP | `sync` | `buffer` |
+|---|---|---|---|---|
+| `default` | 250 ms | co klatkę | 3 | 6 |
+| `low` | 120 ms | co klatkę | 1 | 2 |
+| `high` | 2000 ms | 1 s | 4 | 10 |
+
+Przełącznik „Niskie opóźnienie" w WebUI dziś zmieniał **wyłącznie
+hls.js po stronie klienta** — serwer ciął 250 ms niezależnie. Teraz
+`/hls/profile?set=low|high|default` przestawia obie strony, a odtwarzacz
+przyjmuje liczby z odpowiedzi serwera, więc to, co playlista realnie jest, i to,
+co hls.js zakłada, nie rozjeżdżają się.
+
+### Zmierzone: `high` oszczędza CPU, nie bity
+
+Oczekiwanie przy `high` brzmiało: 2 s segmentu na 1 s GOP = 2–3 klatki
+międzykluczowe na segment, a klatki międzykluczowe są tanie, więc ta sama
+jakość powinna kosztować mniej bitów na sekundę. **Nie potwierdziło się.**
+
+Pomiar z enkodera (`bytes` w `/status.json`, okno 20 s, dwa odczyty
+odejmowane), Redmi Note 10 Pro, 1080p:
+
+| Profil | Bitrate | CPU procesu | Realny `EXTINF` |
+|---|---|---|---|
+| `low` | 5,83 / 5,68 Mbps | 131% / 124% | 0,186 / 0,183 s |
+| `high` | 5,78 / 5,30 Mbps | 113% / 103% | 2,059 / 3,150 s |
+
+Bitrate — ten sam, w granicach szumu. CPU — **13–18% mniej przy `high`**, co
+powtarza się w obu powtórzeniach i w obie kolejności. Korzyść jest realna, ale
+nie ta, o której pisałem w komentarzu: to mniej pracy, nie mniej przepływu.
+
+Dlaczego GOP nie obniża bitrate: `c2.mtk.avc.encoder` zgłasza
+`max input interval 204ms` i przy ~5 fps dostaje klatkę co ~185 ms, czyli
+bliżej niż własny interwał. Enkoder i tak nie może czekać, więc
+`KEY_I_FRAME_INTERVAL = 1` ma w tym urządzeniu niewiele do zrobienia.
+To ta sama pułapka co przy klipach, gdzie 1-sekundowy GOP też nic nie zmienił.
+
+Do udokumentowania, nie do naprawy: `high` to **zamiana opóźnienia na CPU**, nie
+na bitrate. Jeśli telefon się grzeje, `high` jest właściwym wyborem; jeśli
+liczy się przepływ, nie ma tu czego wybierać.
 
 ## Język interfejsu
 

@@ -19,7 +19,13 @@ class HlsSession(
     val height: Int,
     fps: Int,
     bitrate: Int,
-    private val segmentMs: Int = 250
+    /**
+     * Segment length and keyframe interval together. They arrive as one value
+     * because they are not independent: a segment can only begin on an IDR, so
+     * a long GOP with a short segment would advertise durations that never
+     * arrive and the playlist would drain.
+     */
+    val profile: com.ocubea.model.HlsProfile = com.ocubea.model.HlsProfile.DEFAULT
 ) {
 
     private companion object {
@@ -37,7 +43,8 @@ class HlsSession(
         const val RING_SIZE = 20
     }
 
-    private val encoder = H264Encoder(width, height, fps, bitrate)
+    private val encoder =
+        H264Encoder(width, height, fps, bitrate, profile.keyFrameIntervalSec)
     // The muxer MUST get the real frame rate. It uses it for the duration of a
     // single-frame segment, and a wrong value punches holes in the playback
     // timeline: with fps defaulted to 30 while the camera actually delivers one
@@ -45,7 +52,7 @@ class HlsSession(
     // consecutive segments left six separate 193ms gaps in SourceBuffer.buffered
     // and the decoder never saw a continuous range — readyState stayed at 1 and
     // nothing painted, even though every segment was accepted and buffered.
-    private val muxer = Fmp4Writer(fps, segmentMs.toLong())
+    private val muxer = Fmp4Writer(fps, profile.segmentMs.toLong())
     private val ring = ArrayDeque<Segment>()
 
     @Volatile private var initReady = false
@@ -73,6 +80,13 @@ class HlsSession(
     val framesQueued: Long get() = encoder.framesQueued
     val framesDropped: Long get() = encoder.framesDropped
     val segmentsWritten: Long get() = muxer.segmentsWritten
+
+    /**
+     * Bytes the encoder produced, so bitrate can be measured rather than
+     * assumed. A profile that promises to spend fewer bits cannot be checked
+     * without this: KEY_BIT_RATE is the request, not the result.
+     */
+    val bytesEncoded: Long get() = encoder.bytesEncoded
 
     fun start(): Boolean {
         if (!encoder.start()) {

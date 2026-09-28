@@ -103,6 +103,7 @@ class StreamServer(
         uri == "/torchoff" -> handleTorch(false)
         uri == "/enabletorch" -> handleTorch(paramBool(session, true))
         uri == "/disabletorch" -> handleTorch(false)
+        uri == "/hls/profile" -> handleHlsProfile(session)
 
         // ── IP Webcam API: settings ──
         uri == "/settings" && method == Method.POST -> handleSettingsBulk(session)
@@ -336,6 +337,59 @@ class StreamServer(
         p["pan"]?.toFloatOrNull()?.let { cameraManager.setZoom(1f + it) }
         p["ptt"]?.toFloatOrNull()?.let { cameraManager.setZoom(1f + it) }
         return okText("ok")
+    }
+
+    /**
+     * GET/POST /hls/profile — read or switch the HLS segment profile.
+     *
+     * `?set=low` shortens the segments and the GOP together; `?set=high` takes
+     * the long-segment, sparse-GOP trade. The two cannot be set independently
+     * (see HlsProfile), so this deliberately takes one word rather than two
+     * numbers that could contradict each other.
+     *
+     * Switching restarts the encoder, so a client sees the media sequence
+     * restart. That is unavoidable: KEY_I_FRAME_INTERVAL is a codec-config
+     * value and the muxer has already cut segments to the old length.
+     */
+    private fun handleHlsProfile(session: IHTTPSession): Response {
+        val set = parseParams(session)["set"]
+        if (set == null) {
+            val p = cameraManager.hlsProfile
+            return okText(
+                "profile=${if (p == com.ocubea.model.HlsProfile.LOW_LATENCY) "low" else
+                    if (p == com.ocubea.model.HlsProfile.HIGH_QUALITY) "high" else "default"} " +
+                    "segment_ms=${p.segmentMs} keyframe_sec=${p.keyFrameIntervalSec} " +
+                    "sync=${p.liveSyncDurationCount} buffer=${p.maxBufferLength}"
+            )
+        }
+        val profile = when (set.lowercase()) {
+            "low", "on", "true" -> com.ocubea.model.HlsProfile.LOW_LATENCY
+            "high", "quality" -> com.ocubea.model.HlsProfile.HIGH_QUALITY
+            "default", "off", "false" -> com.ocubea.model.HlsProfile.DEFAULT
+            else -> return badRequest(
+                "set must be low, high or default (got \"$set\")"
+            )
+        }
+        cameraManager.hlsProfile = profile
+        // Only restart if HLS is actually running; otherwise the new profile
+        // takes effect the next time a client asks for a playlist.
+        if (cameraManager.hlsSession?.isEncoding == true) {
+            if (!cameraManager.startHls(profile)) {
+                return newFixedLengthResponse(
+                    Status.INTERNAL_ERROR, "text/plain",
+                    "HLS profile set but encoder restart failed: ${cameraManager.hlsSession?.lastError}"
+                )
+            }
+        }
+        // The player-facing numbers belong in the reply as well. The WebUI
+        // reads sync/buffer from here to configure hls.js, and an earlier
+        // version of this reply carried only segment_ms, so the player kept
+        // its built-in defaults — which assume a 2s targetduration and hold a
+        // 120ms stream back by whole seconds.
+        return okText(
+            "profile set segment_ms=${profile.segmentMs} keyframe_sec=${profile.keyFrameIntervalSec} " +
+                "sync=${profile.liveSyncDurationCount} buffer=${profile.maxBufferLength}"
+        )
     }
 
     private fun handleTorch(on: Boolean): Response {

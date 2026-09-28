@@ -129,6 +129,8 @@ class CameraManager(
      * costs almost nothing on the CPU — the whole reason HLS is viable here
      * where JPEG was the bottleneck.
      */
+    @Volatile var hlsProfile: com.ocubea.model.HlsProfile =
+        com.ocubea.model.HlsProfile.DEFAULT
     @Volatile var hlsSession: com.ocubea.stream.HlsSession? = null
         private set
     @Volatile private var hlsLastError = "none"
@@ -314,8 +316,13 @@ class CameraManager(
      * accepts the live resolution. HLS is an addition here, never a
      * replacement, so a device without a usable encoder still streams fine.
      */
-    fun startHls(): Boolean {
-        if (hlsSession?.isEncoding == true) return true
+    fun startHls(profile: com.ocubea.model.HlsProfile = hlsProfile): Boolean {
+        // A running encoder was configured for the old profile; its segment
+        // length and GOP are baked into the muxer and the codec config, so
+        // switching has to mean a fresh session rather than a mutated field.
+        if (hlsSession?.isEncoding == true) {
+            return if (hlsSession?.profile == profile) true else restartHls(profile)
+        }
         val w = lastSrcW.takeIf { it > 0 } ?: 1280
         val h = lastSrcH.takeIf { it > 0 } ?: 720
         val session = com.ocubea.stream.HlsSession(
@@ -324,7 +331,8 @@ class CameraManager(
             // old width*height*4 gave 8.3 Mbps at 1080p and a measured 59 MB per
             // recorded minute, which fills a phone in a couple of hours for a
             // scene that is mostly static.
-            bitrate = com.ocubea.model.BitrateBounds.bpsFromKbps(config.videoBitrateKbps)
+            bitrate = com.ocubea.model.BitrateBounds.bpsFromKbps(config.videoBitrateKbps),
+            profile = profile
         )
         if (!session.start()) {
             hlsLastError = session.lastError
@@ -338,6 +346,24 @@ class CameraManager(
     fun stopHls() {
         runCatching { hlsSession?.stop() }
         hlsSession = null
+    }
+
+    /**
+     * Tears the session down and builds a new one for a different profile.
+     *
+     * Clients connected to the old session have a playlist they are polling and
+     * segments they will keep asking for, so the media sequence restarts and
+     * they have to re-read the playlist. hls.js handles that — it sees a
+     * sequence number going backwards and reloads — but it does mean switching
+     * profiles is visible as a short hiccup rather than being seamless.
+     *
+     * There is no way around it: KEY_I_FRAME_INTERVAL is a codec-config value
+     * and the muxer has already cut segments to the old length.
+     */
+    private fun restartHls(profile: com.ocubea.model.HlsProfile): Boolean {
+        hlsProfile = profile
+        stopHls()
+        return startHls(profile)
     }
 
     // ─── Clip recording ────────────────────────────────────────
@@ -650,6 +676,19 @@ class CameraManager(
             "frames_queued" to (s?.framesQueued ?: 0L),
             "frames_dropped" to (s?.framesDropped ?: 0L),
             "segments" to (s?.segmentsWritten ?: 0L),
+            "bytes" to (s?.bytesEncoded ?: 0L),
+            "measured_fps" to (s?.measuredFps ?: 0.0),
+            // The profile the running session was actually built with, not the
+            // one that was requested. They differ when a switch failed to
+            // restart the encoder, and the difference is exactly what makes a
+            // measurement look wrong.
+            "profile" to when (hlsProfile) {
+                com.ocubea.model.HlsProfile.LOW_LATENCY -> "low"
+                com.ocubea.model.HlsProfile.HIGH_QUALITY -> "high"
+                else -> "default"
+            },
+            "segment_ms" to hlsProfile.segmentMs,
+            "keyframe_sec" to hlsProfile.keyFrameIntervalSec,
             "last_error" to hlsLastError
         )
     }
