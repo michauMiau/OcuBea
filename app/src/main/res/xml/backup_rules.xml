@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+Android 11 and lower: what may be sent to a cloud backup.
+
+OcuBea is a security camera. Its backup payload is a recording of whatever the
+camera saw, plus the API token that unlocks it, so a backup copy is a copy of
+the footage. Nothing here is worth restoring onto a different phone: the clips
+live in the camera's own storage and the settings are retyped when a device is
+handed over for a second life.
+
+Settings are excluded because the access token must not leave the device it
+was issued for.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="recordings" />
+    <exclude domain="external" path="." />
+    <exclude domain="database" path="." />
+</full-backup-content>

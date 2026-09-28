@@ -32,14 +32,14 @@ class MotionLimitsTest {
         // frames.
         assertEquals(
             MotionLimits.MAX_PRE_RECORD_SECONDS,
-            MotionLimits.effectivePreRecordSeconds(2_000_000, 15, jpeg1080p),
+            MotionLimits.effectivePreRecordFrames(2_000_000, 15, jpeg1080p),
         )
     }
 
     @Test
     fun `a negative or zero request cannot produce a negative buffer`() {
         for (bad in listOf(-1, -1000, Int.MIN_VALUE)) {
-            val secs = MotionLimits.effectivePreRecordSeconds(bad, 15, jpeg1080p)
+            val secs = MotionLimits.effectivePreRecordFrames(bad, 15, jpeg1080p)
             assertTrue("request $bad produced $secs", secs >= 0)
         }
     }
@@ -47,7 +47,7 @@ class MotionLimitsTest {
     @Test
     fun `the byte ceiling holds at 1080p`() {
         val fps = 15
-        val secs = MotionLimits.effectivePreRecordSeconds(
+        val secs = MotionLimits.effectivePreRecordFrames(
             MotionLimits.MAX_PRE_RECORD_SECONDS, fps, jpeg1080p
         )
         val bytes = secs * fps.toLong() * jpeg1080p
@@ -61,7 +61,7 @@ class MotionLimitsTest {
     @Test
     fun `the byte ceiling holds at 720p, where more seconds fit`() {
         val fps = 15
-        val secs = MotionLimits.effectivePreRecordSeconds(
+        val secs = MotionLimits.effectivePreRecordFrames(
             MotionLimits.MAX_PRE_RECORD_SECONDS, fps, jpeg720p
         )
         val bytes = secs * fps.toLong() * jpeg720p
@@ -76,22 +76,22 @@ class MotionLimitsTest {
 
     @Test
     fun `a short history is never extended by a small frame size`() {
-        assertEquals(2, MotionLimits.effectivePreRecordSeconds(2, 15, 1 * 1024))
+        assertEquals(2, MotionLimits.effectivePreRecordFrames(2, 15, 1 * 1024))
     }
 
     @Test
     fun `degenerate frame and rate values do not divide by zero`() {
         // fps 0 and a zero-length frame both reach here from a camera that
         // failed mid-frame, so they must not throw on the capture path.
-        assertTrue(MotionLimits.effectivePreRecordSeconds(5, 0, jpeg1080p) >= 0)
-        assertTrue(MotionLimits.effectivePreRecordSeconds(5, 15, 0) >= 0)
+        assertTrue(MotionLimits.effectivePreRecordFrames(5, 0, jpeg1080p) >= 0)
+        assertTrue(MotionLimits.effectivePreRecordFrames(5, 15, 0) >= 0)
     }
 
     @Test
     fun `a huge frame clamps the history to nothing rather than to one frame`() {
         // One frame larger than the whole budget must not leave a 1-frame
         // history that then holds an oversized buffer anyway.
-        val secs = MotionLimits.effectivePreRecordSeconds(
+        val secs = MotionLimits.effectivePreRecordFrames(
             30, 15, MotionLimits.MAX_PRE_ROLL_BYTES.toInt() * 2
         )
         assertTrue("got $secs", secs >= 0)
