@@ -149,12 +149,20 @@ class StreamServer(
         // headers itself — overriding Response.send() skips them and browsers
         // then reject the response as HTTP/0.9.
         val stream = object : java.io.InputStream() {
+            private val one = ByteArray(1)
+            private var closed = false
+
             override fun read(): Int {
                 if (!boundary.hasRemaining()) {
                     if (!nextPart()) return -1
                 }
-                val one = ByteArray(1)
-                return if (boundary.read(one, 0, 1) == 1) one[0].toInt() and 0xFF else -1
+                // NanoHTTPD prefers the bulk read() overload; this path exists
+                // only for callers that do not, so a single reusable byte is
+                // enough. Allocating one per byte made a 200KB frame cost
+                // 200k short-lived arrays.
+                return boundary.read(one, 0, 1).let {
+                    if (it == 1) one[0].toInt() and 0xFF else -1
+                }
             }
 
             override fun read(b: ByteArray, off: Int, len: Int): Int {
@@ -167,7 +175,10 @@ class StreamServer(
             }
 
             private fun nextPart(): Boolean {
-                while (cameraManager.isStreaming) {
+                // A viewer that hangs up is released straight away rather than
+                // staying counted for up to the full poll timeout, which is
+                // what made viewer counts drift upward after a client vanished.
+                while (cameraManager.isStreaming && !closed) {
                     val frame = cameraManager.frameHub.pollFrame(viewer, 5000) ?: continue
                     boundary.setFrame(frame)
                     return true
@@ -176,6 +187,7 @@ class StreamServer(
             }
 
             override fun close() {
+                closed = true
                 cameraManager.frameHub.removeViewer(viewer)
                 super.close()
             }
@@ -231,13 +243,30 @@ class StreamServer(
             val f = frame
             while (written < len && hasRemaining()) {
                 when {
-                    headPos < headBytes.size -> dst[off + written] = headBytes[headPos++]
-                    f != null && framePos < f.size -> {
-                        dst[off + written] = f[framePos++]
+                    headPos < headBytes.size -> {
+                        val n = minOf(
+                            len - written, headBytes.size - headPos
+                        )
+                        System.arraycopy(headBytes, headPos, dst, off + written, n)
+                        headPos += n
+                        written += n
                     }
-                    else -> dst[off + written] = tail[tailPos++]
+                    f != null && framePos < f.size -> {
+                        // The JPEG is ~200KB, so copying it a byte at a time
+                        // meant millions of loop iterations per second per
+                        // viewer for what is a plain memcpy.
+                        val n = minOf(len - written, f.size - framePos)
+                        System.arraycopy(f, framePos, dst, off + written, n)
+                        framePos += n
+                        written += n
+                    }
+                    else -> {
+                        val n = minOf(len - written, tail.size - tailPos)
+                        System.arraycopy(tail, tailPos, dst, off + written, n)
+                        tailPos += n
+                        written += n
+                    }
                 }
-                written++
             }
             return written
         }
@@ -426,6 +455,18 @@ class StreamServer(
                 cameraManager.setJpegQuality(value.toIntOrNull() ?: 82)
                 okText("ok")
             }
+            "video_bitrate_kbps", "bitrate" -> {
+                // Takes effect on the next HLS session: the encoder is already
+                // configured by then, and restarting it under a live viewer would
+                // drop their stream for a number most people change once.
+                val kbps = value.toIntOrNull()
+                if (kbps == null) {
+                    badRequest("video_bitrate_kbps must be a number")
+                } else {
+                    cameraManager.setVideoBitrateKbps(kbps)
+                    okText("${cameraManager.videoBitrateKbps} kbps (następny restart HLS)")
+                }
+            }
             "effect" -> {
                 if (value in EFFECTS) {
                     cameraManager.applyEffect(value)
@@ -572,6 +613,7 @@ class StreamServer(
             append("\"hls\":" + hlsJson() + ",")
             append("\"viewers\":${cfg["viewers"]},")
             append("\"jpeg_quality\":${cfg["jpeg_quality"]},")
+            append("\"video_bitrate_kbps\":${cfg["video_bitrate_kbps"]},")
             append("\"night_vision\":${cfg["night_vision"]},")
             append("\"effect\":\"${cfg["effect"]}\",")
             append("\"front_camera\":${cfg["front_camera"]},")

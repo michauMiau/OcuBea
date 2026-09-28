@@ -39,6 +39,27 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         get() = prefs.getInt(KEY_JPEG_QUALITY, 82).coerceIn(40, 100)
         set(v) = prefs.edit().putInt(KEY_JPEG_QUALITY, v.coerceIn(40, 100)).apply()
 
+    /**
+     * HLS video bitrate in kbps.
+     *
+     * The old value was width * height * 4 bits per pixel per second, which
+     * for 1080p is 8.3 Mbps. A clip recorded from that stream came to 59 MB per
+     * minute — 8.5 GB an hour — for a security camera pointed at a wall, where
+     * almost every frame is identical and the encoder was spending bits on noise
+     * it invented.
+     *
+     * 4 Mbps at 1080p is roughly 30 MB a minute and still well above what a
+     * 720p-upscale of a static scene needs. The default is expressed in kbps so
+     * it survives a resolution change; the encoder is told bits per second.
+     */
+    var videoBitrateKbps: Int
+        get() = BitrateBounds.clampKbps(
+            prefs.getInt(KEY_VIDEO_BITRATE_KBPS, DEFAULT_VIDEO_BITRATE_KBPS)
+        )
+        set(v) = prefs.edit()
+            .putInt(KEY_VIDEO_BITRATE_KBPS, BitrateBounds.clampKbps(v))
+            .apply()
+
     var effect: String
         get() = prefs.getString(KEY_EFFECT, "none").orEmpty().ifEmpty { "none" }
         set(v) = prefs.edit().putString(KEY_EFFECT, v).apply()
@@ -125,6 +146,7 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         "resolution" to "${resolution.width}x${resolution.height}",
         "fps" to frameRate,
         "jpeg_quality" to jpegQuality,
+        "video_bitrate_kbps" to videoBitrateKbps,
         "effect" to effect,
         "night_vision" to nightVision,
         "front_camera" to frontCamera,
@@ -148,6 +170,10 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         const val KEY_RESOLUTION_IDX = "resolution_idx"
         const val KEY_FPS = "fps"
         const val KEY_JPEG_QUALITY = "jpeg_quality"
+        const val KEY_VIDEO_BITRATE_KBPS = "video_bitrate_kbps"
+
+        /** 1080p15 on the measured hardware lands near 4 Mbps, not 8.3. */
+        const val DEFAULT_VIDEO_BITRATE_KBPS = 4000
         const val KEY_EFFECT = "effect"
         const val KEY_NIGHT_VISION = "night_vision"
         const val KEY_FRONT_CAMERA = "front_camera"
