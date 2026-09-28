@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="clips">Klipy</string>
+    <string name="clip_status">%1$d klip(y) · %2$s · wolne %3$s</string>
+    <string name="clip_selected">Zaznaczono: %1$d</string>
+    <string name="clip_empty">Brak klipów.\nNagraj pierwszy przyciskiem poniżej albo włącz wykrywanie ruchu.</string>
+    <string name="clip_record">Nagraj 10 s</string>
+    <string name="clip_prune">Usuń stare</string>
+    <string name="clip_delete_selected">Usuń zaznaczone</string>
+    <string name="clip_delete_one">Usuń klip</string>
+    <string name="clip_close_player">Zamknij odtwarzacz</string>
+    <string name="clip_thumb">Miniatura klipu</string>
+    <string name="recording_badge">● REC</string>
     <string name="app_name">OcuBea</string>
     <string name="streaming_started">Streaming started on port %d</string>
     <string name="streaming_stopped">Streaming stopped</string>

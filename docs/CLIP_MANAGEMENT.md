@@ -89,19 +89,43 @@ z potwierdzeniem.
 * **Klipy znikają przy odinstalowaniu** tylko w fallbacku `filesDir` —
   `status.json` ma to raportować.
 
-## Kolejność
+## Kolejność — stan na 2026-09-27
 
-1. `ClipStorage` + `Fmp4Writer` jako backend klipu (bez UI) — największa wartość
-2. `/clips` API z `Range`
-3. WebUI: lista + odtwarzanie + usuwanie
-4. Nagrywanie ondemand
-5. Retencja: czas → miejsce → ruch
-6. Natywny ekran w aplikacji
+1. `ClipStorage` + `Fmp4Writer` jako backend klipu — **zrobione**
+2. `/clips` API z `Range` — **zrobione**, `206` potwierdzone na urządzeniu
+3. WebUI: lista + odtwarzanie + usuwanie — **zrobione i przetestowane
+   w Chromium** (siatka, miniatura `readyState=4`, modal, download, usuwanie)
+4. Nagrywanie ondemand — **zrobione**, zamknięcie po `seconds` potwierdzone
+5. Retencja: czas → miejsce → liczba plików — **zrobione**, kryteria
+   niezależne, `ClipRetentionScheduler` sprząta automatycznie
+6. Natywny ekran w aplikacji — **kod gotowy, `BUILD SUCCESSFUL`, ale
+   NIEPRZETESTOWANY na urządzeniu** (brak ADB)
+
+## Natywny ekran — co jest i czego nie wiadomo
+
+`ClipActivity` (siatka 2-kol., swipe-refresh, polling 4 s, ExoPlayer przez
+`127.0.0.1`), `ClipAdapter` (long-press → zaznaczanie, `notifyDataSetChanged`),
+`ClipApi` (OkHttp, ten sam endpoint co WebUI).
+
+Celowo jedna ścieżka odczytu plików: odtwarzacz w aplikacji idzie przez HTTP
+Range, dokładnie tak jak przeglądarka. Wada: dwie ścieżki można naprawić
+rozłącznie.
+
+**Niesprawdzone na urządzeniu:** siatka się rysuje, przycisk „Klipy" działa,
+odtwarzacz w aplikacji odtwarza. Wszystko to kompiluje się, ale nie było
+uruchomione. Do zrobienia przy najbliższym podłączonym telefonie:
+kliknąć „Klipy", zobaczyć siatkę, odtworzyć klip, usunąć przez long-press,
+sprawdzić czy `REC` pojawia się przy nagrywaniu.
 
 ## Kryterium sukcesu
 
 * `curl -r 1000-2000 /clips/klip_x.mp4` → `206` i dokładnie 1001 B
+  — **spełnione**
 * klip otwiera się w przeglądarce z paskiem czasu i przewijaniem
-* `POST /clips/record {"seconds":5}` → plik po 5 s, `/clips/recording` pokazuje `active:false`
-* klip 60 s zajmuje < 20 MB
+  — **spełnione**, `readyState=4`
+* `POST /clips/record seconds=5` → plik po 5 s — **spełnione**
+* klip 60 s zajmuje < 20 MB — 4 s = 3,7 MB, czyli ~55 MB/min, **nie spełnione**
+  przy 1080p; jakość/bitrate do obniżenia
 * `status.json.pipeline.dropped` nie rośnie przy aktywnym zapisie
+  — **niezmierzone**
+* natywny ekran — **niezmierzone**

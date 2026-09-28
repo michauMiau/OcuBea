@@ -57,6 +57,8 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     
     // CameraX for camera access and preview
     val cameraxVersion = "1.3.0"
@@ -69,6 +71,8 @@ dependencies {
     // MediaCodec for hardware encoding (H.264, H.265)
     implementation("androidx.media3:media3-exoplayer:1.2.0")
     implementation("androidx.media3:media3-common:1.2.0")
+    // PlayerView for the native clip player; the exoplayer alone is headless.
+    implementation("androidx.media3:media3-ui:1.2.0")
     
     // Networking - lightweight HTTP server and client
     implementation("org.nanohttpd:nanohttpd:2.3.1")
