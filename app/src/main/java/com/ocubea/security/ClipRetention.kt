@@ -34,10 +34,30 @@ object ClipRetention {
         maxFiles: Int,
         protectedNames: Set<String> = emptySet(),
         nowMs: Long = System.currentTimeMillis(),
+    ): Result = plan(
+        candidates = ClipStorage.list(context)
+            .filter { it.name !in protectedNames },
+        maxBytes = maxBytes,
+        maxAgeMs = maxAgeMs,
+        maxFiles = maxFiles,
+        nowMs = nowMs,
+    )
+
+    /**
+     * The eviction decision, free of Android.
+     *
+     * [candidates] must already exclude the clip being written. Oldest first.
+     * Nothing is inspected for age, size or count beyond what the caller
+     * passed in, so the rules below can be tested against plain files.
+     */
+    fun plan(
+        candidates: List<File>,
+        maxBytes: Long,
+        maxAgeMs: Long,
+        maxFiles: Int,
+        nowMs: Long,
     ): Result {
-        val files = ClipStorage.list(context)
-            .filter { it.name !in protectedNames }
-            .sortedBy { it.lastModified() }
+        val files = candidates.sortedBy { it.lastModified() }
 
         var removed = 0
         var freed = 0L
@@ -81,8 +101,12 @@ object ClipRetention {
         for (f in files) {
             if (remaining <= maxFiles) break
             if (gone.contains(f.name)) continue
+            // The size has to be read BEFORE the delete. After an unlink the
+            // File handle still points at the inode, so length() keeps returning
+            // the old value on some kernels and 0 on others; relying on either
+            // makes the freed-bytes total drift away from the truth.
+            val len = f.length()
             if (f.delete()) {
-                val len = f.length()
                 removed++; freed += len; gone.add(f.name); remaining--; byCount++
             }
         }
@@ -96,6 +120,14 @@ object ClipRetention {
      * A clip that never got its final flush has no mfra, so the muxer cannot
      * know how long it is and a player shows a truncated file. Anything older
      * than an hour that is still being written to by nobody is one of these.
+     *
+     * NOT WIRED UP. Nothing calls this, and it must not be called as written:
+     * a clip of any length sits untouched for an hour as long as nothing else
+     * writes to it, and by then the age limit may not have caught it. Wiring
+     * this in without a marker for "this file has a closed muxer" would delete
+     * perfectly good long recordings. It needs that marker first — the
+     * finished-file check belongs in ClipWriter, not in a sweep that guesses
+     * from mtime.
      */
     fun sweepUnfinished(context: Context, olderThanMs: Long = 3600_000L): Int {
         val cutoff = System.currentTimeMillis() - olderThanMs

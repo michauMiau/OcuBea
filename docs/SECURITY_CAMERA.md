@@ -178,9 +178,21 @@ Zmierzone na urządzeniu po 4-sekundowym nagraniu: `ffprobe` dał
 bez telefonu. `Fmp4Writer` nie importuje nic z Androida, więc logika pudełek
 da się sprawdzić na maszynie.
 
+`app/src/test/java/com/ocubea/security/ClipRetentionTest.kt` — 9 testów na
+prawdziwych plikach w katalogu tymczasowym. Retencja była zaplana jako
+`ClipRetention.prune(context, …)`, czyli zależna od `Context` i niemożliwa do
+przetestowania bez telefonu. Rozdzielono ją na `prune(context, …)`, które
+wybiera pliki, oraz `plan(candidates, …)`, które podejmuje decyzję — druga
+część nie widzi Androida i jest testowalna.
+
 Testy pilnują rzeczy, których `ffprobe` nie zauważy: wersji `mvhd`, 64-bitowego
 zaokrąglenia czasu, zgodności `mdhd` z `mvhd`, identycznego rozmiaru init
 przed i po przebudowie, oraz poziomu AVC w `avcC`.
+
+Retencja pilnuje, że limity są **OR-owane**, nie AND-owane, i że plik usunięty
+przez wiek nie zostaje policzony drugi raz w gałęzi rozmiaru. Każdy limit ma
+osobny test z pozostałymi na luzie — test, w którym limity na siebie wpadają,
+przeszedłby nawet z martwą gałęzią.
 
 Fixture to **prawdziwe** SPS/PPS wyciągnięte z klipu nagranego na urządzeniu
 (`67 64 00 0a ac 1b …` / `68 ea 43 cb`), a nie syntetyczny. Zsyntetyczny
@@ -190,6 +202,12 @@ Sama wersja poprzednia tego kodu **nie przechodziła** tych testów: `rebuild`
 zwracał `null`, bo rozmiar różnił się o 8 bajtów na każdym z `mvhd`/`tkhd`.
 Telefon pokazałby to jako „klip bez czasu trwania" dopiero po nagraniu —
 test wykrył to natychmiast.
+
+### Znane dziury
+
+`sweepUnfinished()` jest napisany, ale **nigdzie nie jest wywoływany** i nie
+powinien być, dopóki `ClipWriter` nie zapisze znacznika zamkniętego muxerа.
+Sweep zgadywałby z `mtime` i kasował długie, dobre nagrania.
 
 ## Kryterium sukcesu
 
