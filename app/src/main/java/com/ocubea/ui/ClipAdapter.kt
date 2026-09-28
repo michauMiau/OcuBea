@@ -68,6 +68,8 @@ class ClipAdapter(
         val subtitle: TextView = itemView.findViewById(R.id.subtitle)
         val thumb: ImageView = itemView.findViewById(R.id.thumb)
         val del: ImageButton = itemView.findViewById(R.id.del)
+        /** The clip this holder last rendered, so a late decode cannot land on a recycled row. */
+        var boundName: String? = null
     }
 
     override fun getItemCount() = items.size
@@ -83,10 +85,11 @@ class ClipAdapter(
         // Named `clip`, not `it`: inside setOnClickListener the implicit `it`
         // refers to the View, and the outer clip would be shadowed.
         val clip = items[position]
+        h.boundName = clip.name
         h.title.text = prettyTime(clip.modifiedMs)
         h.subtitle.text = prettySize(clip.sizeBytes)
-        h.thumb.setImageResource(R.drawable.ic_play_circle)
         h.thumb.contentDescription = clip.name
+        bindThumb(h, clip)
         // A selection ring on the card itself: the card is the touch target, so
         // the state has to be visible where the user is already looking.
         h.itemView.isSelected = clip.name in selected
@@ -105,6 +108,31 @@ class ClipAdapter(
             true
         }
         h.del.setOnClickListener { onDelete(clip) }
+    }
+
+    /**
+     * Shows the poster frame, or the play glyph while it decodes or if it
+     * cannot be decoded at all.
+     *
+     * The decode happens on a background thread, so by the time it returns the
+     * holder may already have been rebound to a different clip. The name check
+     * is what stops a slow decode from painting the previous clip's frame onto
+     * the row the user is now looking at.
+     */
+    private fun bindThumb(h: VH, clip: ClipItem) {
+        val ctx = h.itemView.context
+        val cached = ClipThumbs.cached(ctx, clip)
+        if (cached != null) {
+            h.thumb.setImageBitmap(cached)
+            return
+        }
+        h.thumb.setImageResource(R.drawable.ic_play_circle)
+        if (clip.recording) return
+        ClipThumbs.load(ctx, clip) { bmp ->
+            if (h.boundName != clip.name) return@load
+            if (bmp == null) return@load
+            h.thumb.setImageBitmap(bmp)
+        }
     }
 
     private fun toggle(clip: ClipItem) {

@@ -181,6 +181,71 @@ class Fmp4WriterBoxTest {
         )
     }
 
+    /**
+     * The tkhd body must be exactly 96 bytes for a version-1 box, with the
+     * matrix on body offset 52 and the 16.16 display size right after it.
+     *
+     * Found on a real device recording, after ffprobe reported a correct
+     * duration and a correct resolution. The reserved run between the duration
+     * and the matrix had been written as int() pairs, 4 bytes wide where the
+     * spec has an 8-byte reserved followed by four 2-byte fields, so the run
+     * came out 24 bytes instead of 16: the matrix landed at 60 instead of 52,
+     * the display size at 96 instead of 88, and the box was 112 bytes instead
+     * of 104. ffprobe reads the size from the stsd sample entry, not from
+     * tkhd, which is why the clip looked fine to a probe and was still wrong.
+     *
+     * The offsets are cross-checked against a file ffmpeg produced, where
+     * tkhd is version 0 and the same matrix starts on body offset 40:
+     * v0 is 4 bytes shorter in creation, modification and duration, so 52-12
+     * = 40.
+     */
+    @Test
+    fun `the tkhd layout puts the matrix and the display size where they belong`() {
+        val writer = Fmp4Writer()
+        writer.initSegmentFor(w, h, configAnnexB)
+        val tkhd = findBox(writer.rebuildInitWithDuration(1_000_000L)!!, "tkhd")!!
+        assertEquals("tkhd version 1 body is 96 bytes", 96, tkhd.size)
+        // version 1: 4 vf, 8 cre, 8 mod, 4 track_ID, 4 reserved, 8 duration,
+        // 8 reserved, 2 layer, 2 alternate_group, 2 volume, 2 reserved, 36
+        // matrix, 4 width, 4 height.
+        val words = (0 until 9).map { u32(tkhd, 52 + it * 4) }
+        assertEquals(
+            "identity matrix at body offset 52",
+            listOf(0x00010000L, 0L, 0L, 0L, 0x00010000L, 0L, 0L, 0L, 0x40000000L),
+            words,
+        )
+        assertEquals("16.16 width", w * 65536L, u32(tkhd, 88))
+        assertEquals("16.16 height", h * 65536L, u32(tkhd, 92))
+    }
+
+    /**
+     * The ftyp must declare `isom` and `iso2`.
+     *
+     * With only `iso6` and `cmfc` declared, every clip on a Redmi Note 10 Pro
+     * running Android 13 was rejected by MediaMetadataRetriever with
+     * `setDataSource failed: status = 0x80000000`. The file was structurally
+     * valid — ffprobe read it, the WebUI played it — so nothing in the box tree
+     * was wrong. The narrowest decoder in the stack simply did not recognise
+     * the file from its declared brands, and threw the whole thing away.
+     */
+    @Test
+    fun `ftyp declares the brands a phone decoder recognises`() {
+        val init = Fmp4Writer().initSegmentFor(w, h, configAnnexB)!!
+        val ftyp = findBox(init, "ftyp")!!
+        val brands = (0 until ftyp.size / 4 - 1).map { i ->
+            String(ftyp, i * 4, 4, Charsets.US_ASCII)
+        }
+        assertEquals("major brand", "isom", brands.first())
+        for (required in listOf("isom", "iso2", "iso6", "avc1")) {
+            assertTrue("ftyp must declare $required, got $brands", brands.contains(required))
+        }
+        // minor_version 0x0200 marks the file as using 64-bit box fields, which
+        // is what mvhd/tkhd/mdhd here are.
+        assertEquals(0x0200L, ((ftyp[4].toLong() and 0xFF) shl 24) or
+            ((ftyp[5].toLong() and 0xFF) shl 16) or
+            ((ftyp[6].toLong() and 0xFF) shl 8) or (ftyp[7].toLong() and 0xFF))
+    }
+
     @Test
     fun `tkhd agrees with mvhd on the clip length`() {
         val writer = Fmp4Writer()

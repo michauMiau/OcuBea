@@ -127,12 +127,7 @@ class Fmp4Writer(requestedFps: Int = 30) {
 
     private fun buildInitSegment(w: Int, h: Int, rawConfig: ByteArray, durationUs: Long?): ByteArray? {
         val avcConfig = buildAvcC(rawConfig) ?: return null
-        val ftyp = box("ftyp", byteArrayOf(
-            'i'.code.toByte(), 's'.code.toByte(), 'o'.code.toByte(), '6'.code.toByte(),
-            0, 0, 2, 0,                    // minor_version, compatible: isom,iso2
-            'i'.code.toByte(), 's'.code.toByte(), 'o'.code.toByte(), '6'.code.toByte(),
-            'c'.code.toByte(), 'm'.code.toByte(), 'f'.code.toByte(), 'c'.code.toByte()
-        ))
+        val ftyp = box("ftyp", ftypBody())
         // The version-1 layout is used unconditionally, with duration 0 while
         // the clip is still open. A version-0 box would be 8 bytes shorter, so
         // a live init and a closed init would not be interchangeable — and
@@ -140,6 +135,39 @@ class Fmp4Writer(requestedFps: Int = 30) {
         // exactly. One layout, two meanings of the same field.
         val moov = box("moov", buildMoovBody(avcConfig, w, h, durationUs))
         return ftyp + moov
+    }
+
+    /**
+     * The ftyp body: major brand, minor version, compatible brands.
+     *
+     * Found on a device, not in a spec: with only `iso6` and `cmfc` declared,
+     * Android 13's Stagefright refused every clip with
+     * `setDataSource failed: status = 0x80000000` — even though the file was
+     * structurally valid, ffprobe read it without complaint, and the very same
+     * bytes played back through the WebUI. MediaMetadataRetriever is the
+     * narrowest decoder in the stack and it matches the declared brand against
+     * what it actually implements, so the list has to include the classic
+     * `isom`/`iso2` along with the fragmented-stream brands.
+     *
+     * `avc1` is included because this is an AVC track and some players key off
+     * the sample entry brand rather than reading the codec configuration.
+     * `iso5`/`iso6` cover the versions that use 64-bit box fields, which is
+     * what mvhd/tkhd/mdhd here do.
+     */
+    private fun ftypBody(): ByteArray {
+        val brands = listOf("isom", "iso2", "iso5", "iso6", "mp41", "avc1", "cmfc")
+        val b = ByteArray(8 + brands.size * 4)
+        // major_brand
+        "isom".forEachIndexed { i, c -> b[i] = c.code.toByte() }
+        var o = 4
+        // minor_version 0x0200 as big-endian 00 00 02 00, as ISO/IEC 14496-12
+        // requires for files that use 64-bit box fields.
+        b[o++] = 0; b[o++] = 0; b[o++] = 2; b[o++] = 0
+        for (brand in brands) {
+            brand.forEachIndexed { i, c -> b[o + i] = c.code.toByte() }
+            o += 4
+        }
+        return b
     }
 
     /**
@@ -635,9 +663,20 @@ class Fmp4Writer(requestedFps: Int = 30) {
         tkhd.write(int(1))                                   // track_ID
         tkhd.write(int(0))                                   // reserved
         tkhd.write(long(durationUs))                         // 64-bit duration
-        tkhd.write(int(0)); tkhd.write(int(0))               // reserved
-        tkhd.write(int(0)); tkhd.write(int(0))               // layer, alt group
-        tkhd.write(int(0)); tkhd.write(int(0))               // volume, reserved
+        // Everything between the duration and the matrix is a run of reserved
+        // and defaulted fields, and their WIDTH matters because the matrix has
+        // to land on body offset 36. Writing the 8-byte reserved as int()
+        // pairs and the four 2-byte fields as two more pairs made the run 24
+        // bytes long instead of 16, so the matrix slid to 60, width/height to
+        // 96, and the box came out 112 bytes instead of 104. Every field still
+        // held a plausible value, which is why the duration and the codec
+        // checks passed and nothing complained. A player that honours the
+        // declared box size then reads the matrix where the pixel dimensions
+        // should be.
+        //   reserved 8 | layer 2 | alternate_group 2 | volume 2 | reserved 2
+        tkhd.write(int(0)); tkhd.write(int(0))               // reserved 8
+        tkhd.write(short(0)); tkhd.write(short(0))           // layer, alternate_group
+        tkhd.write(short(0)); tkhd.write(short(0))           // volume, reserved
         val mtx = intArrayOf(0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000.toInt())
         for (m in mtx) tkhd.write(int(m))
         // 16.16 fixed point, so width/height are the PIXEL COUNTS SHIFTED LEFT
@@ -778,6 +817,17 @@ class Fmp4Writer(requestedFps: Int = 30) {
         for (i in 0 until 8) b[i] = ((v ushr (56 - 8 * i)) and 0xFF).toByte()
         return b
     }
+
+    /**
+     * Big-endian 16-bit field.
+     *
+     * The tkhd interlude is a mix of 8- and 16-bit fields, so it cannot be
+     * written as a run of int() calls: that produces a box of the right total
+     * length only if the widths happen to add up, and they do not.
+     */
+    private fun short(v: Int): ByteArray = byteArrayOf(
+        ((v ushr 8) and 0xFF).toByte(), (v and 0xFF).toByte()
+    )
 
     /**
      * Four-character box type, ASCII, exactly four bytes.
