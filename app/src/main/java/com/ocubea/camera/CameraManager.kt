@@ -320,7 +320,11 @@ class CameraManager(
         val h = lastSrcH.takeIf { it > 0 } ?: 720
         val session = com.ocubea.stream.HlsSession(
             width = w, height = h, fps = targetFps.coerceIn(5, 30),
-            bitrate = w * h * 4
+            // Configured in kbps rather than derived from the pixel count. The
+            // old width*height*4 gave 8.3 Mbps at 1080p and a measured 59 MB per
+            // recorded minute, which fills a phone in a couple of hours for a
+            // scene that is mostly static.
+            bitrate = com.ocubea.model.BitrateBounds.bpsFromKbps(config.videoBitrateKbps)
         )
         if (!session.start()) {
             hlsLastError = session.lastError
@@ -393,7 +397,13 @@ class CameraManager(
         val fps = targetFps.coerceIn(5, 30)
         clipFps = fps
 
-        val enc = com.ocubea.stream.H264Encoder(w, h, fps, w * h * 4)
+        // Same configured bitrate as the HLS encoder. The old width*height*4
+        // meant 8.3 Mbps at 1080p, measured at 62 MB per recorded minute —
+        // the clip path is the one that fills the card, and it had no setting
+        // to lower it.
+        val enc = com.ocubea.stream.H264Encoder(
+            w, h, fps, com.ocubea.model.BitrateBounds.bpsFromKbps(config.videoBitrateKbps)
+        )
         if (!enc.start()) {
             clipState = "encoder: ${enc.lastError}"
             return false
@@ -764,6 +774,18 @@ class CameraManager(
         jpegQualityOverride = q.coerceIn(40, 100)
     }
 
+    /**
+     * Video bitrate in kbps, for the next HLS session.
+     *
+     * Not applied to a running encoder: reconfiguring the codec underneath a
+     * live viewer drops their stream, and most people set this once.
+     */
+    fun setVideoBitrateKbps(kbps: Int) {
+        config.videoBitrateKbps = kbps
+    }
+
+    val videoBitrateKbps: Int get() = config.videoBitrateKbps
+
     /** Sets the capture effect. Named differently from the [effect] property to avoid a JVM setter clash. */
     fun applyEffect(name: String) {
         config.effect = name
@@ -834,6 +856,7 @@ class CameraManager(
         "frames" to frameCounter,
         "dropped" to dropDecisions,
         "jpeg_quality" to jpegQualityOverride,
+        "video_bitrate_kbps" to config.videoBitrateKbps,
         "front_camera" to isUsingFrontCamera()
     )
 

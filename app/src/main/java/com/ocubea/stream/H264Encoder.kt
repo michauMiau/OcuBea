@@ -107,7 +107,7 @@ class H264Encoder(
             codec = mc
             started = true
             lastError = "none"
-            Log.i(TAG, "started ${info.name} ${width}x$height@$fps color=$colorFormat")
+            Log.i(TAG, "started ${info.name} ${width}x$height@$fps color=$colorFormat bitrate=$bitrate")
             true
         } catch (e: Exception) {
             lastError = e.message ?: e.javaClass.simpleName

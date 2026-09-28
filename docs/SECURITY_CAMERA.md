@@ -269,6 +269,83 @@ test wykrył to natychmiast.
 powinien być, dopóki `ClipWriter` nie zapisze znacznika zamkniętego muxerа.
 Sweep zgadywałby z `mtime` i kasował długie, dobre nagrania.
 
+## Wydajność — pomiar na Redmi Note 10 Pro, 2026-09-28
+
+Wszystkie liczby poniżej są zmierzone na urządzeniu, nie oszacowane. Pomiar
+procesu: `top -b -n 1`, PSS: `dumpsys meminfo`, klatki: walidacja
+multipart (SOI/EOI + zgodność `Content-Length`).
+
+### Detekcja ruchu dekodowała pełną klatkę
+
+`StreamService` dekodował **cały JPEG 1920×1080** (`BitmapFactory.decodeByteArray`),
+a `MotionDetector.process` skalował go potem do siatki 32×24. Dwie najdroższe
+operacje w aplikacji, żeby porównać kilkaset pikseli.
+
+Naprawione: `MotionDetector.processJpeg()` dekoduje z `inSampleSize`, więc
+klatka nigdy nie jest rozwijana do 2 Mpx. Bitmapa jest natychmiast
+recyklingowana w `finally`, także gdy `inSampleSize` zwróciło 1.
+
+| pomiar | przed | po |
+|---|---|---|
+| 1 widz MJPEG | **6 fps**, proces 97% CPU | **15 fps**, proces 25% CPU |
+| PSS przy 1 widzu | 180 MB | 109 MB |
+| PSS bez widza | 135 MB | 135 MB |
+| fps przy 1/2/3 widzach | 6 | 15 / 15 / 15 |
+
+Wątek `ocubea-analysis` przed zmianą zajmował **91,3% CPU** (8 rdzeni).
+
+### Bitrate był wyprowadzany z rozmiaru obrazu
+
+Oba enkodery (`HlsSession` i ścieżka klipów w `CameraManager`) miały
+`bitrate = w * h * 4`, czyli 8,3 Mbps przy 1080p — **62,4 MB na nagraną
+minutę**, czyli ~8,5 GB/h, bez żadnego ustawienia do zmniejszenia.
+
+Teraz `video_bitrate_kbps` (domyślnie 4000, clamp 200–20000 przez
+`BitrateBounds`). Zmierzone: **62,4 → 33,7 MB/min**.
+
+**Znane ograniczenie:** ustawienie nie schodzi niżej niż ~4,2–5 Mbps.
+Proszony o 2000 kbps daje 4,9 Mbps, o 1200 → 4,25 Mbps. Log potwierdza, że
+MediaCodec *dostaje* dokładnie `bitrate=1200000`, więc to nie warstwa
+konfiguracji. Najbardziej prawdopodobna przyczyna: `KEY_I_FRAME_INTERVAL = 0`
+(IDR na każdej klatce) w połączeniu z VBR. **Nienaprawione** — zmiana interwału
+IDR psuje HLS przy `TARGET_SEGMENT_MS = 250`, bo każdy segment musi zaczynać się
+od punktu dostępu. Wymaga osobnego podejścia, nie doraźnej zmiany.
+
+### MJPEG kopiował każdą klatkę bajt po bajcie
+
+`MultipartWriter.read()` przenosił JPEG pętlą po jednym bajcie, a `read()`
+dla pojedynczego bajta alokował `ByteArray(1)` **przy każdym bajcie klatki**.
+Przy ~87 KB na klatkę i 15 fps to miliony iteracji na sekundę na widza.
+Zamienione na `System.arraycopy`; `ByteArray(1)` jest jeden na strumień.
+
+Zweryfikowane walidatorem multipart: 3 kolejne klatki, każda z `SOI=ffd8`,
+`EOI=ffd9` i dokładną zgodnością długości z `Content-Length`. Osobno na
+pliku: 141 klatek, 141 `SOI`, 141 `EOI`, 141 boundary — zgodne.
+
+`close()` ustawia teraz `closed`, więc `nextPart()` przerywa oczekiwanie
+zamiast trzymać widza zalogowanego do pełnego `pollFrame` timeoutu.
+
+### Fałszywy trop: „zapisy się gubią przy restarcie"
+
+Pierwsza wersja pomiaru zgłosiła, że ustawienie bitrate nie przeżywa
+`am force-stop`. Powtórzone z 3 s odstępem przed restartem: **3000 przeżywa
+bez problemu**. `SharedPreferences.apply()` jest asynchroniczne, a `force-stop`
+zabijał proces w trakcie zapisu. Aplikacja była poprawna — wadliwy był pomiar.
+Nie naprawiono żadnego kodu, bo nie było czego.
+
+Podobnie: `MultipartWriter` **nie** wyciekał widza — NanoHTTPD wywołuje
+`close()`. Wyciek był zmyślony, poprawiony został tylko czas oczekiwania.
+
+### Otwarte
+
+- `config.fps` = 30, a kamera realnie daje 15 fps, więc enkoder jest
+  konfigurowany `@30` przy 15 klatkach na sekundę — rozjazd timebase.
+  Podejrzane, **niepotwierdzone**.
+- HLS: 71 segmentów / 30 s przy celu ~120 (`TARGET_SEGMENT_MS = 250`).
+  Stabilny, ale rotacja nie osiąga celu.
+- Android 6 (docelowy telefon) nie był testowany: USB nie jest przekazane do
+  kontenera, a ten telefon nie wspiera wireless debugging.
+
 ## Kryterium sukcesu
 
 Test: nagraj 3 minuty z ruchem, potem godzinę bez. Sprawdź na urządzeniu:

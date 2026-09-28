@@ -212,28 +212,27 @@ class StreamService : LifecycleService() {
             return
         }
         try {
-            val bmp = android.graphics.BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
-            if (bmp != null) {
-                val motion = if (motionDetector.enabled) motionDetector.process(bmp) else false
-                bmp.recycle()
-                motionRecorder.onFrame(
-                    jpeg,
-                    isMotion = motion,
-                    fps = cameraManager.frameHub.fps.coerceAtLeast(1)
-                )
-                // Motion now gates the fMP4 clip path too, not just the old AVI
-                // recorder. A separate on-demand clip in progress is not
-                // disturbed: it was started by the user and runs on its own
-                // duration or an explicit stop.
-                if (clipArmed) {
-                    if (motion) {
-                        if (!cameraManager.isRecordingClip) startMotionClip()
-                    } else if (cameraManager.isRecordingClip && !cameraManager.isOnDemandClip) {
-                        motionIdleFrames++
-                        if (motionIdleFrames >= MOTION_POST_FRAMES) {
-                            cameraManager.stopClipRecording()
-                            motionIdleFrames = 0
-                        }
+            // The detector decodes the JPEG itself, with inSampleSize, so the
+            // frame is never expanded to two megapixels just to be shrunk to a
+            // 32x24 grid. It owns recycling whatever it allocates.
+            val motion = if (motionDetector.enabled) motionDetector.processJpeg(jpeg) else false
+            motionRecorder.onFrame(
+                jpeg,
+                isMotion = motion,
+                fps = cameraManager.frameHub.fps.coerceAtLeast(1)
+            )
+            // Motion now gates the fMP4 clip path too, not just the old AVI
+            // recorder. A separate on-demand clip in progress is not
+            // disturbed: it was started by the user and runs on its own
+            // duration or an explicit stop.
+            if (clipArmed) {
+                if (motion) {
+                    if (!cameraManager.isRecordingClip) startMotionClip()
+                } else if (cameraManager.isRecordingClip && !cameraManager.isOnDemandClip) {
+                    motionIdleFrames++
+                    if (motionIdleFrames >= MOTION_POST_FRAMES) {
+                        cameraManager.stopClipRecording()
+                        motionIdleFrames = 0
                     }
                 }
             }
