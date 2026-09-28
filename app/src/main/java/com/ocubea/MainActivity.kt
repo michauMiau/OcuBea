@@ -21,6 +21,7 @@ import com.ocubea.ui.LivePreviewView
 import java.net.NetworkInterface
 import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * Kiosk home screen.
@@ -215,28 +216,40 @@ class MainActivity : AppCompatActivity() {
     private fun pollOnce() {
         val url = baseUrl() ?: return
         if (pollBusy) return
+        if (worker.isShutdown || isFinishing || isDestroyed) return
         pollBusy = true
-        worker.execute {
-            var result: String? = null
-            try {
-                val conn = URL("$url/status.json").openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 1500
-                conn.readTimeout = 2000
-                result = conn.inputStream.bufferedReader().use { it.readText() }
-                conn.disconnect()
-            } catch (_: Exception) {
-                // server down or restarting
-            }
-            val body = result
-            handler.post {
-                pollBusy = false
-                if (body == null) {
-                    tvStatus.text = getString(R.string.status_offline)
-                    tvStatus.setTextColor(0xFFFF5252.toInt())
-                } else {
-                    applyStatus(body)
+        try {
+            worker.execute {
+                var result: String? = null
+                try {
+                    val conn = URL("$url/status.json").openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 1500
+                    conn.readTimeout = 2000
+                    result = conn.inputStream.bufferedReader().use { it.readText() }
+                    conn.disconnect()
+                } catch (_: Exception) {
+                    // server down or restarting
+                }
+                val body = result
+                handler.post {
+                    pollBusy = false
+                    // A reply can land after onDestroy - onPause only stops the
+                    // next poll, it does not cancel one already on the wire.
+                    // Touching a destroyed view used to throw, and MainActivity
+                    // is a HOME candidate recreated whenever the user leaves.
+                    if (isFinishing || isDestroyed) return@post
+                    if (body == null) {
+                        tvStatus.text = getString(R.string.status_offline)
+                        tvStatus.setTextColor(0xFFFF5252.toInt())
+                    } else {
+                        applyStatus(body)
+                    }
                 }
             }
+        } catch (_: RejectedExecutionException) {
+            // onDestroy shut the executor down between the check above and the
+            // submit. Dropping the poll is correct: the Activity is gone.
+            pollBusy = false
         }
     }
 
@@ -317,6 +330,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        // The executor is per-Activity, so every recreation without this left
+        // another daemon thread behind holding an Activity and a Handler. As a
+        // HOME candidate the launcher re-creates this screen constantly, so the
+        // threads accumulated over a day of use. shutdown() rather than
+        // shutdownNow(): a request already in flight should finish and be
+        // discarded by the isDestroyed check above, not be interrupted.
+        worker.shutdown()
         super.onDestroy()
     }
 
@@ -343,17 +363,25 @@ class MainActivity : AppCompatActivity() {
     /** Fire-and-forget API call on a background thread. */
     private fun callServer(path: String, onDone: (Boolean) -> Unit = {}) {
         val url = baseUrl() ?: return onDone(false)
-        worker.execute {
-            var ok = false
-            try {
-                val conn = URL("$url/$path").openConnection() as java.net.HttpURLConnection
-                conn.requestMethod = "GET"
-                conn.connectTimeout = 1500
-                conn.readTimeout = 2000
-                ok = conn.responseCode in 200..299
-                conn.disconnect()
-            } catch (_: Exception) {}
-            handler.post { onDone(ok) }
+        try {
+            worker.execute {
+                var ok = false
+                try {
+                    val conn = URL("$url/$path").openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.connectTimeout = 1500
+                    conn.readTimeout = 2000
+                    ok = conn.responseCode in 200..299
+                    conn.disconnect()
+                } catch (_: Exception) {}
+                handler.post {
+                    // Same reason as in pollOnce: a button press can race
+                    // onDestroy, and the callback touches views.
+                    if (!isFinishing && !isDestroyed) onDone(ok)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Executor already shut down; the Activity is on its way out.
         }
     }
 
