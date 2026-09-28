@@ -19,12 +19,12 @@ const PAGE = path.join(__dirname, '..', 'app', 'src', 'main', 'assets', 'index.h
 /* Buttons that only relabel themselves. Clicking the stream or snapshot
  * buttons would start a camera that is not there under file://, so they are
  * left out — the point here is the label, not the device. */
-const TOGGLES = ['bMode', 'bLL', 'bNight', 'bMotion', 'bRec'];
+const TOGGLES = ['bMode', 'bLL', 'bHQ', 'bNight', 'bMotion', 'bRec'];
 
 /* bNight, bMotion and bRec toggle a class rather than their own text — the
  * state shows on the Status card instead. Clicking one and seeing the same
  * label is correct for them, so it is not reported. */
-const RELABELS = new Set(['bMode', 'bLL']);
+const RELABELS = new Set(['bMode', 'bLL', 'bHQ']);
 
 /* A label is in the wrong language when it still contains English words. The
  * Polish translations all contain a diacritic or a word that is not English,

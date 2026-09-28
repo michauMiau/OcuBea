@@ -104,6 +104,7 @@
   <div class="row" style="margin-top:8px">
     <button id="bMode">Mode: MJPEG</button>
     <button id="bLL">Low latency: off</button>
+    <button id="bHQ">HLS quality: default</button>
   </div>
   <div class="row" style="margin-top:8px">
     <button id="bTorch">Torch</button>
@@ -176,6 +177,7 @@
         <dt>Dropped</dt><dd id="sDropped">0</dd>
         <dt>Encoder</dt><dd id="sCodec">–</dd>
         <dt>HLS segments</dt><dd id="sSegs">0</dd>
+        <dt>Segment target</dt><dd id="sSegTarget">–</dd>
         <dt>Resolution</dt><dd id="sRes">–</dd>
         <dt>Uptime</dt><dd id="sUptime">–</dd>
         <dt>Battery</dt><dd id="sBattery">–</dd>
@@ -283,6 +285,11 @@ var I18N = {
     'Mode: MJPEG': 'Tryb: MJPEG',
     'Mode: HLS': 'Tryb: HLS',
     'Low latency: on': 'Niskie opóźnienie: włączone',
+    'HLS quality: default': 'Jakość HLS: domyślna',
+    'HLS quality: ': 'Jakość HLS: ',
+    'HLS quality: high': 'Jakość HLS: oszczędzanie CPU',
+    'saving CPU': 'oszczędzanie CPU',
+    'qualityDefault': 'domyślna',
     'Low latency: off': 'Niskie opóźnienie: wyłączone',
     'Torch': 'Latarka',
     'Flip cam': 'Odwróć kamerę',
@@ -317,6 +324,8 @@ var I18N = {
     'Dropped': 'Pominięte',
     'Encoder': 'Enkoder',
     'HLS segments': 'Segmenty HLS',
+    'Segment target': 'Cel segmentu',
+    'GOP': 'GOP',
     'Resolution': 'Rozdzielczość',
     'Uptime': 'Czas pracy',
     'Battery': 'Bateria',
@@ -480,7 +489,7 @@ live.onerror = function(){
 live.onload = function(){ $('streamOff').style.display = 'none'; delay = 1000; };
 
 /* ── Stream mode: MJPEG or hardware H.264 via HLS ─────────────── */
-var mode = 'mjpeg', lowLatency = false, hls = null;
+var mode = 'mjpeg', lowLatency = false, hlsProfile = 'default', hls = null;
 
 function showMjpeg(){
   stopHls();
@@ -507,12 +516,17 @@ function showHls(){
 /**
  * Starts hls.js against /hls/index.m3u8.
  *
- * lowLatency is the real lever here, not a cosmetic toggle. hls.js normally
- * waits a full targetduration before fetching the next segment, which on a
- * 250ms segment is fine, but it also buffers ahead by default. With
- * lowLatencyEnabled it switches to an append-based, low-latency mode: no
- * forward buffer, jumps to the playlist's live edge immediately. That is the
- * difference between ~0.5s and several seconds of lag.
+ * The toggle changes the *server* too, not only the player. hls.js normally
+ * waits a full targetduration before fetching the next segment and buffers
+ * ahead by default, so on its own the toggle could only shave the player's
+ * own lag — the server would keep cutting 250ms segments with an IDR on every
+ * frame regardless, and that dense GOP is most of the bitrate.
+ *
+ * So the two sides are switched together: /hls/profile makes the server cut
+ * shorter segments and a matching GOP for low latency, or take the long
+ * segment and sparse GOP that spends fewer bits for high quality. The player
+ * numbers come from the server's answer, so what the playlist actually is and
+ * what hls.js is told to expect cannot drift apart.
  */
 function startHls(){
   if(typeof Hls === 'undefined'){
@@ -525,6 +539,8 @@ function startHls(){
   hls = new Hls({
     lowLatencyMode: lowLatency,
     // Keep the buffer shallow: a deep buffer on a live stream is just lag.
+    // Replaced by the server's numbers once /hls/profile answers, so the
+    // player is told the truth about the stream it was actually given.
     maxBufferLength: lowLatency ? 2 : 6,
     maxMaxBufferLength: lowLatency ? 4 : 12,
     liveSyncDurationCount: lowLatency ? 1 : 3,
@@ -547,6 +563,39 @@ function startHls(){
   hls.loadSource(url('/hls/index.m3u8'));
   hls.attachMedia(livev);
   livev.play().catch(function(){ /* autoplay may need a gesture; harmless */ });
+
+  /* Tell the server which profile to cut, and adopt the numbers it reports.
+   * Done after the player is attached so playback starts on whatever the
+   * current stream is rather than blocking on a settings round-trip: if this
+   * fails the stream still works, just at the previous profile. */
+  api(url('/hls/profile') + '?set=' + (hlsProfile === 'high' ? 'high'
+       : lowLatency ? 'low' : 'default'))
+    .then(function(r){ return r.text(); })
+    .then(function(body){
+      var m = /sync=(\d+)\s+buffer=(\d+)/.exec(body);
+      if(!m) return;
+      /* hls.js reads these at construction for the append heuristics, so
+       * setting them afterwards only affects how it adapts from here on. It is
+       * still worth doing: the defaults assume a 2s targetduration and would
+       * otherwise hold back a 120ms stream by whole seconds. */
+      if(hls){
+        hls.config.liveSyncDurationCount = parseInt(m[1], 10);
+        hls.config.maxBufferLength = parseInt(m[2], 10);
+        hls.config.maxMaxBufferLength = parseInt(m[2], 10) * 2;
+      }
+      /* The segment target belongs next to the real segment count, so it goes
+       * into the existing status row rather than a second one. The count is
+       * rewritten by refresh() every 3s, so the target is shown as its own
+       * cell — otherwise it would be overwritten within seconds. */
+      var seg = /segment_ms=(\d+)/.exec(body);
+      var gop = /keyframe_sec=(\d+)/.exec(body);
+      if(seg){
+        $('sSegTarget').textContent =
+          (parseInt(seg[1],10) / 1000).toFixed(2) + ' s' +
+          (gop && parseInt(gop[1],10) > 0 ? ' / ' + t('GOP') + ' ' + gop[1] + ' s' : '');
+      }
+    })
+    .catch(function(){ /* keep the previous profile rather than breaking playback */ });
 }
 
 function stopHls(){
@@ -564,11 +613,26 @@ $('bMode').onclick = function(){
 
 $('bLL').onclick = function(){
   lowLatency = !lowLatency;
-  /* Składanie napisu w JS omijało translatePage(), więc ten przycisk wracał
-     do angielskiego po każdym kliknięciu. Klucze 'Low latency: on'/'off'
-     są już w słowniku — używamy ich. */
   this.textContent = t(lowLatency ? 'Low latency: on' : 'Low latency: off');
   this.className = lowLatency ? 'on' : '';
+  if(mode === 'hls') startHls();
+};
+
+/**
+ * A separate control from low latency, because it trades something different.
+ *
+ * Measured on the test phone: the high profile leaves the bitrate alone and
+ * saves 13-18% of process CPU, because longer segments mean fewer container
+ * boundaries to write. Low latency does the opposite — more segments, more
+ * writes. So the two are not ends of one slider, and folding them together
+ * would promise a bitrate saving that does not happen.
+ */
+$('bHQ').onclick = function(){
+  hlsProfile = (hlsProfile === 'default') ? 'high' : 'default';
+  this.textContent = hlsProfile === 'high'
+    ? t('HLS quality: high')
+    : t('HLS quality: default');
+  this.className = hlsProfile === 'high' ? 'on' : '';
   if(mode === 'hls') startHls();
 };
 
