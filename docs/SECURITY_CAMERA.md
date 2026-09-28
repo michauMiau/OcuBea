@@ -300,28 +300,48 @@ Oba enkodery (`HlsSession` i ścieżka klipów w `CameraManager`) miały
 `bitrate = w * h * 4`, czyli 8,3 Mbps przy 1080p — **62,4 MB na nagraną
 minutę**, czyli ~8,5 GB/h, bez żadnego ustawienia do zmniejszenia.
 
-Teraz `video_bitrate_kbps` (domyślnie 4000, clamp 200–20000 przez
-`BitrateBounds`). Zmierzone: **62,4 → 33,7 MB/min**.
+Teraz `video_bitrate_kbps`, sterowany jednym suwakiem jakości.
 
-**Znane ograniczenie:** ustawienie nie schodzi niżej niż ~4,2–5 Mbps.
-Proszony o 2000 kbps daje 4,85 Mbps, o 1200 → 4,25 Mbps. Log potwierdza, że
-MediaCodec *dostaje* dokładnie `bitrate=1200000`, więc to nie warstwa
-konfiguracji.
+### Jeden suwak, dwa enkodery
 
-Rozpoznana przyczyna: **enkoder nie osiąga deklarowanej liczby klatek.**
-`KEY_FRAME_RATE` to 30, a z logu `max input interval 204ms` wynika ~5 fps,
-a plik ma 120 klatek w 19,4 s, czyli **6,2 fps** (`avg_frame_rate=6.58`).
-`c2.mtk.avc.encoder` na tej ścieżce po prostu nie nadąża, więc dołożenie
-proszonych bitów na klatkę daje wyższy bitrate całkowity.
+`QualityScale` mapuje pozycję suwaka (SeekBar 0..60) na JPEG quality
+(40..100) i bitrate (800..12000 kbps). Krzywa jest kwadratowa, bo enkoder
+ściska dolny koniec znacznie mocniej niż górny.
 
-Próbowałem dłuższego GOP dla klipów (`keyFrameIntervalSec = 1`, zamiast IDR
-na każdej klatce) — **nie pomogło**: 4,85 Mbps przy 2000 kbps, czyli tyle
-samo. Hipoteza „gęsty GOP blokuje VBR" była zła; zmiana została wycofana,
-a parametr zostawiony w `H264Encoder` jako jawna, domyślnie 0.
+Zmierzone na urządzeniu, z potwierdzonym `bitrate=` w logu enkodera:
 
-Nie naprawione. Do zbadania: niższa rozdzielczość klipów (720p), inny enkoder,
-albo `MediaCodec` w trybie CBR zamiast VBR. Każda z tych opcji zmienia
-zachowanie, którego tu nie znamy.
+| ustawione | HLS segment | klip |
+|---|---|---|
+| 800 kbps | 4,39 Mbps | 35,8 MB/min |
+| 4 400 kbps | 6,00 Mbps | 40,6 MB/min |
+| 12 000 kbps | 12,82 Mbps | 93,6 MB/min |
+
+**Korekta wcześniejszego wniosku:** pisałem, że bitrate nie schodzi poniżej
+~4,2–5 Mbps i że to „sufit enkodera". To było **nieprawidłowe** — pomiary
+dotyczyły wyłącznie ścieżki klipowej przy bardzo niskich ustawieniach.
+HLS honoruje ustawienie niemal liniowo: 12 000 kbps daje 12,82 Mbps. Dolny
+koniec jest mocno ściśnięty (800 → 4,4), górny prawie liniowy.
+
+Ścieżka klipowa jest mniej podatna: 800 kbps daje tam 35,8 MB/min przy
+5,00 Mbps zmierzonych na pliku, wobec 4,39 Mbps dla HLS przy tym samym
+ustawieniu. Ta rozbieżność jest **do zbadania**, nie do zgadywania.
+
+### Fałszywy trop nr 2: „zapis się nie działa"
+
+Pomiar HLS pokazał `bitrate=12000000` przy dwóch różnych ustawieniach, co
+wyglądało jak ignorowanie ustawienia. Skrypt wysyłał POST i natychmiast
+`force-stop` — `apply()` jest asynchroniczne, więc proces umierał w trakcie
+zapisu. Po 4 s przerwy i potwierdzeniu zapisu przed restartem ustawienie
+dochodzi. **Ta sama pułapka co wcześniej, w innym miejscu.**
+
+### Fałszywy trop: „gęsty GOP blokuje VBR"
+
+Próba dłuższego GOP dla klipów (`keyFrameIntervalSec = 1` zamiast IDR na
+każdej klatce) **nie przyniosła poprawy**: 4,85 Mbps przy 2000 kbps, czyli
+tyle samo. Hipoteza była zła, zmiana wycofana, a parametr zostawiony
+w `H264Encoder` jako jawny i domyślnie 0. Prawdziwym powodem ściśnięcia
+dolnego końca jest po prostu to, że VBR mocno kompresuje przy niskich
+celach — nie architektura GOP.
 
 ### MJPEG kopiował każdą klatkę bajt po bajcie
 
@@ -350,9 +370,8 @@ Podobnie: `MultipartWriter` **nie** wyciekał widza — NanoHTTPD wywołuje
 
 ### Otwarte
 
-- `config.fps` = 30, a plik ma 6,2 fps realnie (potwierdzone: 120 klatek
-  w 19,4 s). Enkoder jest konfigurowany `@30` i nie nadąża — to ta sama
-  przyczyna co sufit bitrate powyżej.
+- Ścieżka klipowa reaguje na bitrate słabiej niż HLS: 800 kbps daje 5,00 Mbps
+  na pliku wobec 4,39 Mbps w HLS, a 12 000 daje 5,0 → 13,1. Powód nieznany.
 - HLS: 71 segmentów / 30 s przy celu ~120 (`TARGET_SEGMENT_MS = 250`).
   Stabilny, ale rotacja nie osiąga celu.
 - Android 6 (docelowy telefon) nie był testowany: USB nie jest przekazane do

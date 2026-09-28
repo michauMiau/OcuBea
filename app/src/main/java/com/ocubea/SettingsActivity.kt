@@ -14,6 +14,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
+import com.ocubea.model.QualityScale
 import com.ocubea.service.StreamService
 import java.net.NetworkInterface
 
@@ -122,10 +123,13 @@ class SettingsActivity : AppCompatActivity() {
         editTextToken.setText(config.accessToken)
         editTextDeviceName.setText(config.deviceName)
 
-        // SeekBar works 0..max, config works in real units — map between them
-        seekQuality.max = 60
-        seekQuality.progress = config.jpegQuality - 40
-        labelQuality.text = "JPEG quality: ${config.jpegQuality}"
+        // SeekBar works 0..max, config works in real units — map between them.
+        // The slider drives both encoders: JPEG quality for /video and
+        // /shot, and HLS/clip bitrate through QualityScale.
+        seekQuality.max = QualityScale.MAX_PROGRESS
+        seekQuality.progress = (config.jpegQuality - QualityScale.MIN_QUALITY)
+            .coerceIn(0, seekQuality.max)
+        labelQuality.text = qualityLabel(seekQuality.progress)
 
         seekSensitivity.max = 100
         seekSensitivity.progress = config.motionSensitivity
@@ -163,12 +167,18 @@ class SettingsActivity : AppCompatActivity() {
 
         seekQuality.setOnSeekBarChangeListener(object : SimpleSeekListener() {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                val q = progress + 40
-                labelQuality.text = "JPEG quality: $q"
-                if (fromUser) config.jpegQuality = q
+                labelQuality.text = qualityLabel(progress)
+                if (fromUser) config.jpegQuality = QualityScale.jpegQualityFor(progress)
             }
             override fun onStopTrackingTouch(sb: SeekBar) {
+                val p = sb.progress
+                config.jpegQuality = QualityScale.jpegQualityFor(p)
+                config.videoBitrateKbps = QualityScale.bitrateKbpsFor(p)
+                // Both go out together: a quality setting that silently left
+                // the recorded bitrate behind would look like the slider only
+                // half worked.
                 pushLive("jpeg_quality", config.jpegQuality.toString())
+                pushLive("video_bitrate_kbps", config.videoBitrateKbps.toString())
             }
         })
 
@@ -280,6 +290,19 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
     }
+
+    /**
+     * Shows what the slider actually changes.
+     *
+     * One control drives two encoders, and a label reading only "JPEG quality"
+     * would leave the bitrate looking like a separate, unrelated setting.
+     * Both numbers are shown because they move independently: JPEG quality is
+     * a per-frame setting for /video and /shot, bitrate is for the HLS and clip
+     * encoders.
+     */
+    private fun qualityLabel(progress: Int): String =
+        "Quality ${QualityScale.jpegQualityFor(progress)}%  ·  " +
+            "${QualityScale.bitrateKbpsFor(progress) / 1000} Mbps video"
 
     /** Push a setting to the running service; harmless when streaming is off. */
     private fun pushLive(name: String, value: String) {
