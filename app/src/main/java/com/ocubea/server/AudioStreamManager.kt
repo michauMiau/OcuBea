@@ -20,6 +20,9 @@ import java.util.concurrent.atomic.AtomicInteger
 class AudioStreamManager(private val context: Context) {
 
     companion object {
+        /** WAV size marker for a stream whose length is not known. */
+        const val LIVE_SIZE = 0xFFFFFFFFL
+
         const val SAMPLE_RATE = 44100
         const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
@@ -157,19 +160,23 @@ class AudioStreamManager(private val context: Context) {
 
     /** Standard 44-byte WAV header. Pass 0xFFFFFFFF for data size when streaming live. */
     private fun wavHeader(dataSize: Long): ByteArray {
-        val total = dataSize + 36
+        // The live marker is 0xFFFFFFFF. Adding 36 to it overflows the field:
+        // (0xFFFFFFFF + 36).toInt() is 35, so the RIFF size claimed a 35-byte
+        // file inside a 44-byte header. A live stream has no known length, so
+        // both size fields keep the marker rather than being computed from it.
+        val total = if (dataSize == LIVE_SIZE) LIVE_SIZE else dataSize + 36
         val out = java.io.ByteArrayOutputStream(44)
-        fun w32(v: Int) {
-            out.write(v and 0xFF); out.write((v shr 8) and 0xFF)
-            out.write((v shr 16) and 0xFF); out.write((v shr 24) and 0xFF)
+        fun w32(v: Long) {
+            out.write(v.toInt() and 0xFF); out.write((v.toInt() shr 8) and 0xFF)
+            out.write((v.toInt() shr 16) and 0xFF); out.write((v.toInt() shr 24) and 0xFF)
         }
         fun w16(v: Int) { out.write(v and 0xFF); out.write((v shr 8) and 0xFF) }
         val byteRate = SAMPLE_RATE * 2
-        out.write("RIFF".toByteArray()); w32(total.toInt())
+        out.write("RIFF".toByteArray()); w32(total)
         out.write("WAVEfmt ".toByteArray())
         w32(16); w16(1); w16(1)
-        w32(SAMPLE_RATE); w32(byteRate); w16(2); w16(16)
-        out.write("data".toByteArray()); w32(dataSize.toInt())
+        w32(SAMPLE_RATE.toLong()); w32(byteRate.toLong()); w16(2); w16(16)
+        out.write("data".toByteArray()); w32(dataSize)
         return out.toByteArray()
     }
 }

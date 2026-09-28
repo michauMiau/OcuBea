@@ -40,18 +40,13 @@ object MotionLimits {
     const val MAX_PRE_ROLL_BYTES = 48L * 1024 * 1024
 
     /**
-     * The pre-roll length actually used, given the requested seconds and the
-     * size of one frame.
+     * Seconds of pre-roll the buffer may hold, bounded by both time and memory.
      *
-     * Called on the frame path, so it must stay cheap and allocation-free.
+     * Returns SECONDS. The caller multiplies by fps to get a frame count, and
+     * an earlier version of this function was named `...Frames` while returning
+     * seconds - a name that invites the next reader to multiply twice.
      */
-    /**
-     * Frames the pre-roll buffer may hold, bounded by both time and memory.
-     *
-     * Returns a frame COUNT, not seconds: the caller multiplies by fps, and a
-     * name saying "seconds" here would be a trap for the next reader.
-     */
-    fun effectivePreRecordFrames(
+    fun effectivePreRecordSeconds(
         requestedSeconds: Int,
         fps: Int,
         frameBytes: Int,

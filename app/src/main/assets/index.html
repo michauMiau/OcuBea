@@ -455,6 +455,13 @@ var T = new URLSearchParams(location.search).get('token') || localStorage.getIte
 var debounce = null;
 
 function url(p){ return T ? p + (p.indexOf('?')>=0?'&':'?') + 'token=' + encodeURIComponent(T) : p; }
+
+/* Escapes for an HTML text node or a double-quoted attribute value. Clip
+   names come from disk and are server-minted today, but a restored backup or
+   any second app with storage access can plant one, and this UI is the thing
+   that would execute it. */
+function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]; }); }
 /* opts is optional and additive: existing callers pass just a path and keep
    getting a plain POST. Clips need method/body/method:'DELETE', and a second
    helper for those would be a worse name than one flexible one. */
@@ -731,7 +738,7 @@ function refreshSensors(){
          t(cam.torch_capable ? 'torch yes' : 'torch no'));
   }).catch(function(){});
 }
-function kv(k, v){ return '<dt>' + k + '</dt><dd>' + (v == null ? '–' : v) + '</dd>'; }
+function kv(k, v){ return '<dt>' + esc(k) + '</dt><dd>' + (v == null ? '–' : esc(v)) + '</dd>'; }
 
 /* ── Recordings ─────────────────────────────────────────────── */
 function refreshRec(){
@@ -740,12 +747,12 @@ function refreshRec(){
     $('recEmpty').style.display = list.length ? 'none' : 'block';
     $('recTable').style.display = list.length ? 'table' : 'none';
     $('recBody').innerHTML = list.map(function(f){
-      return '<tr><td>' + f.name + '</td>' +
+      return '<tr><td>' + esc(f.name) + '</td>' +
              '<td class="num">' + bytes(f.size) + '</td>' +
              '<td class="num">' + new Date(f.modified).toLocaleString() + '</td>' +
              '<td style="text-align:right">' +
-             '<a href="' + url('/recordings/' + f.name) + '" download>⬇</a> ' +
-             '<button data-del="' + f.name + '" style="padding:2px 8px;font-size:11px">✕</button>' +
+             '<a href="' + url('/recordings/' + encodeURIComponent(f.name)) + '" download>⬇</a> ' +
+             '<button data-del="' + esc(f.name) + '" style="padding:2px 8px;font-size:11px">✕</button>' +
              '</td></tr>';
     }).join('');
   }).catch(function(){});
@@ -846,8 +853,8 @@ function renderClips(){
     // fetches the first chunks, which is what makes the thumbnail and the
     // seek in openClip() work.
     t.innerHTML =
-      '<video preload="auto" muted playsinline src="/clips/' + encodeURIComponent(c.name) + '"></video>' +
-      '<div class="meta"><span class="name">' + c.name.replace(/^klip_/, '') + '</span>' +
+      '<video preload="auto" muted playsinline src="' + url('/clips/' + encodeURIComponent(c.name)) + '"></video>' +
+      '<div class="meta"><span class="name">' + esc(c.name.replace(/^klip_/, '')) + '</span>' +
       '<span>' + bytes(c.size) + '</span></div>';
     t.onclick = function(e){
       if(e.target.type === 'checkbox') return;
@@ -938,8 +945,8 @@ function refreshClipState(){
 function openClip(name){
   var v = $('clipVideo');
   $('clipName').textContent = name;
-  v.src = '/clips/' + encodeURIComponent(name);
-  $('clipDownload').href = '/clips/' + encodeURIComponent(name) + '/download';
+  v.src = url('/clips/' + encodeURIComponent(name));
+  $('clipDownload').href = url('/clips/' + encodeURIComponent(name) + '/download');
   $('clipVideo').dataset.name = name;
   $('clipModal').style.display = 'flex';
   // Autoplay with sound is blocked until the user interacts, and a click is

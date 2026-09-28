@@ -71,17 +71,20 @@ class StreamServer(
         val method = session.method
 
         return try {
-            // CORS preflight for browser clients
-            if (method == Method.OPTIONS) return withCors(okText(""))
+            // CORS preflight for browser clients. A foreign origin gets a
+            // bare answer with no allow header, so the browser refuses to
+            // send the real request.
+            val origin = requestOrigin(session)
+            if (method == Method.OPTIONS) return withCors(okText(""), origin)
 
-            auth.check(session, uri)?.let { return withCors(it) }
+            auth.check(session, uri)?.let { return withCors(it, origin) }
 
             val response = route(session, uri, method)
-            withCors(response)
+            withCors(response, origin)
         } catch (e: Exception) {
             withCors(newFixedLengthResponse(
                 Status.INTERNAL_ERROR, "text/plain", "error: ${e.message}"
-            ))
+            ), requestOrigin(session))
         }
     }
 
@@ -1233,11 +1236,26 @@ class StreamServer(
 
     // ═══ Helpers ═══════════════════════════════════════════════
 
-    private fun withCors(resp: Response): Response = resp.apply {
-        addHeader("Access-Control-Allow-Origin", "*")
-        addHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        addHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Auth-Token")
+    private fun withCors(resp: Response): Response = withCors(resp, null)
+
+    /**
+     * CORS headers come from [CorsPolicy], not a hardcoded `*`.
+     *
+     * The wildcard let any page in any browser preflight a DELETE and remove
+     * a recording, and read the live JPEG into a canvas. That sequence was
+     * executed against the device to confirm it, not inferred. See
+     * docs/SECURITY_CAMERA.md.
+     */
+    private fun withCors(resp: Response, origin: String?): Response = resp.apply {
+        // Any Origin at all means cross-origin, so no allow header is sent and
+        // the browser refuses the read. See CorsPolicy for why same-origin and
+        // non-browser clients both work without one.
+        if (!CorsPolicy.needsCorsHeader(origin)) return@apply
+        addHeader("Access-Control-Allow-Methods", CorsPolicy.ALLOWED_METHODS)
+        addHeader("Access-Control-Allow-Headers", CorsPolicy.ALLOWED_HEADERS)
     }
+
+    private fun requestOrigin(session: IHTTPSession): String? = session.headers["origin"]?.takeIf { it.isNotBlank() }
 
     private fun describe(): String = buildString {
         appendLine("OcuBea ${versionName()} — IP Webcam compatible IP camera")

@@ -674,3 +674,102 @@ Test: nagraj 3 minuty z ruchem, potem godzinę bez. Sprawdź na urządzeniu:
 - klip z ruchem zawiera ruch, klip bez ruchu nie powstał
 - `status.json` pokazuje `dropped` nie większe niż bez zapisu
 - po `force-stop` i restarcie nie zostają śmieci
+
+## CORS: zmierzone usunięcie nagrań przez obcą stronę (2026-09-28)
+
+Serwer odpowiadał `Access-Control-Allow-Origin: *` i wysyłał w
+`Access-Control-Allow-Methods` listę `GET, POST, DELETE, OPTIONS`. W połączeniu
+z domyślnie pustym tokenem (otwarta kamera) daje to realny atak, wykonany
+dosłownie na telefonie:
+
+```
+OPTIONS /clips/klip_2026-01-01_00-00-00.mp4  Origin: http://evil.example
+  Access-Control-Request-Method: DELETE
+  -> HTTP/1.1 200 OK
+  + Access-Control-Allow-Origin: *
+  + Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS
+
+DELETE /clips/klip_2026-01-01_00-00-00.mp4   Origin: http://evil.example
+  -> HTTP/1.1 200 OK
+nagrań: 11 -> 10
+```
+
+Preflight **przechodzi**, bo serwer sam reklamuje DELETE. Każda strona w
+dowolnej przeglądarce mogła skasować nagranie użytkownika albo wczytać
+`/shot.jpg` do canvasu i wysłać go dalej.
+
+Poprzednia nota w tym dokumencie poprawnie zauważyła, że DELETE nie jest
+„simple request", ale błędnie wnioskowała, że jest więc bezpieczny. Nie jest —
+wystarczy, że serwer przepuści preflight. To był mój własny błąd w rozmowie,
+nie w kodzie; kod był gorszy niż moje ówczesne stwierdzenie.
+
+Naprawa to **brak CORS zamiast zawężonego wildcards** (`CorsPolicy`):
+- same-origin nigdy nie patrzy na CORS, a WebUI jest serwowany z tego samego
+  serwera i używa URL-i względnych — nagłówek nie jest mu potrzebny;
+- curl / aplikacja natywna / skrypty nie wysyłają `Origin` i CORS ich nie
+  dotyczy — działają bez zmian;
+- zatem każde żądanie **z** nagłówkiem `Origin` jest tu z definicji
+  cross-origin i nie dostaje nagłówka zezwalającego, więc przeglądarka je
+  blokuje. Także `null` (sandboxed iframe, `file://`) i literal `*`.
+
+Pierwsza wersja dopuszczała dowolny port loopback — to było złe, bo strona
+z lokalnego serwera na porcie 8099 to inna domena. Test to wyłapał, nie ja.
+
+`DELETE` zniknął z `Allow-Methods`. `deleteAllowed` w UI i w WebUI nadal
+działa: to same-origin oraz natywny klient, żaden z nich nie przechodzi przez
+CORS.
+
+Zmierzone po naprawie: obcy Origin dostaje 0 nagłówków
+`Access-Control-Allow-Origin`; preflight nie zawiera allow, więc przeglądarka
+żądania nie wyśle. `curl` nadal wykonuje DELETE, bo `curl` nie egzekwuje CORS
+— to nie jest przeglądarka i nie jest wektorem ataku. WebUI, `/clips`,
+`/shot.jpg` i odtwarzanie klipu: 200.
+
+## Brak escapowania w WebUI
+
+`index.html` nie miał żadnego helpera do escapowania. Nazwa klipu szła do
+`innerHTML` jako surowy tekst, do atrybutu `data-del="..."` i do `src="..."`
+pliku wideo. Nazwy są dziś mintowane przez serwer, ale przywrócenie backupu
+albo druga aplikacja z dostępem do pamięci potrafi wsadzić własną, a wykonuje
+ją właśnie to UI. Android dodatkowo blokuje `<` i `>` w nazwach plików, więc
+payload musiałby ominąć filesystem.
+
+Dodane `esc()` (5 znaków: `& < > " '`) i przeplecione w trzech sinkach:
+nazwa klipu w siatce, nazwa w tabeli nagrań, `data-del`. Zweryfikowane
+wyciągnięciem funkcji z dystrybuowanego `index.html` i testem w Node —
+zero surowych `<`, `>`, `"`, `'` w wyjściu, także przy wstawieniu do
+atrybutu.
+
+## Token nie dochodził do odtwarzania klipów (natywny UI)
+
+`ClipAdapter.uriFor` budowało `/clips/<nazwa>` bez tokenu, więc z włączonym
+tokenem każde odtwarzanie kończyło się 401 i lista klipów w aplikacji była
+martwa. Ten sam brak miały trzy media-URL w WebUI (`<video src>`, `v.src`,
+`href` pobierania), omijające helper `url()`. Naprawione w obu miejscach.
+
+## Dwa ciche błędy własnego kodu, potwierdzone testem
+
+**`ByteRanges.parse` — `null` jako wyrażenie.** Linia z `if (start < 0 ||
+start >= total) null` nie miała `return`, więc Kotlin ją wyrzucał i sterowanie
+wpadało do `coerceIn(start, total - 1)` z `start > total - 1`:
+`Cannot coerce value to an empty range: maximum 999 is less than minimum
+5000`. Wyjątek wychodził z `parse()` do `serveClip`, który zwracał HTTP 500
+zamiast 416. Odtworzony testem, potem potwierdzony na telefonie: `Range:
+bytes=9000-500` na klipie 2902 B.
+
+**Nagłówek WAV — przepełnienie `0xFFFFFFFF`.** `w32(total.toInt())` z
+`total = 0xFFFFFFFF + 36` dawało `0x100000023`, a `.toInt()` dawało **35**:
+nagłówek deklarował plik 35-bajtowy. Zmierzone na telefonie: bajty 4–7 wynosiły
+`ff ff ff ff` zamiast dawnych `00 00 00 23`; `ffprobe` czyta strumień jako
+`pcm_s16le` 44100 Hz mono, 3,99 s, zero błędów.
+
+Oba były opisane w testach subagenta jako `@Ignore("live defect")`. Po
+naprawach oba przechodzą, a `0 pominiętych` w raporcie testów to teraz prawda,
+nie ustawienie.
+
+## Nazwa, która kłamała
+
+`effectivePreRecordFrames` zwracało `minOf(bySeconds, secondsThatFit)` —
+czyli **sekundy** — a komentarz twierdził „returns a frame COUNT, not
+seconds". Nazwa i komentarz zapraszały do podwójnego mnożenia przez fps.
+Przemianowane na `effectivePreRecordSeconds`, komentarz opisuje prawdę.
