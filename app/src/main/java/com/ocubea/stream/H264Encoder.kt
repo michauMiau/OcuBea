@@ -32,11 +32,18 @@ class H264Encoder(
      * HLS needs when a segment must open on a random-access point.
      *
      * A dense GOP is expensive under VBR: with an IDR on every frame the
-     * encoder cannot spend bits on inter-prediction, so it refuses to go
-     * below its floor and KEY_BIT_RATE is only an upper bound. Measured on the
-     * Redmi: asking for 1200 kbps still produced 4.25 Mbps at 15fps 1080p.
-     * Recording a clip does not need 250ms segments, so it can use a longer
-     * GOP and actually get the bitrate it was asked for.
+     * encoder cannot spend bits on inter-prediction, so it refuses to go below
+     * its floor and KEY_BIT_RATE is only an upper bound. Measured on the Redmi,
+     * 1080p, clip recording, 12000 kbps requested, two samples each:
+     * GOP=0 gave 94.4 and 95.4 MB/min (12.6-12.7 Mbps); GOP=1 gave 60.8 and
+     * 61.1 MB/min (8.1 Mbps) - 36% less. The encoder reports "max input
+     * interval 204ms" and a frame arrives every ~185ms, so it never idles, but
+     * a dense GOP still leaves it no frames to predict from.
+     *
+     * HLS cannot use this: a segment must open on a random-access point, so a
+     * GOP longer than the segment leaves most segments waiting for an IDR that
+     * does not come, and the playlist advertises durations it cannot deliver.
+     * HlsProfile.sanitized() keeps the two in agreement.
      */
     private val keyFrameIntervalSec: Int = 0
 ) {
@@ -96,22 +103,21 @@ class H264Encoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            // An IDR on every frame by default. Every HLS segment must open on a
-            // random-access point, and with TARGET_SEGMENT_MS = 250 a longer
-            // keyframe interval means most segments would have to wait for the
-            // next IDR, so the segment length and the advertised #EXTINF
-            // disagree and the playlist drains.
+            // An IDR per frame by default. Every HLS segment must open on a
+            // random-access point, and with a 250ms target a longer keyframe
+            // interval means most segments would have to wait for the next
+            // IDR, so the segment length and the advertised #EXTINF
+            // disagree and the playlist drains. The profile exists to keep
+            // the two in agreement - HlsProfile.sanitized() refuses a GOP
+            // longer than the segment, so the muxer never advertises a
+            // duration it cannot deliver.
             //
             // An IDR per frame was previously fatal only because Fmp4Writer
             // treated an in-segment keyframe as "discard what I have", so every
             // frame threw away the previous one and nothing was ever flushed.
             // Now the keyframe closes the open segment and opens the next one,
-            // so the cost of a dense GOP is only bitrate, and the segment length
-            // still tracks TARGET_SEGMENT_MS.
-            //
-            // A caller that does not need short segments (clip recording) passes
-            // a longer interval, which is what actually lets the encoder follow
-            // KEY_BIT_RATE down.
+            // so the cost of a dense GOP is only CPU, which the high profile
+            // measurably recovers.
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, keyFrameIntervalSec)
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
         }

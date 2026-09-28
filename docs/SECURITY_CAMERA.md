@@ -334,14 +334,46 @@ wyglądało jak ignorowanie ustawienia. Skrypt wysyłał POST i natychmiast
 zapisu. Po 4 s przerwy i potwierdzeniu zapisu przed restartem ustawienie
 dochodzi. **Ta sama pułapka co wcześniej, w innym miejscu.**
 
-### Fałszywy trop: „gęsty GOP blokuje VBR"
+### Fałszywy wniosek: „gęsty GOP nie ma znaczenia dla bitrate"
 
-Próba dłuższego GOP dla klipów (`keyFrameIntervalSec = 1` zamiast IDR na
-każdej klatce) **nie przyniosła poprawy**: 4,85 Mbps przy 2000 kbps, czyli
-tyle samo. Hipoteza była zła, zmiana wycofana, a parametr zostawiony
-w `H264Encoder` jako jawny i domyślnie 0. Prawdziwym powodem ściśnięcia
-dolnego końca jest po prostu to, że VBR mocno kompresuje przy niskich
-celach — nie architektura GOP.
+Pierwszy pomiar powiedział, że dłuższy GOP dla klipów
+(`keyFrameIntervalSec = 1`) nic nie zmienia: 4,85 Mbps przy 2000 kbps. Wniosek
+zapisano w dokumentacji jako obaloną hipotezę i zmianę wycofano.
+
+**Wniosek był błędny, a nie hipoteza.** Powtórzony pomiar A/B na tym samym
+telefonie, z tym samym skryptem i z dwiema próbami na stronę, przy 12000 kbps
+i 1080p:
+
+| GOP | próba 1 | próba 2 | średnio |
+|---|---|---|---|
+| 0 (IDR na każdej klatce) | 94,4 MB/min | 95,4 MB/min | **94,9 MB/min** (12,6 Mbps) |
+| 1 s | 60,8 MB/min | 61,1 MB/min | **61,0 MB/min** (8,1 Mbps) |
+
+**36% mniej na minutę**, powtarzalnie. Hipoteza o gęstym GOP była od początku
+słuszna — a pierwszy test ją obalił, bo nie był A/B-em: porównywał ustawienie
+bitrate z niewiadomym GOP, przez co nie odróżniał dwóch zmiennych naraz.
+
+Przyczyna, dla której pierwszy pomiar wyszedł taki słaby: ustawiono
+`keyFrameIntervalSec = 1` przez zmienną, ale **żaden caller jej nie przekazywał**.
+`CameraManager` tworzył enkoder klipu czterema argumentami, więc parametr
+dostawał default `0` — czyli dokładnie to, czego test miał zmienić. Test
+zmierzył własny brak zmiany i ogłosił, że zmiana nie działa.
+
+Ta sama klasa błędu co `segmentMs` w `HlsSession`: wartość istnieje, ma sensowną
+dokumentację i żaden caller jej nie przekazuje, więc default wygrywa po cichu.
+Komentarz w `H264Encoder` twierdził, że „klip przekazuje dłuższy interwał" —
+nie robił tego nikt.
+
+Klasa ma teraz test: `HlsProfile.CLIP_KEY_FRAME_INTERVAL_SEC` jest jawną
+stałą, a `H264EncoderTest` sprawdza, że każdy caller faktycznie ją przekazuje.
+
+### Dlaczego HLS nie może użyć tej samej wartości
+
+Segment HLS musi zaczynać się na punkcie dostępu, a GOP dłuższy niż segment
+zostawia większość segmentów czekających na IDR, które nie nadchodzi — playlista
+obiecuje wtedy długości, których nie dostarcza. Dlatego GOP i długość segmentu
+towarzyszą sobie w `HlsProfile`, a `sanitized()` odmawia GOP dłuższego niż
+segment, zamiast pozwalać na kombinację, która się rozjedzie.
 
 ### MJPEG kopiował każdą klatkę bajt po bajcie
 
@@ -453,11 +485,17 @@ Bitrate — ten sam, w granicach szumu. CPU — **13–18% mniej przy `high`**, 
 powtarza się w obu powtórzeniach i w obie kolejności. Korzyść jest realna, ale
 nie ta, o której pisałem w komentarzu: to mniej pracy, nie mniej przepływu.
 
-Dlaczego GOP nie obniża bitrate: `c2.mtk.avc.encoder` zgłasza
-`max input interval 204ms` i przy ~5 fps dostaje klatkę co ~185 ms, czyli
-bliżej niż własny interwał. Enkoder i tak nie może czekać, więc
-`KEY_I_FRAME_INTERVAL = 1` ma w tym urządzeniu niewiele do zrobienia.
-To ta sama pułapka co przy klipach, gdzie 1-sekundowy GOP też nic nie zmienił.
+Czemu HLS wygląda inaczej niż klipy: segment HLS musi zaczynać się na punkcie
+dostępu, więc GOP jest ograniczony przez długość segmentu — przy 2 s segmentach
+nie da się poprosić o GOP dłuższy niż 2 s, bo pozostałe segmenty nigdy nie
+dostaną IDR. Klip nie ma tej przymuszanki: zapisuje się w jednym przebiegu,
+bez playlisty, więc 1-sekundowy GOP jest dozwolony i — zmierzone na 12000 kbps —
+daje **61,0 MB/min zamiast 94,9**, czyli 36% mniej.
+
+`c2.mtk.avc.encoder` zgłasza `max input interval 204ms` i przy ~5 fps dostaje
+klatkę co ~185 ms, więc enkoder nie ma na czym oszczędzać jeśli chodzi o
+rzadsze wejścia — ale gęsty GOP wciąż zabiera mu klatki do predykcji
+międzykluczowej, i to widać w rozmiarze pliku.
 
 Do udokumentowania, nie do naprawy: `high` to **zamiana opóźnienia na CPU**, nie
 na bitrate. Jeśli telefon się grzeje, `high` jest właściwym wyborem; jeśli
