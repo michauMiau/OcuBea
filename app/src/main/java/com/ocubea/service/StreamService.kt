@@ -191,8 +191,11 @@ class StreamService : LifecycleService() {
 
         cameraManager.onFrameCaptured = { jpeg, _ -> onCameraFrame(jpeg) }
         cameraManager.onFrameHeartbeat = { lastFrameAt = System.currentTimeMillis() }
-        cameraManager.start { msg -> reportError(msg) }
+        // Marked running BEFORE start(). start() is asynchronous -- the provider
+        // future resolves later -- so a start arriving in that window used to
+        // pass startCamera()'s compare-and-set and open the camera twice.
         cameraRunning.set(true)
+        cameraManager.start { msg -> reportError(msg) }
 
         try {
             streamServer?.start()
@@ -330,7 +333,8 @@ class StreamService : LifecycleService() {
                 if (!started.get()) return@execute
                 val now = System.currentTimeMillis()
                 // No frames for 30s while we think we are streaming → rebind camera
-                if (cameraManager.isStreaming && lastFrameAt > 0 && now - lastFrameAt > 30_000) {
+                if (cameraManager.isStreaming && !cameraManager.isRetryPending &&
+                    lastFrameAt > 0 && now - lastFrameAt > 30_000) {
                     reportError("No frames for 30s — restarting camera")
                     restartCamera()
                     lastFrameAt = now
@@ -341,6 +345,11 @@ class StreamService : LifecycleService() {
 
     /** Rebind the camera without tearing down the HTTP server. */
     private fun restartCamera() {
+        // The watchdog must not resurrect a camera the user deliberately
+        // stopped: cameraRunning is false exactly when the camera is meant off,
+        // and this method bypassed the flag entirely, so a Stop followed by a
+        // 30 s gap would silently turn the camera back on.
+        if (!cameraRunning.get()) return
         try {
             cameraManager.stop()
             cameraManager.start { msg -> reportError(msg) }
