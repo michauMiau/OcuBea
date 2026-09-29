@@ -1,6 +1,7 @@
 package com.ocubea.stream
 
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -37,6 +38,12 @@ class FrameHub {
         private set
 
     private val viewers = ConcurrentLinkedQueue<Viewer>()
+
+    /**
+     * Live viewer count, kept separately because [ConcurrentLinkedQueue.size]
+     * walks the whole queue. Also the cap's authority - see [addViewer].
+     */
+    private val viewerCount = AtomicInteger(0)
 
     /**
      * A registered consumer. [pending] is a one-slot mailbox: the producer
@@ -86,16 +93,56 @@ class FrameHub {
         for (v in viewers) v.pending.set(null)
     }
 
-    /** Register a new MJPEG viewer. */
-    fun addViewer(): Viewer = Viewer(viewerCounter.getAndIncrement()).also { viewers.add(it) }
+    companion object {
+        /**
+         * Concurrent MJPEG viewers before new ones are refused.
+         *
+         * Measured on the device: at 8 open `/video` connections the handler
+         * pool is full, NanoHTTPD closes every new socket, and `/status.json`
+         * and `/shot.jpg` stop answering in ~5ms while the streams themselves
+         * keep running. Six viewers left the same requests at 24ms. Refusing
+         * the seventh keeps the control surface alive, which is the part that
+         * matters: a person who cannot load the page cannot turn the camera
+         * off.
+         */
+        const val MAX_VIEWERS = 6
+    }
+
+    /**
+     * Register a new MJPEG viewer, or return null when the hub is full.
+     *
+     * The limit exists because of a measured failure, not a guess. Every
+     * `/video` connection occupies one of the server's handler threads for the
+     * whole life of the stream - hours. With the thread pool full, NanoHTTPD
+     * closes the *new* socket, and that includes `/status.json` and
+     * `/shot.jpg`: at 8 concurrent viewers on the device the entire control
+     * surface stopped answering in 5ms while video kept streaming, with
+     * nothing in logcat. At 6 viewers the same requests answered in 24ms.
+     *
+     * Refusing here is the cheap half of the fix: the request is rejected
+     * inside its own handler, so a surplus viewer never takes a thread at all.
+     * `BoundedAsyncRunner` is the outer bound for everything else.
+     */
+    fun addViewer(): Viewer? {
+        // Compare-and-set, not size(): ConcurrentLinkedQueue.size() is O(n) and
+        // racy against a concurrent remove, which would let the cap be exceeded.
+        while (true) {
+            val n = viewerCount.get()
+            if (n >= MAX_VIEWERS) return null
+            if (viewerCount.compareAndSet(n, n + 1)) break
+        }
+        val v = Viewer(viewerCounter.getAndIncrement())
+        viewers.add(v)
+        return v
+    }
 
     fun removeViewer(v: Viewer) {
         v.active = false
         v.pending.set(null)
-        viewers.remove(v)
+        if (viewers.remove(v)) viewerCount.decrementAndGet()
     }
 
-    fun viewerCount(): Int = viewers.size
+    fun viewerCount(): Int = viewerCount.get()
 
     /**
      * Waits up to [timeoutMs] for this viewer's next frame.

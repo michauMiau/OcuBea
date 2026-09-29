@@ -80,7 +80,14 @@ class LivePreviewView @JvmOverloads constructor(
             running.set(false)
             return
         }
-        val v = hub.addViewer()
+        val v = hub.addViewer() ?: run {
+            // The hub is at its cap because remote viewers are streaming. The
+            // on-screen preview is the last thing to give up, and dropping it
+            // would mean the user cannot see whether the camera is even
+            // running, so the loop simply ends instead of failing the view.
+            stop()
+            return
+        }
         viewer = v
         try {
             while (running.get() && v.active) {

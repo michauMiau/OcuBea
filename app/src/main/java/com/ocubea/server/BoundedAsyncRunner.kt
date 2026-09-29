@@ -117,7 +117,7 @@ class BoundedAsyncRunner(
          *
          * The short queue is the point: fail fast beats wait.
          */
-        const val DEFAULT_MAX_THREADS = 8
+        const val DEFAULT_MAX_THREADS = 12
         const val DEFAULT_MAX_QUEUED = 1
     }
 }
