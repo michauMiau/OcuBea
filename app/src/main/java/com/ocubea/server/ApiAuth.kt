@@ -35,6 +35,13 @@ class ApiAuth(private val tokenProvider: () -> String) {
 
     private val failures = ConcurrentHashMap<String, Attempts>()
 
+    /**
+     * The loopback backstop. Not a map, because there is only ever one proxy
+     * key - the loopback address - and a single field cannot be swapped out
+     * from under a concurrent caller the way a map entry can.
+     */
+    @Volatile private var proxyFailures: Attempts? = null
+
     private fun attemptsFor(ip: String, now: Long): Attempts {
         val existing = failures[ip]
         if (existing != null) return existing
@@ -63,13 +70,33 @@ class ApiAuth(private val tokenProvider: () -> String) {
         }
 
         val clientIp = clientIp(session)
-        if (isRateLimited(clientIp)) {
+
+        // Order matters, and it used to be wrong: the limiter ran *before* the
+        // token was checked, so ten wrong guesses from any other host on the
+        // LAN locked the owner out for up to 60s - including the moment they
+        // were logging in. Measured on the device: after ten 401s, a request
+        // carrying the correct token got 503.
+        //
+        // A rate limit is there to slow guessing at the token. Refusing a
+        // request that already presented the right token does not slow that
+        // down at all - it just denies service, which is the only thing an
+        // unauthenticated attacker can actually do to a camera. So the match
+        // is checked first, and the limit only gates a request that already
+        // failed it.
+        if (matches(session, token)) {
+            // A correct token from an address with a failure history is
+            // evidence the guesser gave up, not that the owner is an attacker.
+            // clearFailures() used to exist with no caller, which is why a
+            // single burst could not be recovered from by anyone.
+            clearFailures(clientIp)
+            return null
+        }
+
+        if (isRateLimited(clientIp) || isProxyWideLimited(System.currentTimeMillis())) {
             return NanoHTTPD.newFixedLengthResponse(
                 Status.SERVICE_UNAVAILABLE, "text/plain", "Too many failed attempts — try again in a minute"
             )
         }
-
-        if (matches(session, token)) return null
 
         recordFailure(clientIp)
         return NanoHTTPD.newFixedLengthResponse(Status.UNAUTHORIZED, "text/plain", "Unauthorized")
@@ -93,15 +120,22 @@ class ApiAuth(private val tokenProvider: () -> String) {
      * rate-limit bucket every time, which made the limiter inert even once the
      * arithmetic was fixed. NanoHTTPD fills `remoteIp` from the accepted socket.
      *
-     * `X-Forwarded-For` is still read as a fallback for the case of a real
-     * reverse proxy, but only when the socket address is loopback — i.e. when
-     * the connection genuinely came from something local.
+     * `X-Forwarded-For` is honoured only when the socket address is loopback,
+     * and it counts under a key that also names the proxy. Measured before the
+     * fix: 40 guesses from 127.0.0.1, each with a fresh header, never engaged
+     * the limit - a local proxy turned the limiter off entirely.
+     *
+     * So the bucket is `<loopback>|<header>` rather than the header alone. The
+     * header still separates tenants behind a real proxy (one guest device
+     * cannot lock out another), but a spoofed header can no longer mint an
+     * unbounded number of buckets, because every spoof shares the proxy part
+     * of the key and the limit that matters is enforced there too.
      */
     fun clientIp(session: NanoHTTPD.IHTTPSession): String {
         val socketIp = session.remoteIpAddress?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
         if (socketIp != null && !isLoopback(socketIp)) return socketIp
         val forwarded = session.headers["x-forwarded-for"]?.split(',')?.firstOrNull()?.trim()
-        return forwarded?.takeIf { it.isNotEmpty() } ?: socketIp ?: "unknown"
+        return if (!forwarded.isNullOrEmpty()) "loopback|$forwarded" else socketIp ?: "unknown"
     }
 
     private fun isLoopback(ip: String): Boolean =
@@ -119,6 +153,24 @@ class ApiAuth(private val tokenProvider: () -> String) {
             }
             rec.count++
         }
+        // Only for the loopback path, where the per-tenant key is a header the
+        // client chose. A LAN client is already keyed on an address it cannot
+        // forge, so a second counter there would only punish a shared NAT.
+        if (ip.startsWith("loopback|")) recordProxyFailure(now)
+    }
+
+    private fun recordProxyFailure(now: Long) {
+        val rec = proxyFailures ?: Attempts().also {
+            it.windowStartMs = now
+            proxyFailures = it
+        }
+        synchronized(rec) {
+            if (now - rec.windowStartMs > 60_000L) {
+                rec.count = 0
+                rec.windowStartMs = now
+            }
+            rec.count++
+        }
     }
 
     private fun isRateLimited(ip: String): Boolean {
@@ -128,10 +180,42 @@ class ApiAuth(private val tokenProvider: () -> String) {
             failures.remove(ip)
             return false
         }
-        return rec.count >= 10
+        return rec.count >= FAILURE_LIMIT
     }
 
-    fun clearFailures() = failures.clear()
+    /**
+     * The proxy-wide failure count, counting every tenant behind it.
+     *
+     * This is what makes the loopback key meaningful. The per-tenant bucket
+     * alone is spoofable — the header decides which bucket you get — so without
+     * a second, header-independent count a client just sends a fresh
+     * `X-Forwarded-For` and starts from zero forever. Keyed on the loopback
+     * address itself, which an attacker cannot influence.
+     *
+     * The limit here is looser (5× the per-tenant one) on purpose: with several
+     * people behind one NAT, the shared bucket is a backstop, not the everyday
+     * limiter. A correct token still clears nothing — see check(), which runs
+     * the match first and never rate limits it.
+     */
+    private fun isProxyWideLimited(now: Long): Boolean {
+        val rec = proxyFailures ?: return false
+        if (now - rec.windowStartMs > 60_000L) {
+            proxyFailures = null
+            return false
+        }
+        return rec.count >= PROXY_LIMIT
+    }
+
+    /**
+     * Clears the failure history for one address.
+     *
+     * Per-IP rather than clear-all: a guest device that burned the limit
+     * should not be able to reset the owner's counter, and a successful login
+     * should only ever forgive the address that logged in.
+     */
+    fun clearFailures(ip: String) {
+        failures.remove(ip)
+    }
 
     /** Comparison that does not leak length/content through timing. */
     private fun constantTimeEquals(a: String, b: String): Boolean {
@@ -144,6 +228,25 @@ class ApiAuth(private val tokenProvider: () -> String) {
         MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
 
     companion object {
+        /**
+         * Wrong guesses per 60s per address before the address is refused.
+         *
+         * 10 at 60s is still 14,400 guesses a day against one address, which is
+         * a lot for a token a human chose - see the length question in
+         * docs/SECURITY_CAMERA.md. It is the compromise between an NVR that
+         * retries and a brute-forcer with time.
+         */
+        const val FAILURE_LIMIT = 10
+
+        /**
+         * Wrong guesses per 60s from everything behind the loopback proxy
+         * combined. 5x the per-address limit: the per-tenant key there is a
+         * header, so this is the count that cannot be side-stepped. Looser than
+         * the per-tenant one because a house behind a NAT legitimately shares
+         * the address.
+         */
+        const val PROXY_LIMIT = 50
+
         /** Short, human-typeable code derived from the token. */
         fun hintFor(token: String): String = if (token.isEmpty()) "none" else token.take(4) + "…"
     }

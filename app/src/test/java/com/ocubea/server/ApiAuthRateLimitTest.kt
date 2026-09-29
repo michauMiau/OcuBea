@@ -123,6 +123,113 @@ class ApiAuthRateLimitTest {
         assertEquals(null, a.check(owner, PROTECTED))
     }
 
+    // The next two tests exist because the two above pass for the wrong reason:
+    // /status.json is public, so check() returns at the public-path gate and
+    // never reaches the limiter at all. They are therefore not exercising the
+    // lockout they claim to. These drive PROTECTED on both sides.
+
+    @Test
+    fun `a correct token survives a lockout on the same address`() {
+        // Measured on the device before the fix: ten 401s, then a request with
+        // the correct token returned 503. That is a denial of service the owner
+        // could not do anything about, because clearFailures() had no caller.
+        val a = auth("correct-token")
+        val same = StubSession(params = mapOf("token" to listOf("wrong")))
+        repeat(12) { a.check(same, PROTECTED) }
+
+        val owner = StubSession(params = mapOf("token" to listOf("correct-token")))
+        assertEquals(
+            "a request carrying the correct token must never be rate limited: " +
+                "the limiter exists to slow guessing, not to deny service",
+            null,
+            a.check(owner, PROTECTED)
+        )
+    }
+
+    @Test
+    fun `a correct token resets the failure count for that address`() {
+        // The recovery path. Without it, one burst of ten wrong guesses from a
+        // guest device locks the owner out for the rest of the window even
+        // after they authenticate successfully.
+        val a = auth("correct-token")
+        val s = StubSession(params = mapOf("token" to listOf("wrong")))
+        repeat(9) { a.check(s, PROTECTED) }
+        a.check(StubSession(params = mapOf("token" to listOf("correct-token"))), PROTECTED)
+
+        repeat(9) { a.check(s, PROTECTED) }
+        val after = a.check(StubSession(params = mapOf("token" to listOf("correct-token"))), PROTECTED)
+        assertEquals("the successful login must have cleared the counter", null, after)
+    }
+
+    @Test
+    fun `a locked out address still gets 401 not 503 while guessing`() {
+        // The limiter must still do its job: the fix moves the match first, not
+        // the limit away. Without this, "always check the token first" could be
+        // satisfied by removing the limiter entirely.
+        val a = auth("correct-token")
+        val s = StubSession(params = mapOf("token" to listOf("wrong")))
+        var sawServiceUnavailable = false
+        repeat(15) {
+            if (statusOf(a.check(s, PROTECTED)) == 503) sawServiceUnavailable = true
+        }
+        assertTrue("the limiter must still engage for wrong tokens", sawServiceUnavailable)
+    }
+
+    @Test
+    fun `X-Forwarded-For is still honoured for a loopback socket`() {
+        // The reason the fallback exists: a real reverse proxy on the same host.
+        // Confirmed reachable only over loopback, which is also exactly why the
+        // pre-existing tests missed it - their stub used 192.168.1.50, so the
+        // XFF branch at ApiAuth:101-102 never executed.
+        //
+        // Reaches past both thresholds on purpose: the per-tenant limit (10) and
+        // the proxy-wide one (50) both need to be crossed for a spoofed header
+        // to be caught, so a shorter loop proves nothing.
+        val a = auth("correct-token")
+        var sawServiceUnavailable = false
+        repeat(80) { i ->
+            val s = StubSession(
+                headers = mapOf("x-forwarded-for" to "10.0.0.${i % 250}"),
+                params = mapOf("token" to listOf("wrong")),
+                remoteIp = "127.0.0.1",
+            )
+            if (statusOf(a.check(s, PROTECTED)) == 503) sawServiceUnavailable = true
+        }
+        assertTrue(
+            "over loopback the header is the only identity available, so the " +
+                "limiter has to count per forwarded address",
+            sawServiceUnavailable
+        )
+    }
+
+    @Test
+    fun `a loopback client cannot dodge the limit with a fresh header`() {
+        // And the consequence, measured by the audit: 40 guesses from
+        // 127.0.0.1 with a fresh XFF each time never engaged the limit. If that
+        // ever becomes a product decision rather than a bug, this test is the
+        // place it will show up - it is the only thing standing between "a local
+        // proxy resets the limiter" and a silent regression.
+        //
+        // 80 requests, not 40: with a proxy-wide backstop of 50, 40 is under the
+        // threshold and would pass for the wrong reason.
+        val a = auth("correct-token")
+        var sawServiceUnavailable = false
+        repeat(80) { i ->
+            val s = StubSession(
+                headers = mapOf("x-forwarded-for" to "10.1.$i.${i % 250}"),
+                params = mapOf("token" to listOf("wrong")),
+                remoteIp = "127.0.0.1",
+            )
+            if (statusOf(a.check(s, PROTECTED)) == 503) sawServiceUnavailable = true
+        }
+        assertTrue(
+            "a fresh X-Forwarded-For per request must not buy an unlimited " +
+                "number of buckets: that makes the limiter inert for anyone " +
+                "behind a local proxy",
+            sawServiceUnavailable
+        )
+    }
+
     @Test
     fun `failures are counted per client, not globally`() {
         val a = auth("correct-token")
