@@ -975,3 +975,99 @@ skutek tych zmian.
 nie jest ustawiane. Do zdiagnozowania potrzebny jest log z `TAG` enkodera
 (dodam go do audytu przy najbliższej okazji). MJPEG `/video` działa
 normalnie, 15 FPS — użytkownik nie traci obrazu, tylko ścieżkę HLS.
+
+## Limit prób blokował właściciela, nie zgadywankę (2026-09-29)
+
+Audyt autoryzacji znalazł, że `isRateLimited()` w `ApiAuth.check()` stał
+**przed** `matches()`. Zmierzone na telefonie z włączonym tokenem:
+
+```
+10 × /shot.jpg?token=zly_1 … zly_10  ->  401 ×9, potem 503
+/shot.jpg?token=<poprawny>            ->  503      <<< właściciel odcięty
+po +15s / +35s                        ->  503, potem 401 (okno 60s)
+```
+
+Dziesięć zgadywań z dowolnego urządzenia w LAN-ie wystarczyło, żeby odciąć
+właściciela na do 60 sekund — w tym w chwili logowania. `clearFailures()`
+istniało **bez ani jednego wywołującego**, więc nikt nie mógł z tego wyjść
+szybciej. To najtańszy atak DoS na kamerę: nie trzeba znać tokena, wystarczy
+10 zgadywań.
+
+### Naprawione
+
+Token sprawdzany **pierwszy**, limit tylko dla żądania, które już go nie
+miało. Limit ma spowalniać zgadywanie; odrzucanie poprawnego tokena nie
+spowalnia niczego — tylko odmawia usługi, czyli jedyne co potrafi zrobić
+niezalogowany atakujący. `clearFailures(ip)` czyści licznik **tylko** tego
+adresu, który się zalogował: gość, który wykorzystał limit, nie może zresetować
+licznika właściciela.
+
+Zmierzone po naprawie na telefonie: 10 × 401, a właściciel z poprawnym
+tokenem **200**. Limit nadal działa — kolejne 15 prób daje 401 ×10, potem 503.
+
+### Loopback podnosił limit do zera
+
+`X-Forwarded-For` był czytany, gdy adres gniazda był loopback — i **sam nagłówek
+decydował, do którego koszyka trafić**. Zmierzone przez audyt: 40 zgadywań z
+127.0.0.1, świeży nagłówek za każdym razem, limit **nigdy nie zadziałał**. Każdy
+za lokalnym proxy, `adb reverse` albo tunelem zgadywał bez ograniczeń.
+
+Koszyk ma teraz klucz `<loopback>|<nagłówek>`, więc nadal rozdziela
+dzierżawców za prawdziwym proxy, ale sfabrykowany nagłówek nie wyprodukuje już
+nieograniczonej liczby koszyków. Do tego **zabezpieczenie proxy**: jeden licznik
+na cały loopback, kluczowany adresem, którego klient nie kontroluje
+(`PROXY_LIMIT = 50`, 5× limitu per-adres — dom za NAT dzieli adres uczciwie).
+Bez tego druga obietnica w komentarzu byłaby kłamstwem: klucz wybiera klient.
+
+## Testy, które były zielone z powodu błędu w teście
+
+Dwa istniejące testy — `a correct token is still accepted while another client
+is locked out` i `failures are counted per client, not globally` — **przechodziły
+przed tą naprawą**, choć F1 był realny. Używały `/status.json`, który jest
+publiczny, więc `check()` wracał na bramce publicznej i **nigdy nie dochodził do
+limitera**. Testy głosiły, że sprawdzają blokadę, a nie robiły tego.
+
+Nowe testy prowadzą obie strony przez `PROTECTED`. Sprawdzone mutacyjnie:
+przywrócenie starej kolejności wywala dokładnie dwa testy F1, usunięcie
+zabezpieczenia proxy wywala dokładnie dwa testy loopback. Zero fałszywego
+zielonego światła.
+
+## `/status.json` jest publiczny — świadomie, ale z rekonesansem
+
+Zmierzone: bez tokena, przy `auth_required: true`, `/status.json` oddaje
+rozdzielczość, fps, stan kamery i nagrywania, **liczbę nagrań, nazwę ostatniego
+nagrania**, baterię, wersję i uptime. Zero mediów — obraz, mikrofon, nagrania i
+lokalizacja są chronione (potwierdzone kodem i pomiarem: `/video` i `/shot.jpg`
+dają 401 bez tokena).
+
+Pozostawione bez zmian: strona logowania musi wiedzieć, czy token jest
+włączony, a `/info` jest chroniony, więc to nie jest pominięcie ścieżki tylko
+celna publiczność innego aliasu. Ale zakres jest szerszy niż potrzebne —
+`/status.json` publicznie potwierdza też, że coś **jest** chronione, i podaje
+nazwę pliku ostatniego nagrania.
+
+Do decyzji, nie do naprawy po cichu: publiczny endpoint powinien oddawać
+wyłącznie `auth_required` dla strony logowania, a resztę przenieść pod token.
+Wymagałoby to dwóch wariantów odpowiedzi albo osobnego `/login-status`.
+
+## Pozostałe findingi audytu — ocenione
+
+| # | Treść | Ocena |
+|---|---|---|
+| F3 | Token w URL, propagowany przez UI i WebUI | **Potwierdzone, realne.** NanoHTTPD 2.3.1 **nie ma** mechanizmu logu żądań (brak `RequestLog` w jarze), więc nie wycieka do logu serwera. Kanały: historia przeglądarki, ekran (UI pokazuje 4 adresy z tokenem), `Referer`, shell history. Transport nagłówkowy działa równolegle. Zostawione — zmiana interfejsu to decyzja produktowa. |
+| F10 | ONVIF WS-Discovery na UDP 3702 bez autoryzacji | **Potwierdzone.** Kanał całkowicie poza `ApiAuth`: każdy host w LAN-ie dostaje `ProbeMatches` z nazwą, UUID, adresem i portem. Rekonesans bez mediów. ONVIF z definicji tak działa — NVR musi znaleźć kamerę. Naprawa = wyłączenie funkcji. |
+| F4 | Rotacja tokenu nie ubija otwartych strumieni | **Latent.** Zgadza się z naturą protokołu: NanoHTTPD sprawdza tylko na starcie połączenia, MJPEG trzyma wątek godzinami. Przy kamerze bezpieczeństwa warto świadomie zdecydować. |
+| F6 | Wspólny NAT = wspólny koszyk | **Latent**, następność F1. Zmniejszone, bo poprawny token nie jest już blokowany. |
+| F8 | Brak wymuszenia długości tokena; `hintFor()` martwe | **Decyzja produktowa.** Token `a` jest dopuszczalny; przy 10 próbach/min to 14 400 zgadywań/dobę na adres. |
+| F9 | WebUI czyta `ocubea_token`, zapisuje tylko `ocubea_lang` | **Decyzja produktowa** (UX). `/login` jest publiczne i serwuje pełny WebUI, więc dostajesz UI, które wszystko wyciąga 401, bez pola logowania. |
+| F11 | `GetStreamUri` zwraca URL bez tokena | **Decyzja produktowa** — i jednocześnie **dowód**, że `/video` nie przepuszcza bez tokena. |
+| F12 | `OPTIONS` przed autoryzacją | **Latent.** Pusty 200, zero danych, odcisk usługi na porcie. |
+| F13 | Nieparytetyzowane `&&`/`||` w bramce publicznej | **Latent.** Poprawne przez precedencję Kotlina, ale cała bramka na niej stoi. |
+| F15 | Testy nie pokrywały gałęzi loopback | **Naprawione** w tej samej zmianie. |
+
+**Nie znalazłem** żadnego obejścia autoryzacji: `auth.check` jest wołane
+bezwarunkowo, `route()` następuje tylko po nim, jedyne wywołanie `route` w repo
+to `StreamServer.kt:83`. Brak drugiego wejścia, WebSocketa, null-pojarnika
+(ścieżka nigdy nie jest null — `serve` robi `session.uri ?: "/"`) ani wyjątku
+omijającego `check`. Normalizacja też nie rozwala: `/x/../status.json` nie
+równa się `/status.json`, a autoryzacja i router widzą **identyczny string**.
