@@ -1328,9 +1328,56 @@ i **pisze po zwolnieniu**. Koszt: jedna `ArrayList` na bufor przechwycenia
 dokładnie tym testem. Przed naprawą nie było żadnego testu, który mógłby ją
 złapać: dojście do tej linii wymagało prawdziwego `AudioRecord`.
 
-### Czego nie dało się potwierdzić
+### Wynik weryfikacji na telefonie: naprawa NIE zadziałała
 
-Naprawy **nie zweryfikowałem na telefonie** — ADB się rozłączyło w trakcie
-pracy (USB odłączone, port 5555 odrzucony). Pomiar powyżej jest baseline
-przed naprawą, na starym APK. Po podłączeniu: `./gradlew installDebug`, potem
-ponowić `pool2.py /audio.wav 14 80` i oczekiwać `200` w każdym punkcie.
+Po podłączeniu ADB (port 33379) zainstalowałem nowy APK i powtórzyłem ten sam
+test. Wynik jest identyczny — `ConnectionResetError` na `/status.json`:
+
+| liczba klientów `/audio.wav` | `/status.json` |
+|---|---|
+| 8 | 200 |
+| 9 | 200 |
+| 10 | 200 (`connections.active = 12`) |
+| 11 | ConnectionReset |
+| 12 | ConnectionReset |
+| 13 | Timeout / ConnectionReset |
+| 14 | ConnectionReset |
+| 14 na `/status.json` (kontrola) | 200 |
+
+Granica wypada **dokładnie na 12**, czyli dokładnie tam, gdzie
+`BoundedAsyncRunner.DEFAULT_MAX_THREADS`. Po teście `connections.active`
+wraca do 2, a `refused` do 0 — **to capping, nie wyciek**. Zwykłe 14 połączeń
+na `/status.json` nie robi nic, więc winny jest limit wątków, nie pula HTTP.
+
+### Prawdziwa przyczyna — inna niż moja
+
+`/audio.wav` zwraca `newChunkedResponse`, więc NanoHTTPD trzyma wątek przez
+**cały czas połączenia**, a `pipe.write` do `PipedInputStream(64 KB)` blokuje,
+gdy klient nie czyta. Każde audio to jeden wątek na stałe. Wystarczy 11 sesji
+albo jedna zawieszona, żeby `/status.json` i sterowanie przestały odpowiadać.
+
+Mój commit `627b4e7` usuwa **lock podczas I/O** — to nadal dobra zmiana
+(nie ma już blokowania `addClient`), ale **nie rozwiązuje problemu**, bo
+ograniczenie jest w liczbie wątków, nie w locku. Diagnoza z poprzedniej sekcji
+była poprawna co do objawu, błędna co do przyczyny.
+
+### Propozycje (nie wdrożone — wymagają decyzji)
+
+1. **Wydzielić audio w osobny basen wątków** — długotrwała sesja audio nie
+   zjada wątków dla UI i API. Koszt: drugi `AsyncRunner` i routing per ścieżka.
+2. **Podnieść limit globalny** (12 → 24) — prosto, ale audio znowu może
+   wyciszyć UI przy dużej liczbie klientów.
+3. **Zostawić i udokumentować** limit 12 jako świadomy.
+
+Zapytałem o wybór, nie dostałem odpowiedzi, więc **nic nie zmieniłem** — to
+zmiana architektury serwera, nie poprawka błędu.
+
+### Stan weryfikacji profilera
+
+Przycisk 📈 działa, `PerfActivity` startuje, ekran renderuje poprawnie
+(polskie tłumaczenia, `CPU wątku głównego: 0,8%` — przecinek z `Locale.ROOT`).
+**Nie udało się jednak zebrać realnych spanów**, bo na telefonie przestała
+wstawać kamera: `CameraDevice-JV-0: Device error received, code 3` przy
+otwarciu sensora, retry co 10 s, `/shot.jpg` zwraca 204. Sprawdziłem to na
+**starym APK `6344587`, bez żadnych moich zmian** — kamera też nie wstaje, więc
+to nie regresja w kodzie, tylko stan telefonu (działała do ~08:28).
