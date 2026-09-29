@@ -120,3 +120,12 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
 }
+
+// A few guards assert on source shape rather than runtime behaviour, because
+// the path they cover (a failed MediaCodec.configure) is unreachable from a
+// plain JVM - android.jar throws before a codec is ever allocated. Passing the
+// source root lets those tests fail loudly when their file moves, instead of
+// silently checking nothing.
+tasks.withType<Test>().configureEach {
+    systemProperty("ocubea.srcRoot", rootProject.projectDir.absolutePath)
+}
