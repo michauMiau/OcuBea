@@ -180,10 +180,16 @@ class H264Encoder(
         // an unmeasured build pays one volatile read.
         val t = if (Metrics.enabled) Metrics.timer(Metrics.ENCODE) else null
         val t0 = if (t != null) t.begin() else 0L
-        val mc = codec ?: return
-        if (!started) return
 
+        // Inside the try, both of them. A guard that returns before the try
+        // skips the finally that ends the span, so the timer is never closed
+        // and the call vanishes from the profile -- silently under-counting
+        // exactly when the encoder is broken, which is the only time anyone
+        // looks at the profiler. The comment two lines below claims this class
+        // of leak was designed out; these two returns were simply missed.
         try {
+            val mc = codec ?: return
+            if (!started) return
             // Drain first, unconditionally.
             //
             // The encoder has only a handful of input slots; if this method ever
