@@ -14,6 +14,7 @@ import com.ocubea.security.MotionDetector
 import com.ocubea.security.MotionRecorder
 import com.ocubea.sensors.DeviceSensors
 import com.ocubea.security.MotionLimits
+import com.ocubea.stream.FrameHub
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.Response.Status as Status
 import java.io.ByteArrayInputStream
@@ -168,6 +169,11 @@ class StreamServer(
             return newFixedLengthResponse(Status.SERVICE_UNAVAILABLE, "text/plain", "Camera not streaming")
         }
         val viewer = cameraManager.frameHub.addViewer()
+            ?: return newFixedLengthResponse(
+                Status.SERVICE_UNAVAILABLE,
+                "text/plain",
+                "Too many viewers (max ${FrameHub.MAX_VIEWERS}) - close one and retry",
+            )
         val boundary = MultipartWriter(FRAME_BOUNDARY)
         // Frames are fed through an InputStream so NanoHTTPD writes the HTTP
         // headers itself — overriding Response.send() skips them and browsers

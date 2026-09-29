@@ -118,13 +118,26 @@ class BoundedAsyncRunnerTest {
     }
 
     @Test
-    fun `the default pool is small enough for a phone`() {
-        // Sized for a phone, not a server. A regression here would mean the
-        // camera starts spending memory on threads instead of on picture.
+    fun `the default pool stays bounded`() {
+        // Bounded is the requirement; the ceiling exists because a `/video`
+        // handler holds its thread for the whole stream, and an unbounded pool
+        // is how a camera dies under a device opening sockets in a loop.
+        //
+        // The old range was 2..8, justified as "a 512MB device". That device
+        // claim was wrong: the test phone reports MemTotal 3.8 GB. The cap is
+        // now sized from a measurement instead - at 8 open viewers the pool
+        // filled and every *new* socket, /status.json included, was closed in
+        // ~5ms, so 12 leaves headroom above the 6-viewer MJPEG cap while
+        // staying a small number.
         assertTrue(
             "default max threads is ${BoundedAsyncRunner.DEFAULT_MAX_THREADS}, " +
-                "which is a server-sized default for a 512MB device",
-            BoundedAsyncRunner.DEFAULT_MAX_THREADS in 2..8,
+                "which is a server-sized default",
+            BoundedAsyncRunner.DEFAULT_MAX_THREADS in 2..16,
+        )
+        assertEquals(
+            "the queue must stay shallow so a surplus request is refused, not delayed",
+            1,
+            BoundedAsyncRunner.DEFAULT_MAX_QUEUED,
         )
     }
 }

@@ -773,3 +773,76 @@ nie ustawienie.
 czyli **sekundy** — a komentarz twierdził „returns a frame COUNT, not
 seconds". Nazwa i komentarz zapraszały do podwójnego mnożenia przez fps.
 Przemianowane na `effectivePreRecordSeconds`, komentarz opisuje prawdę.
+
+## Próg widzów: cała powierzchnia sterująca milkła przy 8 strumieniach (2026-09-28)
+
+Pomiar na telefonie, nie szacunek. Każde `/video` zajmuje jeden wątek
+handlera na **cały czas** trwania strumienia. Gdy pula się zapełnia,
+NanoHTTPD zamyka każde *nowe* gniazdo — a więc również `/status.json` i
+`/shot.jpg`:
+
+| otwartych widzów | `/status.json` | `/shot.jpg` |
+|---|---|---|
+| 4 | 200 w 24 ms | 200 w 18 ms |
+| 6 | 200 w 478 ms | 200 w 15 ms |
+| **8** | **000 w 5 ms** | **000 w 6 ms** |
+| 10, 14 | 000 w 5 ms | 000 w 5 ms |
+
+`000 w 5 ms` to nie timeout, tylko natychmiastowe zamknięcie gniazda. Proces
+żyje, PSS to 148 MB, logcat jest czysty — czyli nie było ani OOM, ani crashu.
+Strumienie istniejące dalej działały, a cały interfejs do sterowania kamerą
+zniknął. To najgorszy możliwy kształt awarii: użytkownik nie może nawet
+wyłączyć kamery.
+
+Naprawa w dwóch częściach:
+
+1. `FrameHub.MAX_VIEWERS = 6` — nadmiarowy widz jest odrzucany **wewnątrz
+   własnego handlera** (HTTP 503 z czytelnym tekstem), więc w ogóle nie bierze
+   wątku. Licznik to `AtomicInteger` z compare-and-set, nie
+   `ConcurrentLinkedQueue.size()`, które jest O(n) i wyścigowe wobec
+   równoległego `remove`.
+2. Pula wątków 8 → 12, z głębokością kolejki nadal 1.
+
+Zmierzone po: 4, 6, 8, 9, 10 i 14 widzów — `/status.json` 26–39 ms,
+`/shot.jpg` 16–47 ms, FPS 15, aktywnych 9 połączeń (limit trzyma), nadmiar
+odrzucany. Licznik `viewers` w `status.json` pokazuje 4 → 6 w trakcie
+streamowania i wraca do 0 po zamknięciu, czyli sloty są faktycznie zwalniane.
+
+Odmowa trafia na losowy z ośmiu równoległych klientów, co jest właściwym
+zachowaniem: to limit, nie kolejka.
+
+## Kolejna nieprawda w moich własnych notatkach: telefon ma 3,8 GB RAM
+
+Cały ten blok opierał się na stwierdzeniu „telefon ma 512 MB". Zmierzone:
+`/proc/meminfo` → `MemTotal: 3797996 kB`, model 21061119DG, SoC mt6768.
+Ta wartość powtarzała się w komentarzu testu
+(`"a server-sized default for a 512MB device"`) i w notce pamięci, więc
+uzasadnienie limitu wątków było zbudowane na nieprawdziwym założeniu.
+
+Nie zmienia to decyzji o ograniczeniu — limit wątków nadal jest potrzebny,
+bo problem nie leży w pamięci, tylko w tym, że wątek jest zajęty godzinami.
+Zmienia to **uzasadnienie**: limit jest teraz wyprowadzony z pomiaru progu
+(8 widzów zabija API), a nie z rzędu wielkości telefonu. Liczba w teście
+została podniesiona z `2..8` do `2..16` razem z komentarzem wyjaśniającym,
+czemu i czemu poprzedni uzasadnienie było błędne.
+
+## Pula HTTP: dwie pule są niemożliwe w NanoHTTPD 2.3.1
+
+Naturalna naprawa brzmi „daj `/video` osobną pulę, żeby krótkie API nigdy nie
+czekało". `javap -p` na `NanoHTTPD$ClientHandler` pokazuje tylko:
+
+```
+public void close();
+public void run();
+private final java.io.InputStream inputStream;
+private final java.net.Socket acceptSocket;
+```
+
+Nie ma publicznego dostępu do URI ani do gniazda, więc w `exec()` nie da się
+rozróżnić żądania długiego od krótkiego — i nie ma jak przekazać gniazda do
+innej pule bez refleksji na pole prywatne. Dlatego rozwiązanie idzie od
+końca: ograniczyć liczbę strumieni tak, żeby pula nigdy się nie zapełniała,
+zamiast rozdzielać ją na dwie.
+
+To samo ustalenie co w poprzedniej fali, ale teraz z konkretną konsekwencją
+projektową zamiast usuniętego na ślepo kodu.
