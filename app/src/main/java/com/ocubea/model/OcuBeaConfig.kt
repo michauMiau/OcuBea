@@ -78,6 +78,28 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(KEY_AUDIO, true)
         set(v) = prefs.edit().putBoolean(KEY_AUDIO, v).apply()
 
+    /**
+     * Which audio codec `/audio.<ext>` serves.
+     *
+     * Stored as an id from `AudioCodecProbe.options`. An empty string means
+     * "the user has not chosen", which is different from `"none"`, which means
+     * "no audio" -- the first resolves to the device's default, the second
+     * makes `/audio.*` answer 404 so a client stops asking. Storing an id
+     * rather than a MIME string is what lets a device degrade: the handler
+     * resolves the id against the menu the device actually proved it has, and
+     * an id that is not in that menu falls back to the default instead of
+     * failing.
+     */
+    var audioCodec: String
+        get() = prefs.getString(KEY_AUDIO_CODEC, "") ?: ""
+        set(v) = prefs.edit().putString(KEY_AUDIO_CODEC, v).apply()
+
+    /** The stored id, or [defaultId] when the user has not chosen one. */
+    fun audioCodecOrDefault(defaultId: String): String {
+        val stored = audioCodec
+        return if (stored.isBlank()) defaultId else stored
+    }
+
     // ── Security ───────────────────────────────────────────────
 
     var securityEnabled: Boolean
@@ -151,6 +173,7 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         "night_vision" to nightVision,
         "front_camera" to frontCamera,
         "audio" to audioEnabled,
+        "audio_codec" to audioCodec,
         "security" to securityEnabled,
         "motion_sensitivity" to motionSensitivity,
         "motion_record" to motionRecord,
@@ -178,6 +201,7 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         const val KEY_NIGHT_VISION = "night_vision"
         const val KEY_FRONT_CAMERA = "front_camera"
         const val KEY_AUDIO = "audio_enabled"
+        const val KEY_AUDIO_CODEC = "audio_codec"
         const val KEY_SECURITY = "security_enabled"
         const val KEY_MOTION_SENS = "motion_sensitivity"
         const val KEY_MOTION_RECORD = "motion_record"
