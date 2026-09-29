@@ -227,7 +227,7 @@ See [docs/SECURITY_CAMERA.md](docs/SECURITY_CAMERA.md) and
 ./gradlew test
 ```
 
-256 unit tests under `app/src/test/` (28 files, none skipped), all green as of
+261 unit tests under `app/src/test/` (29 files, none skipped), all green as of
 commit 9948d51.
 
 ## 📄 License

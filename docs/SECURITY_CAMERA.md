@@ -235,7 +235,7 @@ Sprawdzone **na urządzeniu**, nie wywnioskowane:
 ## Testy
 
 Stan na 2026-09-30 (commit 9948d51): `./gradlew :app:testDebugUnitTest`
-przechodzi w całości — **256 testów w 28 plikach, 0 pominiętych, 0 błędów**
+przechodzi w całości — **261 testów w 29 plikach, 0 pominiętych, 0 błędów**
 (liczone z `app/build/test-results/testDebugUnitTest/*.xml`).
 
 `app/src/test/java/com/ocubea/stream/Fmp4WriterBoxTest.kt` — 16 testów JVM
