@@ -64,7 +64,7 @@ object AudioCodecProbe {
                     mime = MIME_OPUS,
                     bitrate = 32_000,
                     container = "webm/opus",
-                    note = "Najlepszy stosunek jakosci do bajtow. Wymaga Androida 11+."
+                    note = "Najlepszy stosunek jakości do bajtów. Wymaga Androida 11+."
                 )
             )
         }
@@ -76,7 +76,7 @@ object AudioCodecProbe {
                     mime = MIME_AAC,
                     bitrate = 64_000,
                     container = "aac",
-                    note = "Dziala na kazdym Androidzie od 4.x. Domyślny wybor."
+                    note = "Działa na każdym Androidzie od 4.x. Domyślny wybór."
                 )
             )
         }
@@ -99,7 +99,7 @@ object AudioCodecProbe {
                 mime = "audio/wav",
                 bitrate = 706_000,
                 container = "wav",
-                note = "Bez kompresji, ~695 kbps na klienta. Zawsze dostepne."
+                note = "Bez kompresji, ~695 kbps na klienta. Zawsze dostępne."
             )
         )
         if (probe.canFlac) {
@@ -110,7 +110,7 @@ object AudioCodecProbe {
                     mime = MIME_FLAC,
                     bitrate = 0, // lossless: the encoder picks
                     container = "flac",
-                    note = "Bezstratny, ale wiekszy niz WAV. Ciekawostka, nie oszczednosc."
+                    note = "Bezstratny, ale większy niż WAV. Ciekawostka, nie oszczędność."
                 )
             )
         }

@@ -125,6 +125,17 @@ class TelemetryHandler(
             // encoder. `codec` is the stored preference, `default` is what a
             // client gets when it does not ask for anything.
             append("\"codec\":\"${config.audioCodecOrDefault(audioCodecs.defaultId())}\",")
+            // The picker in the WebUI needs a list it can iterate, not a
+            // human-readable summary: an older phone must show fewer options,
+            // and building the menu from a string here would mean the browser
+            // had to guess which ids were in it.
+            append("\"available_list\":[")
+            append(audioCodecs.options().joinToString(",") { o ->
+                "{\"id\":\"${o.id}\",\"label\":\"${o.label}\"," +
+                    "\"bitrate\":${o.bitrate},\"container\":\"${o.container}\"," +
+                    "\"note\":\"${o.note.escapeIt()}\"}"
+            })
+            append("],")
             append("\"available\":\"${audioCodecs.summary()}\"},")
             append("\"auth_required\":${auth.isEnabled()},")
             append("\"battery_level\":${batteryLevel()}")
