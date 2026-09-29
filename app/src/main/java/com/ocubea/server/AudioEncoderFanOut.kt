@@ -38,6 +38,17 @@ class AudioEncoderFanOut(
     private val encoders = mutableMapOf<String, AudioEncoder>()
 
     /**
+     * True while the capture thread is inside MediaCodec.
+     *
+     * Read by the shutdown path to decide whether it is safe to stop a codec.
+     * A plain flag rather than a lock, because holding a lock across the encode
+     * would serialise every audio client behind the slowest one, and because
+     * what is being prevented is a race that a flag plus a bounded wait already
+     * handles.
+     */
+    private val inCapture = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
      * Re-frame carry. A plain array, not a ByteArrayOutputStream: draining one
      * frame out of the middle of the stream needs read(), which
      * ByteArrayOutputStream does not have, and doing it with writeTo() copies
@@ -102,17 +113,54 @@ class AudioEncoderFanOut(
     }
 
     fun removeClient() {
+        val dying: List<AudioEncoder>
         synchronized(lock) {
             clientCount--
-            if (clientCount <= 0) {
-                encoders.values.forEach { it.stop() }
-                encoders.clear()
-                clients.clear()
-                synchronized(carry) {
-                    carryLen = 0
-                }
+            if (clientCount > 0) return
+            // Announce first. MediaCodec is not thread-safe, and the capture
+            // thread is normally inside dequeueOutputBuffer while this runs, so
+            // stopping the codec from here throws IllegalStateException out of
+            // the middle of a frame. The flag tells the capture thread to leave
+            // the codec alone; the wait below is what makes stopping it safe.
+            dying = encoders.values.toList()
+            dying.forEach { it.markStopping() }
+            clients.clear()
+            encoders.clear()
+            synchronized(carry) {
+                carryLen = 0
             }
         }
+        // Outside the lock: feed() takes carry after lock, so holding lock here
+        // would be a lock-order inversion waiting to happen. The wait is
+        // bounded because a capture thread that never comes back would
+        // otherwise hold a codec open forever -- which is the leak this whole
+        // path exists to close, not reproduce.
+        val gaveUp = awaitCaptureIdle(dying)
+        dying.forEach { enc ->
+            if (gaveUp) {
+                Log.w(TAG, "stopping ${enc.codecIdForLog()} while capture may still be in it")
+            }
+            enc.stop()
+        }
+    }
+
+    /**
+     * Gives the capture thread a bounded window to leave the codecs alone.
+     *
+     * The flag is volatile and set before this runs, so a capture thread that
+     * is between frames sees it immediately. What cannot be forced is a thread
+     * that is already inside MediaCodec, and that window is one output
+     * dequeue -- a few milliseconds with the deadlines the encoder uses. Ten is
+     * generous; anything longer means something is wrong that logging should
+     * show rather than silently hide.
+     */
+    private fun awaitCaptureIdle(dying: List<AudioEncoder>): Boolean {
+        val deadline = System.nanoTime() + 10_000_000L * 10
+        while (System.nanoTime() < deadline) {
+            if (!inCapture.get()) return false
+            Thread.sleep(2)
+        }
+        return true
     }
 
     private fun ensureEncoder(codecId: String, bitrate: Int): Boolean {
@@ -141,15 +189,34 @@ class AudioEncoderFanOut(
      * microphone.
      */
     fun feed(codecId: String, pcm: ByteArray, length: Int) {
+        // Set for the whole of the encode below and cleared in a finally, so
+        // removeClient() can tell "the capture thread is inside MediaCodec right
+        // now" from "the capture thread is not running at all". Without it the
+        // shutdown path has to guess, and guessing wrong means either a race or
+        // a codec that is never released.
+        inCapture.set(true)
+        try {
+            feedCalls++
+            feedLocked(codecId, pcm, length)
+        } finally {
+            inCapture.set(false)
+        }
+    }
+
+    private fun feedLocked(codecId: String, pcm: ByteArray, length: Int) {
         val target = synchronized(lock) { clients[codecId] }
         if (target == null) {
-            // Diagnostic, removed once the empty-body bug is closed: a codec id
-            // with no fan-out here means the map lookup key and the key used
-            // at addClient time disagree.
             return
         }
         val enc = synchronized(lock) { encoders[codecId] }
         if (enc == null) {
+            return
+        }
+        // Checked once per fed buffer, not per frame: the stopping thread sets
+        // this while the capture thread is mid-frame, and the point is to leave
+        // the codec untouched from the next buffer onwards so it can be shut
+        // down cleanly by whoever set the flag.
+        if (enc.isStopping()) {
             return
         }
         synchronized(carry) {
@@ -160,6 +227,14 @@ class AudioEncoderFanOut(
                     val lo = frameBytes[i * 2].toInt() and 0xFF
                     val hi = frameBytes[i * 2 + 1].toInt() and 0xFF
                     frameSamples[i] = ((hi shl 8) or lo).toShort()
+                }
+                // Re-checked inside the loop: a multi-frame buffer can keep this
+                // thread inside MediaCodec for long enough for the flag to land
+                // partway through, and finishing the whole buffer would race the
+                // shutdown for several frames.
+                if (enc.isStopping()) {
+                    carryLen = 0
+                    return
                 }
                 val out = try {
                     enc.encodeFrame(frameSamples)
