@@ -1101,50 +1101,74 @@ Po naprawie, przy `viewers: 0` i `motion.enabled: True`:
 Wniosek: pomiar `null_bitmaps` jest najtańszym wskaźnikiem tego, czy
 detekcja w ogóle żyje. Warto zerowy przy zerowej liczbie widzów.
 
-## Oba enkodery MediaCodec giną 5 s po starcie (2026-09-29, OTWARTY)
+## Klipy mp4 DZIAŁAJĄ — moje wcześniejsze stwierdzenie było złe (2026-09-29)
 
-Pomiary z trzeciego audytu ujawniły wspólną przyczynę trzech objawów,
-które do tej pory traktowałem jako osobne: `armed: false` przy
-`motion_record: true`, martwy HLS (`init=404`) i brak klipów mp4.
+W trakcie trzeciego audytu napisałem, że ścieżka klipów mp4 nie nagrywa.
+**To było fałszywe.** Poniżej rzeczywisty pomiar, po pełnym restarcie
+usługi z włączonym `security_enabled` i `motion_record`.
 
-Z logcatu telefonu (`c2.mtk.avc.encoder`, format 19, 1280x720@15):
+Katalog klipów i API:
 
 ```
-10:20:32.941  started c2.mtk.avc.encoder 1280x720@15 color=19 bitrate=4000000
-10:20:37.257  MediaCodec setState: 9
-10:20:37.263  MediaCodec setState: 2
-10:20:37.263  MediaCodec setState: 10
-10:20:37.263  OcuBeaH264: encode failed
-              java.lang.IllegalStateException: buffer is inaccessible
-                at java.nio.DirectByteBuffer.put(DirectByteBuffer.java:343)
-                at H264Encoder.copyPlane(H264Encoder.kt:367)
-                at H264Encoder.copyPlanes(H264Encoder.kt:323)
-                at H264Encoder.encode(H264Encoder.kt:196)
-                at CameraManager.feedClipFrame(CameraManager.kt:533)
-                at CameraManager.analyzeFrame(CameraManager.kt:608)
+klip_2026-09-29_10-28-24.mp4   1 665 039 B
+klip_2026-09-29_10-26-14.mp4   2 473 366 B
+klip_2026-09-29_10-23-46.mp4   1 422 677 B
 ```
 
-Fakty potwierdzone, nie domysły:
+`GET /clips` zwraca je wszystkie z `recording:false`. Plik pobrany i
+sprawdzony ffprobe:
 
-- `encode()` jest wołany **synchronicznie** z `analyzeFrame` — na stosie nie ma
-  `encodePool`, więc to nie wyścig o `ImageProxy` i nie kolejność z `close()`.
-- `copyPlanes` sprawdza `dst.capacity() >= w*h + 2*cw*ch` przed zapisem, a
-  `dst.clear()` jest wywoływany. Rozmiar bufora więc nie jest przyczyną.
-- `H264Encoder.stop()` zeruje `codec`, a `encode()` kończy się na
-  `codec ?: return` — po `stop()` nie da się dostać do `copyPlanes`.
-- Żaden kod w `app/src/main` nie woła `MediaCodec.flush()`, a `clipEncoder`
-  jest osiągalny wyłącznie z `CameraManager`.
-- Jeden `start`, jedna instancja enkodera, zero zakodowanych klatek.
-- Ścieżka MJPEG działa: `MotionRecorder` zapisał 2.7 MB `.avi` w tej samej sesji.
+```
+codec_name=h264  width=1280  height=720
+duration=3.072414  size=1665039
+format_name=mov,mp4,m4a,3gp,3g2,mj2
+```
 
-Czyli `MediaCodec` przechodzi w stan Released **z zewnątrz**, po 4.3 s, a
-`analyzeFrame` w tym momencie pisze do jego bufora. Kto wywołuje
-`stop()`/`release()` na tym obiekcie — jeszcze nie wiadomo. Kandydat, którego
-nie wykluczyłem: `drain()` wykonuje `mc.dequeueOutputBuffer(info, 0)` w pętli
-bez limitu iteracji, więc przy zerowym czasie oczekiwania pętla kręci się
-przez te same sloty i może wypchnąć enkoder w stan, w którym kolejny
-`dequeueInputBuffer` zwraca bufor oznaczony jako niedostępny.
+Klip jest prawdziwym, odtwarzalnym H.264 z poprawnym `moov`.
 
-**Status: OTWARTY.** Nie naprawiam na podstawie domysłu. Do rozstrzygnięcia
-potrzebny jest albo ślad `stop()` (np. log w `H264Encoder.stop()` z
-thread name i stackiem), albo pomiar z instrumentacją.
+## Co faktycznie było zepsute (i dlaczego myliłem się długo)
+
+Trzy objawy wyglądały na jeden problem:
+
+| Objaw | Stan rzeczywisty |
+|---|---|
+| `armed: false` przy `motion_record: true` | **prawda** — klip nie był uzbrojony w tej konkretnej sesji |
+| `/hls/index.m3u8` → 404 | **prawda** — HLS rzeczywiście nie startuje |
+| „klipy się nie nagrywają" | **fałsz** — nagrywały się przez cały czas |
+
+Mój błąd pomiarowy: `startEverything()` jest jednorazowa
+(`started.compareAndSet(false, true)`), a uzbrojenie klipu siedzi w jej
+wnętrzu. Włączenie `security` przez API w trakcie sesji ustawia
+`motionDetector.enabled`, ale **nigdy nie uzbraja enkodera klipu** — a
+`/clips/recording` pokazywało `armed:false`, które interpretowałem jako
+„nie działa w ogóle". Tymczasem klipy powstawały przy każdym restarcie
+usługi, w którym flagi były już zapisane.
+
+Do zmierzenia F1 wcześniej podmieniłem klucz w SharedPreferences, ale
+`security_enabled` i `motion_record` **nie istniały** w pliku, więc
+obowiązywały wartości domyślne i pomiar nie był tym, co myślałem.
+
+## `buffer is inaccessible` — wyjaśnione
+
+Instrumentacja `H264Encoder.stop()` z pełnym stosem:
+
+```
+DIAG stop() tid=511 name=ocubea-encode-4
+  stack=H264Encoder.stop|CameraManager.stopClipRecording|
+         StreamService.onCameraFrame|CameraManager.analyzeFrame$lambda$21
+```
+
+`onCameraFrame` działa na wątku `ocubea-encode-N` (to jest ten sam
+pula co kodowanie), więc `stopClipRecording()` potrafi zwolnić enkoder
+w chwili, gdy `analyzeFrame` karmi właśnie kolejną klatkę. Wyjątek
+`IllegalStateException: buffer is inaccessible` w `copyPlane` jest tego
+skutkiem — nie przyczyną zgonu klipów.
+
+Kolejność w `stopClipRecording()` zmieniona: referencja `clipEncoder`
+zerowana **przed** `enc.stop()`, więc klatka w locie nie dostanie
+sekwencji „wyślij do bufora, który zaraz zwolnię".
+
+Pozostaje fakt, że enkoder przestaje kodować w tej samej sesji, w której
+zapisuje pierwszy klip — dlatego `armed` wraca do `false` i kolejny ruch
+już nie nagrywa (audyt F3: nic nie uzbraja ponownie). To jest **osobny,
+nadal otwarty** defekt, nie ten sam.
