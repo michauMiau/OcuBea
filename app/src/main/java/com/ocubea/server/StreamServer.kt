@@ -133,6 +133,7 @@ class StreamServer(
         uri.startsWith("/v/") -> handleVideoDownload(uri)
 
         // ── Audio ──
+        uri == "/audio/codec" && method == Method.POST -> handleAudioCodecPost(session)
         uri == "/audio.wav" || uri == "/audio.aac" || uri == "/audio.opus" ||
             uri == "/inband.aac" || uri == "/talk" -> handleAudio(uri)
 
@@ -330,6 +331,45 @@ class StreamServer(
         val frame = cameraManager.frameHub.getLatest()
             ?: return newFixedLengthResponse(Status.NO_CONTENT, "text/plain", "No frame yet")
         return newFixedLengthResponse(Status.OK, "image/jpeg", ByteArrayInputStream(frame), frame.size.toLong())
+    }
+
+    /**
+     * Saves the codec the WebUI picker chose.
+     *
+     * The choice is validated against the probe rather than trusted: the
+     * browser is on the LAN and anyone can POST a codec name, and "wav" is
+     * always legal, so a name the device has not proved it can encode is
+     * refused with the list of what it can. Silently coercing an unknown codec
+     * to the default would leave the picker showing something untrue.
+     */
+    private fun handleAudioCodecPost(session: IHTTPSession): Response {
+        val params = parseBodyParams(session)
+        val asked = (params["codec"] ?: "").lowercase()
+        if (asked.isEmpty()) {
+            return newFixedLengthResponse(
+                Status.BAD_REQUEST, "application/json",
+                "{\"error\":\"codec is required\"}"
+            )
+        }
+        if (asked == "none") {
+            config.audioCodec = "none"
+            config.audioEnabled = false
+            return newFixedLengthResponse(
+                Status.OK, "application/json",
+                "{\"codec\":\"none\"}"
+            )
+        }
+        val menu = audioCodecs.options()
+        if (asked != "wav" && menu.none { it.id == asked }) {
+            val can = audioCodecs.options().map { it.id }.plus("wav").distinct().joinToString(",") { "\"$it\"" }
+            return newFixedLengthResponse(
+                Status.BAD_REQUEST, "application/json",
+                "{\"error\":\"this device cannot encode $asked\",\"can\":[$can]}"
+            )
+        }
+        config.audioCodec = asked
+        config.audioEnabled = true
+        return newFixedLengthResponse(Status.OK, "application/json", "{\"codec\":\"$asked\"}")
     }
 
     private fun handleAudio(uriPath: String): Response {

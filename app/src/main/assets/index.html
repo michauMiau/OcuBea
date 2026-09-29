@@ -182,10 +182,22 @@
         <dt>Uptime</dt><dd id="sUptime">–</dd>
         <dt>Battery</dt><dd id="sBattery">–</dd>
         <dt>Audio clients</dt><dd id="sAudio">0</dd>
+        <dt>Audio codec</dt><dd id="sAudioCodec">–</dd>
         <dt>Recordings</dt><dd id="sRec">0</dd>
       </dl>
     </section>
   </div>
+
+  <section>
+    <h2>Audio stream</h2>
+    <p class="hint" style="margin-bottom:10px">
+      Only codecs this phone actually encoded are listed. An older phone shows fewer options instead of offering something it cannot do.
+    </p>
+    <div id="audioChoices" class="row" style="flex-direction:column;align-items:stretch;gap:8px">
+      <p class="hint" id="audioProbe">Reading what this phone can encode&hellip;</p>
+    </div>
+    <p class="hint" id="audioNote" style="margin-top:10px"></p>
+  </section>
 
   <section>
     <h2>Recordings</h2>
@@ -245,6 +257,8 @@
       <dt><code>GET /video</code></dt><dd style="text-align:left">MJPEG stream</dd>
       <dt><code>GET /shot.jpg</code></dt><dd style="text-align:left">snapshot</dd>
       <dt><code>GET /audio.wav</code></dt><dd style="text-align:left">microphone</dd>
+      <dt><code>GET /audio.aac</code></dt><dd style="text-align:left">microphone, AAC (when the phone can encode it)</dd>
+      <dt><code>GET /audio.opus</code></dt><dd style="text-align:left">microphone, Opus in Ogg (when the phone can encode it)</dd>
       <dt><code>GET /status.json</code></dt><dd style="text-align:left">telemetry</dd>
       <dt><code>GET /sensors.json</code></dt><dd style="text-align:left">battery, thermal, storage</dd>
       <dt><code>POST /onvif/device_service</code></dt><dd style="text-align:left">ONVIF SOAP</dd>
@@ -331,6 +345,20 @@ var I18N = {
     'Uptime': 'Czas pracy',
     'Battery': 'Bateria',
     'Audio clients': 'Klienci audio',
+    'Audio codec': 'Kodek audio',
+    'Audio stream': 'Strumień audio',
+    'off': 'wyłączony',
+    // Kept as one text node on purpose: an earlier version wrapped
+    // /status.json in <code> and split the sentence, which left the fragment
+    // after the tag starting with a comma -- a key the verifier trims away and
+    // the runtime can never match.
+    'Only codecs this phone actually encoded are listed. An older phone shows fewer options instead of offering something it cannot do.': 'Pokazujemy tylko kodeki, które ten telefon faktycznie zakodował. Starszy telefon pokazuje mniej opcji, zamiast oferować coś, czego nie potrafi.',
+    'Reading what this phone can encode…': 'Sprawdzam, co ten telefon potrafi zakodować…',
+    'No audio': 'Bez audio',
+    'The microphone is not opened at all.': 'Mikrofon w ogóle nie jest otwierany.',
+    'Always available, but by far the heaviest: 695 kbps, about 5 MB a minute.': 'Zawsze dostępny, ale zdecydowanie najcięższy: 695 kbps, około 5 MB na minutę.',
+    'Changing the codec takes effect for the next client that connects; running streams keep what they started with.': 'Zmiana kodeka zadziała dla następnego klienta, który się połączy; strumienie już działające zostawiają to, z czym wystartowały.',
+    'Could not save: ': 'Nie udało się zapisać: ',
     'Recordings': 'Nagrania',
     'Refresh': 'Odśwież',
     'Delete all': 'Usuń wszystko',
@@ -696,6 +724,15 @@ function refresh(){
     $('sDropped').textContent = s.dropped || 0;
     $('sRes').textContent = s.resolution;
     $('sAudio').textContent = (s.audio && s.audio.clients) || 0;
+    if($('sAudioCodec')) $('sAudioCodec').textContent =
+      (s.audio && s.audio.codec) ? (s.audio.codec === 'none' ? t('off') : s.audio.codec) : '–';
+    // Rendered only when the codec actually changed: rebuilds the list on every
+    // 3 s poll would fight the radio the user is in the middle of clicking.
+    var wantCodec = s.audio && s.audio.codec;
+    if(wantCodec && wantCodec !== lastAudioCodec){
+      lastAudioCodec = wantCodec;
+      renderAudioChoices(s);
+    }
     $('sBattery').textContent = s.battery_level >= 0 ? s.battery_level + '%' : '–';
     $('sUptime').textContent = uptime(s.uptime_s);
 
@@ -1044,6 +1081,118 @@ if('IntersectionObserver' in window){
   }, {threshold:0.05}).observe($('clipsSection'));
 } else {
   startClipPolling();
+}
+
+/* Audio codec picker.
+ *
+ * The list comes from /status.json, which reports only codecs the phone proved
+ * it can encode by running them. That is the whole point: a menu built from the
+ * vendor codec XML would offer Opus on an Android 6 phone that has no Opus
+ * encoder, and the failure would only show up as a stream that never produces
+ * bytes. So this renders what the device reported and nothing else.
+ *
+ * "none" is not a codec. It means the microphone is not opened at all, which is
+ * worth being explicit about: on a phone held as a webcam the mic is often not
+ * wanted at all, and silently serving silence is worse than not serving audio.
+ */
+/* Last codec the list was rendered for, so a 3 s poll cannot rebuild the radio
+ * group under the user's finger. */
+var lastAudioCodec = null;
+
+function audioOptionLabel(o){
+  if(o.id === 'none') return t('No audio');
+  // The probe's label already carries the bitrate ("Opus 32 kbps"), so
+  // appending it again produced "Opus 32 kbps · 32 kbps". Only add the rate
+  // when the label does not already mention it.
+  if(/kbps/.test(o.label)) return o.label;
+  var bits = Math.round(o.bitrate / 1000);
+  if(bits > 0) return o.label + ' · ' + bits + ' kbps';
+  return o.label;
+}
+
+function renderAudioChoices(status){
+  var box = $('audioChoices');
+  if(!box) return;
+  var a = (status && status.audio) || {};
+  var avail = a.available_list || [];
+  var current = a.codec || 'wav';
+
+  // Fall back to the map if the phone is older than the list, so the picker
+  // still shows something real rather than an empty box.
+  if(!avail.length && a.available){
+    avail = [];
+    if(a.available.aac) avail.push({id:'aac',label:'AAC',bitrate:64000});
+    if(a.available.opus) avail.push({id:'opus',label:'Opus',bitrate:32000});
+    if(a.available.flac) avail.push({id:'flac',label:'FLAC',bitrate:0});
+  }
+  if(!avail.length) avail = [{id:'wav',label:'WAV',bitrate:0}];
+
+  // Always offer "no audio", and keep WAV reachable: it is the one option
+  // that works on every Android, including the ones too old for Opus. WAV is
+  // added only when the probe did not already list it -- otherwise it appears
+  // twice, and two radios with the same value means clicking either one
+  // silently unchecks the other.
+  var listed = avail.map(function(o){ return o.id; });
+  var choices = [{id:'none',label:'No audio',bitrate:0,
+                  note:t('The microphone is not opened at all.')}]
+    .concat(avail);
+  if(listed.indexOf('wav') === -1){
+    choices.push({id:'wav',label:'WAV',bitrate:0,
+                  note:t('Always available, but by far the heaviest: 695 kbps, about 5 MB a minute.')});
+  } else {
+    // The probe lists WAV too, so find it and attach the weight note there.
+    choices.forEach(function(c){
+      if(c.id === 'wav' && !c.note){
+        c.note = t('Always available, but by far the heaviest: 695 kbps, about 5 MB a minute.');
+      }
+    });
+  }
+
+  box.innerHTML = '';
+  choices.forEach(function(c){
+    var row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:flex-start;gap:8px;cursor:pointer';
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'acodec';
+    radio.id = 'ac_' + c.id;
+    radio.value = c.id;
+    radio.checked = (c.id === current);
+    var wrap = document.createElement('div');
+    var lab = document.createElement('div');
+    lab.textContent = audioOptionLabel(c);
+    var note = document.createElement('div');
+    note.className = 'hint';
+    note.textContent = c.note || '';
+    wrap.appendChild(lab); wrap.appendChild(note);
+    row.appendChild(radio); row.appendChild(wrap);
+    box.appendChild(row);
+    radio.addEventListener('change', function(){
+      if(radio.checked) saveAudioCodec(c.id, radio);
+    });
+  });
+
+  $('audioNote').textContent = t('Changing the codec takes effect for the next client that connects; running streams keep what they started with.');
+}
+
+function saveAudioCodec(id, btn){
+  btn.disabled = true;
+  // form-encoded, not JSON: the server's parseBodyParams() reads
+  // application/x-www-form-urlencoded, and a JSON body would arrive here as the
+  // single key '{"codec":"opus"}' with no codec in it.
+  var body = 'codec=' + encodeURIComponent(id);
+  fetch('/audio/codec', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: body
+  }).then(function(r){
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    return refresh();
+  }).catch(function(e){
+    $('audioNote').textContent = t('Could not save: ') + e.message;
+  }).then(function(){
+    btn.disabled = false;
+  });
 }
 
 translatePage();
