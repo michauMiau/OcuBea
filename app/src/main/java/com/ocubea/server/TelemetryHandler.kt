@@ -30,6 +30,7 @@ class TelemetryHandler(
     private val context: Context,
     private val cameraManager: CameraManager,
     private val audio: AudioStreamManager,
+    private val audioCodecs: AudioCodecProbe = AudioCodecProbe,
     private val auth: ApiAuth,
     private val config: OcuBeaConfig,
     private val sensors: DeviceSensors,
@@ -118,7 +119,13 @@ class TelemetryHandler(
             append("\"count\":${motionRecorder.listRecordings().size},")
             append("\"last\":\"${motionRecorder.lastRecordingFile.orEmpty()}\"},")
             append("\"audio\":{\"enabled\":${config.audioEnabled},")
-            append("\"clients\":${audio.clientCount()}},")
+            append("\"clients\":${audio.clientCount()},")
+            // Which codec the endpoints serve and what this device can prove it
+            // has, so a remote reader can tell a silent stream from an absent
+            // encoder. `codec` is the stored preference, `default` is what a
+            // client gets when it does not ask for anything.
+            append("\"codec\":\"${config.audioCodecOrDefault(audioCodecs.defaultId())}\",")
+            append("\"available\":\"${audioCodecs.summary()}\"},")
             append("\"auth_required\":${auth.isEnabled()},")
             append("\"battery_level\":${batteryLevel()}")
             append("}")

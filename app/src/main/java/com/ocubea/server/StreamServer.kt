@@ -45,6 +45,7 @@ class StreamServer(
     private val sensors = DeviceSensors(context.applicationContext)
     private val audio = AudioStreamManager(context.applicationContext)
     private val audioAdmission = AudioAdmissionControl()
+    private val audioCodecs = AudioCodecProbe
 
     /**
      * Bounded connection handling. NanoHTTPD's default spawns one Thread per
@@ -350,25 +351,59 @@ class StreamServer(
                 "Too many audio clients (max ${audioAdmission.maxClients})"
             )
         }
-        // AAC/Opus need an encoder we do not ship; serve WAV so clients get
-        // real audio rather than silence.
-        val mime = "audio/x-wav"
+        // The extension the client asked for wins, so `/audio.opus` gets Opus
+        // and `/audio.aac` gets AAC -- instead of both silently returning WAV
+        // bytes under a name that promises otherwise. The client's request is
+        // only honoured when the device proved it can encode that; the stored
+        // preference is the fallback, then the probe's default, then WAV.
+        val asked = uriPath.substringAfterLast('.', "").lowercase()
+        val menu = audioCodecs.options()
+        val stored = config.audioCodecOrDefault(audioCodecs.defaultId())
+        val option = menu.firstOrNull { it.id == asked }
+            ?: menu.firstOrNull { it.id == stored }
+            ?: menu.firstOrNull { it.id == audioCodecs.defaultId() }
+            ?: menu.first { it.id == "wav" }
+        return if (option.id == "wav") serveWavAudio() else serveEncodedAudio(option)
+    }
+
+    /**
+     * Raw PCM as a chunked WAV, the format that needs no encoder and so always
+     * works.
+     */
+    private fun serveWavAudio(): Response {
         // Not a PipedOutputStream: `pipe.write` blocks until the client has
         // drained 64 KB, and a client that is connected but not reading would
-        // hold the write forever. Because /audio.wav is a chunked response,
-        // NanoHTTPD keeps one pool thread for the whole connection, so 11 such
-        // clients take /status.json down with them -- measured, threshold
-        // exact at DEFAULT_MAX_THREADS. A per-path pool is not reachable:
-        // ClientHandler.inputStream is private and AsyncRunner only ever sees
-        // a socket. AudioRingBuffer.offer() returns false instead of waiting,
-        // so a slow client is dropped in microseconds and the thread unwinds.
+        // hold the write forever. Because the response is chunked, NanoHTTPD
+        // keeps a pool thread for the whole connection, so 11 such clients
+        // take /status.json down with them -- measured, threshold exact at
+        // DEFAULT_MAX_THREADS. A per-path pool is not reachable:
+        // ClientHandler.inputStream is private and AsyncRunner only ever sees a
+        // socket. AudioRingBuffer.offer() returns false instead of waiting, so
+        // a slow client is dropped in microseconds and the thread unwinds.
         val ring = AudioRingBuffer()
         val client = AudioStreamManager.Client(
             write = { buf, len -> ring.offer(buf, 0, len) },
             onDisconnect = { ring.close() }
         )
         audio.addClient(client)
-        return newChunkedResponse(Status.OK, mime, ring.asInputStream())
+        return newChunkedResponse(Status.OK, "audio/x-wav", ring.asInputStream())
+    }
+
+    /**
+     * Compressed audio, encoded once and shared by every client.
+     *
+     * A single encoder feeds all listeners, for the same reason the video path
+     * does: encoding per client would multiply the cost by the listener count on
+     * exactly the old phones this app targets.
+     */
+    private fun serveEncodedAudio(option: AudioCodecProbe.Option): Response {
+        // Not implemented yet: this is the branch the codec menu needs, and
+        // until the encoder exists it must not silently answer with WAV bytes
+        // under an AAC or Opus name.
+        return newFixedLengthResponse(
+            Status.NOT_IMPLEMENTED, "text/plain",
+            "${option.id} encoding is not wired up yet; asking for /audio.wav works"
+        )
     }
 
     private fun handleOnvif(session: IHTTPSession): Response {
