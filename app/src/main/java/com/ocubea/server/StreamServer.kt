@@ -340,14 +340,22 @@ class StreamServer(
         // AAC/Opus need an encoder we do not ship; serve WAV so clients get
         // real audio rather than silence.
         val mime = "audio/x-wav"
-        val pipe = java.io.PipedOutputStream()
-        val input = java.io.PipedInputStream(pipe, 64 * 1024)
+        // Not a PipedOutputStream: `pipe.write` blocks until the client has
+        // drained 64 KB, and a client that is connected but not reading would
+        // hold the write forever. Because /audio.wav is a chunked response,
+        // NanoHTTPD keeps one pool thread for the whole connection, so 11 such
+        // clients take /status.json down with them -- measured, threshold
+        // exact at DEFAULT_MAX_THREADS. A per-path pool is not reachable:
+        // ClientHandler.inputStream is private and AsyncRunner only ever sees
+        // a socket. AudioRingBuffer.offer() returns false instead of waiting,
+        // so a slow client is dropped in microseconds and the thread unwinds.
+        val ring = AudioRingBuffer()
         val client = AudioStreamManager.Client(
-            write = { buf, len -> try { pipe.write(buf, 0, len); pipe.flush(); true } catch (_: Exception) { false } },
-            onDisconnect = { try { pipe.close() } catch (_: Exception) {} }
+            write = { buf, len -> ring.offer(buf, 0, len) },
+            onDisconnect = { ring.close() }
         )
         audio.addClient(client)
-        return newChunkedResponse(Status.OK, mime, input)
+        return newChunkedResponse(Status.OK, mime, ring.asInputStream())
     }
 
     private fun handleOnvif(session: IHTTPSession): Response {

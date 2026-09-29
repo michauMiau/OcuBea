@@ -1372,6 +1372,52 @@ była poprawna co do objawu, błędna co do przyczyny.
 Zapytałem o wybór, nie dostałem odpowiedzi, więc **nic nie zmieniłem** — to
 zmiana architektury serwera, nie poprawka błędu.
 
+### Rozwiązanie: `AudioRingBuffer` zamiast pipe (wdrożone)
+
+Punkt 1 z listy powyżej **okazał się nieosiągalny przez API biblioteki** —
+sprawdziłem bajt po bajcie, zamiast zgadywać: `NanoHTTPD$ClientHandler` ma
+prywatne `inputStream`, a `AsyncRunner.exec()` przyjmuje tylko gniazdo. W
+momencie dispatchu **nie da się poznać ścieżki żądania**, więc routingu per
+ścieżka nie ma jak zrobić bez własnego serwera HTTP.
+
+Skoro nie można przenieść audio do innego basenu, trzeba **zmniejszyć koszt
+klienta tak, żeby jego porzucenie było tanie**. Stąd `AudioRingBuffer`:
+
+| | `PipedOutputStream` | `AudioRingBuffer` |
+|---|---|---|
+| `write` gdy klient nie czyta | **blokuje na zawsze** | zwraca `false`, klient odrzucony |
+| koszt porzucenia klienta | wątek serwera zajęty na stałe | mikrosekundy, wątek się zwija |
+| `close()` budzi czytającego | zależne od pipe | `signalAll` + `-1` z `read` |
+
+`offer()` nigdy nie czeka na miejsce. Klient, który nie nadąża, dostaje `false`
+i jest wypisywany przez `AudioFanOut` w tym samym ticku co zwykle, więc jego
+wątek NanoHTTPD natychmiast się zwija. 64 KB przy 44.1 kHz 16-bit mono to
+~0.74 s audio, więc zdrowy klient nigdy nie widzi upuszczenia —
+`aSteadyReaderNeverGetsDropped` pilnuje tego w teście.
+
+**11 testów, 3/3 mutacje wykryte:**
+
+1. `offer` czekające na miejsce zamiast odrzucać (dokładnie stary bug pipe) —
+   pada `aWriterIsNeverBlockedByASlowReader`;
+2. `close()` bez `signalAll` — pada `closeWakesABlockedReaderWithEndOfStream`;
+3. `arraycopy` kopiujące `first` zamiast `len - first` — pada
+   `theBufferWrapsAndStaysInOrder`.
+
+Mutacja 3 **przeszła** za pierwszym razem, bo mój test używał wyrównanych
+2-bajtowych chunków, przez co `first` i `len - first` wychodziły równe — kopiowanie
+złego fragmentu było niewidoczne. Layout policzyłem symulacją indeksów, nie
+zgadywaniem: `capacity=12, fill=10, read=4, offer=6` → `w=10, first=2, rest=4`.
+Po poprawce ta sama mutacja pada.
+
+### Czego nadal nie zweryfikowałem na telefonie
+
+Restart telefonu przez ADB **zabił połączenie** — port 33379 to tymczasowy port
+debugowania i po restarcie go nie ma (`Connection refused` na 33379 i 5555).
+Bez telefonu nie mogę zmierzyć progu na nowym buildzie: oczekiwane zachowanie to
+`200` na `/status.json` przy 14 klientach audio, bo każdy zostanie porzucony
+po ~0.74 s zamiast trzymać wątek. Po podłączeniu: `./gradlew installDebug`, potem
+`pool2.py /audio.wav 14 80`.
+
 ### Stan weryfikacji profilera
 
 Przycisk 📈 działa, `PerfActivity` startuje, ekran renderuje poprawnie
