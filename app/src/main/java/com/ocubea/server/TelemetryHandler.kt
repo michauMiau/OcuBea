@@ -52,6 +52,28 @@ class TelemetryHandler(
 
     fun uptimeSeconds(): Long = (System.currentTimeMillis() - startedAt) / 1000
 
+    /**
+     * Resident set size in whole megabytes, or 0 when it cannot be read.
+     *
+     * Zero rather than a guess: a leak hunt needs to be able to say "this
+     * number is unavailable" instead of reporting 0 and being read as "the
+     * process uses nothing". /proc/self/status is readable on every Android
+     * version this app supports, so the fallback is only for the case where
+     * something has gone wrong well enough to break file IO as well.
+     */
+    private fun residentMb(): Int {
+        return try {
+            val line = java.io.File("/proc/self/status")
+                .useLines { lines -> lines.firstOrNull { it.startsWith("VmRSS:") } }
+            // Format is "VmRSS:\t  123456 kB" -- a number, whitespace, a unit.
+            val kb = line?.trim()?.removePrefix("VmRSS:")
+                ?.trim()?.removeSuffix("kB")?.trim()?.toLongOrNull() ?: 0L
+            (kb / 1024).toInt()
+        } catch (_: Exception) {
+            0
+        }
+    }
+
     /** Escapes a string for safe inclusion inside a JSON string literal. */
     private fun jsonEscape(value: String): String {
         val sb = StringBuilder(value.length + 8)
@@ -154,6 +176,13 @@ class TelemetryHandler(
             append("},")
             append("\"available\":\"${audioCodecs.summary()}\"},")
             append("\"auth_required\":${auth.isEnabled()},")
+            // Resident set size, so a leak is visible from outside. Every
+            // counter in this file can be healthy while a codec, a thread or a
+            // client ring is still being retained somewhere, and PSS is the one
+            // number that says so without a debugger attached. Measured from
+            // /proc/self/status because Debug.getMemoryInfo reports the whole
+            // process, which is the same thing but slower and less precise.
+            append("\"rss_mb\":${residentMb()},")
             append("\"battery_level\":${batteryLevel()}")
             append("}")
         }
