@@ -49,7 +49,24 @@ object AudioCodecProbe {
         val bitrate: Int,
         val container: String,
         val note: String
-    )
+    ) {
+        /**
+         * What the HTTP response says it is carrying.
+         *
+         * Not the same string as [mime]: the MediaCodec mime for Opus is
+         * `audio/opus` but the byte stream is Ogg, and a browser handed
+         * `audio/opus` will not play it. A client that trusts the content type
+         * is being told the truth here, which is the whole reason the WAV-under-
+         * an-AAC-name path was removed.
+         */
+        val contentTypeForHttp: String = when (id) {
+            "aac" -> "audio/aac"
+            "opus" -> "audio/ogg; codecs=opus"
+            "amrnb" -> "audio/amr"
+            "flac" -> "audio/flac"
+            else -> "application/octet-stream"
+        }
+    }
 
     /**
      * The menu, in the order the settings screen shows it: cheapest and best

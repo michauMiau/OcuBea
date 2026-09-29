@@ -10,7 +10,8 @@
 - [x] WebUI — full dark theme with controls (torch, night vision, camera switch, zoom, quality, focus)
 - [x] App UI — SettingsActivity with port, resolution, FPS, night vision, mic toggles
 - [x] IP Webcam compatible API (status.json, /info, /shot.jpg, /focus, /ptz, /api/camera, /torchon, /torchoff)
-- [x] Audio streaming (WAV, one-way)
+- [x] Audio streaming (WAV, one-way — 695 kbps; AAC/Opus encoders work but
+      are not wired to the stream, endpoints return 501)
 - [x] Software Night Vision Enhancement
 - [x] Configurable HTTP server port (default 8080, stored in SharedPreferences)
 - [x] Motion Detection Recording (MJPEG-in-AVI to `/recordings`, fMP4 clips to `/clips`)
@@ -27,6 +28,22 @@
 - [x] Optional access token for the whole HTTP API
 - [x] Full API Parity (core IP Webcam endpoints)
 
+### Test-device status (2026-09-29)
+
+The camera is **not** reliably available on the test phone. Opening the sensor
+intermittently fails with `Device error received, code 3`; a reboot cleared it
+once, and it has come back. Anything below that describes video, HLS or clips
+being measured is a report of what worked in the session where it was measured,
+not a promise that it works on any given start.
+
+When the camera is down the server stays up and says so rather than pretending:
+`/status.json` reports `camera_active: false` and `pipeline.last_error`,
+`/video`, `/hls` and `/startvideo` return `503 Camera not streaming`, and
+`/shot.jpg` returns `204 No frame yet`. Note that the app's own main screen
+still shows a green "live" line in this state — it reads fps and viewer counts,
+not `camera_active` — so check `camera_active` remotely rather than trusting
+the phone's screen.
+
 ### HTTP surface
 
 Routing lives in a single `when` block — `StreamServer.route()`
@@ -41,7 +58,7 @@ delegated to `TelemetryHandler`.
 | HLS (fMP4) | `/hls`, `/hls/index.m3u8`, `/hls.m3u8`, `/hls/init.mp4`, `/hls/seg<N>.m4s`, `/hls/profile` |
 | Clips (fMP4) | `/clips`, `/clips/<name>`, `/clips/<name>/download`, `DELETE /clips/<name>`, `POST /clips/record`, `/clips/record/stop`, `/clips/delete`, `/clips/clear`, `/clips/prune`, `/clips/recording` |
 | Recordings (AVI) | `/recordings`, `/recordings/<name>.avi`, `/startvideo`, `/stopvideo`, `/list_videos`, `/videos`, `/v/<name>` |
-| Audio | `/audio.wav`, `/audio.aac`, `/audio.opus`, `/inband.aac`, `/talk` |
+| Audio | `/audio.wav` (works), `/audio.aac`, `/audio.opus`, `/inband.aac`, `/talk` (501 — encoder not wired) |
 | Controls | `/focus`, `/nofocus`, `/ptz`, `/ptt`, `/torchon`, `/torchoff`, `/enabletorch`, `/disabletorch`, `/api/camera` |
 | Settings | `POST /settings`, `/settings/<name>?set=<value>` |
 | Telemetry | `/status.json`, `/info`, `/sensors.json`, `/config.json`, `/codecs.json` |
@@ -49,10 +66,26 @@ delegated to `TelemetryHandler`.
 
 Notes, all verified in code:
 
-* `/audio.aac` and `/audio.opus` are accepted but served as WAV — there is no
-  AAC/Opus encoder (`StreamServer.kt:340`).
+* **The phone's address is not fixed.** It is on DHCP, and there is no mDNS,
+  Bonjour, hostname registration or pairing flow anywhere in the app, so there is
+  no name to resolve and no address worth hardcoding. The app prints its own
+  current URL on the main and settings screens (`MainActivity.kt:320-322`,
+  `SettingsActivity.kt:343-353`), and `/sensors.json` reports it as
+  `network.ip`. An address that was correct yesterday may be a laptop today.
+* `/audio.wav` is the **only** working audio endpoint. `/audio.aac` and
+  `/audio.opus` are routed and the encoders work on the test phone, but the
+  encoder is not wired to the stream, so both return **HTTP 501**
+  (`StreamServer.kt:439-447`). They used to return WAV bytes under the name you
+  asked for; that was a lie a client could not detect, so it was removed.
+* WAV costs about **695 kbps — 5.2 MB a minute per client** (measured:
+  86,868 B/s). It is 16-bit PCM at 44.1 kHz. At most 8 clients can stream audio
+  at once; the cap exists because each chunked response holds one of the 12 HTTP
+  pool threads for the life of the connection.
+* The WebUI audio picker does round-trip — Opus / No audio / AAC each save and
+  show up in `/status.json` — but the picker also offers codecs the server will
+  501 on. Picking one is not the same as getting audio.
 * `/startvideo` only *arms* the Motion-JPEG recorder; the file opens on the
-  next motion event (`StreamServer.kt:1059`).
+  next motion event (`StreamServer.kt:1178`).
 * Clips use HTTP byte ranges, so a browser can seek in them
   (`StreamServer.kt:1035`).
 * HLS starts lazily on the first playlist request and answers `503` until the
@@ -124,7 +157,8 @@ See [docs/SECURITY_CAMERA.md](docs/SECURITY_CAMERA.md) and
 - [x] Basic App UI to change settings
 - [x] Basic API
 - [x] Motion Detection Recording (security camera)
-- [x] Audio Streaming (one-way, WAV)
+- [x] Audio Streaming (one-way, WAV only — AAC/Opus endpoints exist but return
+      501 until the encoder is wired)
 - [ ] Bidirectional Audio
 - [ ] HTTPS Support
 - [ ] More Streaming codecs
@@ -141,7 +175,7 @@ See [docs/SECURITY_CAMERA.md](docs/SECURITY_CAMERA.md) and
 ./gradlew test
 ```
 
-177 unit tests under `app/src/test/`.
+241 unit tests under `app/src/test/` (27 files, none skipped).
 
 ## 📄 License
 GPL — see [LICENSE](LICENSE) (GPLv3).

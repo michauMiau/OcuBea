@@ -7,15 +7,20 @@ poniższa tabela jest stanem faktycznym, zweryfikowanym w kodzie, nie planem.
 
 ## Co już istnieje (nie pisać drugiego systemu)
 
-| Element | Gdzie | Stan |
+Poniższa tabela to **stan wyjściowy z 2026-09-27**, sprzed zamiany `AviWriter`
+na fMP4. Została tu jako punkt odniesienia („co było, zanim zrobiliśmy to
+po raz drugi") — nie opisuje bieżącego stanu. Aktualny stan jest w sekcji
+„Kolejność" na końcu dokumentu; klipy fMP4 i retencja są wdrożone.
+
+| Element | Gdzie | Stan wtedy |
 |---|---|---|
-| `MotionDetector` 32×24 | `security/SecurityCamera.kt:15` | działa, próg z czułości |
-| `MotionRecorder` | `security/SecurityCamera.kt:90` | pre-buffer + post-motion, ale zapisuje **AVI** przez `AviWriter` |
-| `AviWriter` (MJPEG w AVI) | `security/AviWriter.kt` | 146 linii, nie fMP4 |
-| `/recordings` GET/DELETE | `server/StreamServer.kt:825` | listuje, kasuje, serwuje `video/x-msvideo` |
-| `/startvideo` `/stopvideo` | `StreamServer.kt:80-81` | stuby, nie nagrywają niczego |
-| `/list_videos` | `StreamServer.kt:82` | istnieje, trzeba sprawdzić czy nie koliduje |
-| pola config | `model/OcuBeaConfig.kt:62-78` | `securityEnabled`, `motionSensitivity`, `motionRecord`, `preRecordSeconds`, `maxClipSeconds` |
+| `MotionDetector` 32×24 | `security/SecurityCamera.kt:16` | działa, próg z czułości |
+| `MotionRecorder` | `security/SecurityCamera.kt:140` | pre-buffer + post-motion, zapisywał **AVI** przez `AviWriter` |
+| `AviWriter` (MJPEG w AVI) | `security/AviWriter.kt` | 184 linie, nie fMP4 — wciąż używany przez `/recordings` |
+| `/recordings` GET/DELETE | `server/StreamServer.kt:175` (handler `:936`) | listuje, kasuje, serwuje `video/x-msvideo` |
+| `/startvideo` `/stopvideo` | `StreamServer.kt:130-131` | uzbraja nagrywanie ruchu; plik otwiera dopiero przy zdarzeniu ruchu (`handleStartVideo`, `StreamServer.kt:1165`) |
+| `/list_videos` | `StreamServer.kt:132` | istnieje, nie koliduje z `/clips` |
+| pola config | `model/OcuBeaConfig.kt:105-121` | `securityEnabled`, `motionSensitivity`, `motionRecord`, `preRecordSeconds`, `maxClipSeconds` |
 
 **Wniosek:** detektor ruchu i maszyna stanowa nagrywania są gotowe. Brakuje
 zapisu w dobrym formacie, retencji i UI. Najmniejsza poprawka to **podmiana
@@ -100,8 +105,10 @@ z potwierdzeniem.
 4. Nagrywanie ondemand — **zrobione**, zamknięcie po `seconds` potwierdzone
 5. Retencja: czas → miejsce → liczba plików — **zrobione**, kryteria
    niezależne, `ClipRetentionScheduler` sprząta automatycznie
-6. Natywny ekran w aplikacji — **kod gotowy, `BUILD SUCCESSFUL`, ale
-   NIEPRZETESTOWANY na urządzeniu** (brak ADB)
+6. Natywny ekran w aplikacji — **zrobione i sprawdzone na urządzeniu**
+   (2026-09-28, Redmi Note 10 Pro / Android 13: siatka renderuje klipy z datą
+   i rozmiarem, `DELETE /clips/<nazwa>` działa, `MediaMetadataRetriever`
+   dekoduje klatkę, miniatury pokazują realną treść).
 
 ## Natywny ekran — co jest i czego nie wiadomo
 
@@ -113,11 +120,12 @@ Celowo jedna ścieżka odczytu plików: odtwarzacz w aplikacji idzie przez HTTP
 Range, dokładnie tak jak przeglądarka. Wada: dwie ścieżki można naprawić
 rozłącznie.
 
-**Niesprawdzone na urządzeniu:** siatka się rysuje, przycisk „Klipy" działa,
-odtwarzacz w aplikacji odtwarza. Wszystko to kompiluje się, ale nie było
-uruchomione. Do zrobienia przy najbliższym podłączonym telefonie:
-kliknąć „Klipy", zobaczyć siatkę, odtworzyć klip, usunąć przez long-press,
-sprawdzić czy `REC` pojawia się przy nagrywaniu.
+**Sprawdzone na urządzeniu 2026-09-28:** siatka rysuje się, przycisk „Klipy"
+działa, `DELETE /clips/<nazwa>` kasuje, `MediaMetadataRetriever` dekoduje klatkę
+(`frame=1920x1080`), a miniatury w siatce pokazują realną treść.
+**Nadal niesprawdzone:** samo odtworzenie w natywnym odtwarzaczu (odtwarzac
+w aplikacji idzie przez HTTP Range, dokładnie tak jak przeglądarka) oraz
+long-press → zaznaczanie → „USUŃ ZAZNACZONE".
 
 ## Kryterium sukcesu
 
@@ -130,4 +138,12 @@ sprawdzić czy `REC` pojawia się przy nagrywaniu.
   przy 1080p; jakość/bitrate do obniżenia
 * `status.json.pipeline.dropped` nie rośnie przy aktywnym zapisie
   — **niezmierzone**
-* natywny ekran — **niezmierzone**
+* natywny ekran — **częściowo zmierzone** (siatka, usuwanie, miniatury tak;
+  samo odtwarzanie i long-press nie)
+
+Uwaga do kryteriów powyżej: dwa z nich („`duration` w `mvhd` = 0" w sekcji
+Pułapki oraz „klip 60 s zajmuje < 20 MB") dotyczą stanu z 2026-09-27.
+`duration` **zostało naprawione** — przy zamykaniu klipu init jest przebudowywany
+z prawdziwym `mvhd.duration` (patrz `SECURITY_CAMERA.md`, sekcja „Prawdziwy czas
+trwania"), potwierdzone `ffprobe` i Chromium. Rozmiar klipu nadal przekracza
+limit: zmierzone 55 MB/min przy 1080p.

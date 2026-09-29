@@ -40,11 +40,25 @@ class AudioEncoder private constructor(
     private val mime: String
 ) {
 
+    /**
+     * Channel count as given to [start]. Needed later by the container: an ADTS
+     * header states the channel configuration in three bits and a demuxer
+     * cannot guess it, so it has to be remembered from configuration time.
+     */
+    private var channels: Int = 1
+
     companion object {
         private const val TAG = "OcuBeaAudioEnc"
 
         /** PCM the encoder consumes: 48 kHz mono, 16-bit. */
         const val ENCODER_SAMPLE_RATE = 48_000
+
+        /**
+         * MediaCodec hands the Opus encoder's configuration to the output queue
+         * as `AOPUSHD` + version + channel count + a full OpusHead. It is not an
+         * Opus packet and must not reach the stream.
+         */
+        internal val OPUS_CONFIG_MAGIC = "AOPUSHD".toByteArray(Charsets.US_ASCII)
 
         /**
          * One 20 ms frame at 48 kHz mono, in samples.
@@ -80,8 +94,17 @@ class AudioEncoder private constructor(
         else -> "application/octet-stream"
     }
 
-    /** True when each encoded frame needs a container header around it. */
-    private val wrapped: Boolean = codecId == "opus"
+    /**
+     * True when each encoded frame needs a container header around it.
+     *
+     * Opus needs Ogg. AAC also needs a container, and a different one: an AAC
+     * encoder emits a bare access unit, which carries neither the sample rate
+     * nor the channel count nor its own length, so a raw `audio/aac` body is
+     * undecodable -- ffmpeg answers "Error decoding AAC frame header". The
+     * framing for AAC is ADTS, seven bytes in front of every frame, and
+     * `audio/aac` is exactly the content type that means "ADTS-framed AAC".
+     */
+    private val wrapped: Boolean = codecId == "opus" || codecId == "aac"
 
     private var codec: MediaCodec? = null
     private var framesIn = 0L
@@ -98,6 +121,7 @@ class AudioEncoder private constructor(
      */
     fun start(sampleRate: Int, channels: Int, bitrate: Int) {
         check(codec == null) { "encoder already started" }
+        this.channels = channels
         val format = MediaFormat.createAudioFormat(mime, sampleRate, channels)
             .apply {
                 setInteger(MediaFormat.KEY_BIT_RATE, effectiveBitrate(bitrate))
@@ -106,6 +130,21 @@ class AudioEncoder private constructor(
                         MediaFormat.KEY_AAC_PROFILE,
                         MediaCodecInfo.CodecProfileLevel.AACObjectLC
                     )
+                    "opus" -> {
+                        // Raw mode: MediaCodec returns bare Opus packets and
+                        // leaves the container to us.
+                        //
+                        // With the flag UNSET the Android encoder prefixes every
+                        // packet with its own byte 0x78, which is not a valid
+                        // TOC configuration (RFC 6716 defines 0-11), so libopus
+                        // rejects the whole stream no matter how correctly the
+                        // Ogg pages around it are built -- and those pages were
+                        // verified byte-for-byte against a reference libopus file.
+                        // MediaFormat.KEY_OPUS_FLAGS does not exist in the
+                        // android-35 stubs -- checked, it is a @hide constant.
+                        // The underlying key is the literal string.
+                        setInteger("opus-flags", 1)
+                    }
                     // No frame-duration key for Opus: MediaFormat has no
                     // KEY_FRAME_SIZE_IN_MICROSECONDS (checked against the
                     // android-35 stubs), so the frame size is conveyed by
@@ -130,41 +169,123 @@ class AudioEncoder private constructor(
      * [FRAME_SAMPLES] long: audio capture does not promise frame alignment, so
      * the caller re-frames and keeps the leftover.
      */
+    /**
+     * Queues one frame of PCM and returns what the encoder has produced, or an
+     * empty array if it has not produced anything yet.
+     *
+     * The empty result is normal, not an error. A MediaCodec encoder buffers:
+     * it emits a frame some time after the input was queued, usually on a later
+     * dequeue than the one that followed the queue call. The first version
+     * gave the whole exchange 5 ms and returned empty, so the capture loop kept
+     * calling with fresh PCM, the codec kept buffering, and the stream carried
+     * the header and nothing else -- an Opus file that no player would play and
+     * an AAC response with a zero-length body.
+     *
+     * So this separates the two halves properly: the input is queued with a
+     * short wait, and the output is then drained on a deadline long enough to
+     * cover the encoder's own latency. 40 ms is the frame period plus slack; the
+     * ring buffers return false rather than blocking, so a client that stopped
+     * reading costs a dropped frame and not a stalled microphone.
+     */
     fun encodeFrame(pcm: ShortArray): ByteArray {
         val codec = this.codec ?: error("encoder not started")
         require(pcm.size == FRAME_SAMPLES) {
             "expected $FRAME_SAMPLES samples, got ${pcm.size}"
         }
         val info = MediaCodec.BufferInfo()
-        val deadline = System.nanoTime() + 5_000_000L // 5 ms: a 20 ms frame is cheap
         val out = ByteArray(8_192)
 
-        while (System.nanoTime() < deadline) {
+        // Queue the input. `dequeueInputBuffer` returning -1 is normal right
+        // after a configure, so this is retried until the deadline rather than
+        // treated as a failure.
+        val queueDeadline = System.nanoTime() + 10_000_000L
+        while (System.nanoTime() < queueDeadline) {
             val inIdx = codec.dequeueInputBuffer(2_000)
-            if (inIdx >= 0) {
-                codec.getInputBuffer(inIdx)?.let { buf ->
-                    buf.clear()
-                    // asShortBuffer() keeps the ByteBuffer's own order, which is
-                    // the codec's native order; reordering would be a second
-                    // guess about something the platform already got right.
-                    buf.asShortBuffer().put(pcm)
-                }
-                codec.queueInputBuffer(inIdx, 0, FRAME_BYTES, framesIn * FRAME_SAMPLES * 1_000_000L / 48_000, 0)
-                framesIn++
+            if (inIdx < 0) continue
+            codec.getInputBuffer(inIdx)?.let { buf ->
+                buf.clear()
+                // asShortBuffer() keeps the ByteBuffer's own order, which is
+                // the codec's native order; reordering would be a second guess
+                // about something the platform already got right.
+                buf.asShortBuffer().put(pcm)
             }
-            val outIdx = codec.dequeueOutputBuffer(info, 2_000)
-            if (outIdx >= 0) {
+            val pts = framesIn * FRAME_SAMPLES * 1_000_000L / ENCODER_SAMPLE_RATE
+            codec.queueInputBuffer(inIdx, 0, FRAME_BYTES, pts, 0)
+            framesIn++
+            break
+        }
+
+        // Drain output until something actually comes out.
+        val drainDeadline = System.nanoTime() + 40_000_000L
+        while (System.nanoTime() < drainDeadline) {
+            val outIdx = codec.dequeueOutputBuffer(info, 5_000)
+            if (outIdx < 0) continue
+            if (info.size > 0) {
                 val payload = copyPayload(codec, outIdx, info, out)
-                if (info.size > 0) {
-                    // One frame in, one frame out, so the granule advances by
-                    // exactly one frame. Deriving it from BufferInfo instead
-                    // would break on the codecs that report a padded size.
-                    granule += FRAME_SAMPLES
-                    return if (wrapped) OggPage.page(payload, granule, pageSeq++) else payload
+                // Opus comes out of MediaCodec with a codec-configuration buffer
+                // that carries "AOPUSHD" and a full copy of OpusHead, mixed into
+                // the data stream. That is a Matroska/EBML-style header, not an
+                // Opus packet: sending it as page payload put
+                // `AOPUSHD...OpusHead...` into the audio stream, and libopus then
+                // read a TOC byte of 65 (a config the codec does not support)
+                // and the player refused the file. The config is not needed in
+                // the Ogg stream -- OpusHead already carries it -- so it is
+                // dropped here.
+                if (isOpusConfigPayload(payload)) {
+                    codec.releaseOutputBuffer(outIdx, false)
+                    return ByteArray(0)
+                }
+                // Granule position is the number of 48 kHz samples that END on
+                // this page, and the FIRST audio page is the exception: it ends
+                // ZERO samples, because nothing has finished playing yet.
+                //
+                // The Ogg Opus mapping says the first audio page carries
+                // granulepos == -1, and libopus indeed accepts that. ffmpeg's
+                // ogg demuxer does not: it treats a -1 as "this page has no
+                // granule" and rejects the stream with "Page at N is missing
+                // granule". A real libopus file uses granule=0 on the first
+                // audio page, which both accept, so that is what this writes --
+                // verified against a reference file produced by ffmpeg's own
+                // libopus encoder, byte for byte on the same field.
+                val thisGranule = granule
+                granule += FRAME_SAMPLES
+                // The buffer MUST be released whether or not it carried a
+                // payload. A MediaCodec holds a fixed pool of output buffers
+                // and every one taken and not given back is gone for good: the
+                // first version returned from inside this branch without
+                // releasing, so after the codec's initial burst the dequeue
+                // returned TRY_AGAIN forever and the stream stopped at whatever
+                // the header plus one frame happened to be.
+                codec.releaseOutputBuffer(outIdx, false)
+                return when (codecId) {
+                    "opus" -> OggPage.page(payload, thisGranule, pageSeq++)
+                    "aac" -> AdtsFrame.frame(payload, sampleRate = ENCODER_SAMPLE_RATE, channels = channels)
+                    else -> payload
                 }
             }
+            // A zero-size buffer is a codec-internal event (format change,
+            // codec config); releasing it is required or the codec stalls.
+            codec.releaseOutputBuffer(outIdx, false)
         }
         return ByteArray(0)
+    }
+
+    /**
+     * True for the Matroska-style Opus configuration buffer, which is
+     * "AOPUSHD" followed by a length and a complete copy of OpusHead.
+     *
+     * Pure byte inspection, no platform types, so it is testable on the JVM.
+     */
+    internal fun isOpusConfigPayload(payload: ByteArray): Boolean {
+        // The loop bound is the magic's own length, not a literal 8: the
+        // constant is "AOPUSHD", seven bytes, and indexing eight of them threw
+        // ArrayIndexOutOfBoundsException: length=7; index=7 on the very first
+        // frame of every stream.
+        for (i in OPUS_CONFIG_MAGIC.indices) {
+            if (i >= payload.size) return false
+            if (payload[i] != OPUS_CONFIG_MAGIC[i]) return false
+        }
+        return true
     }
 
     private fun copyPayload(
@@ -174,7 +295,17 @@ class AudioEncoder private constructor(
         into: ByteArray
     ): ByteArray {
         codec.getOutputBuffer(outIdx)?.let { buf ->
-            val n = minOf(info.size, into.size, buf.remaining())
+            // info.offset is where the payload starts inside the buffer. The
+            // Android Opus encoder writes a small amount of framing ahead of the
+            // packet -- with the first byte unaccounted for, the TOC decoded as
+            // configuration 15, which is not a valid Opus mode, and libopus
+            // refused the stream. Skipping to info.offset is what the API means.
+            val start = info.offset
+            val available = buf.remaining()
+            if (start >= available) return ByteArray(0)
+            buf.position(buf.position() + start)
+            val n = minOf(info.size, buf.remaining())
+            if (n <= 0) return ByteArray(0)
             buf.get(into, 0, n)
             return into.copyOf(n)
         }
@@ -187,7 +318,18 @@ class AudioEncoder private constructor(
      * are self-describing from byte one, so they get nothing here.
      */
     fun streamHeader(): ByteArray = when (codecId) {
-        "opus" -> OggPage.page(OggPage.opusHead(channels = 1), granule = 0, pageSeq = 0)
+        // BOS is page 0 and MUST consume sequence number 0, so the encoder's
+        // own counter has to be advanced with it. Emitting the header as page 0
+        // while the first audio page also claimed 0 produced a duplicate
+        // sequence number, which every demuxer treats as a broken stream --
+        // ffmpeg refused the file outright even though every CRC was valid.
+        "opus" -> {
+            val head = OggPage.page(
+                OggPage.opusHead(channels = 1), granule = 0, pageSeq = pageSeq
+            )
+            pageSeq++
+            head
+        }
         else -> ByteArray(0)
     }
 

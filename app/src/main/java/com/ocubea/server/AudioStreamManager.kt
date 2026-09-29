@@ -1,6 +1,7 @@
 package com.ocubea.server
 
 import android.content.Context
+import android.util.Log
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.annotation.SuppressLint
@@ -37,6 +38,39 @@ class AudioStreamManager(private val context: Context) {
         Thread(r, "ocubea-audio").apply { isDaemon = true }
     }
     @Volatile private var capturing = false
+
+    /**
+     * The encoded fan-out, attached by [attachEncoder] when a client asks for
+     * a compressed codec. Null means nobody has: the PCM path does not need it
+     * and building a MediaCodec for a WAV-only session would be waste.
+     */
+    @Volatile private var encoded: AudioEncoderFanOut? = null
+
+    /** Codec ids with at least one live encoded client. */
+    fun encodedCodecIds(): List<String> = encoded?.liveCodecs() ?: emptyList()
+
+    /**
+     * Adds a compressed client. Returns the ring to stream from, or null when
+     * the device cannot encode [codecId] -- the caller must then answer 501
+     * rather than fall back to PCM.
+     */
+    fun addEncodedClient(codecId: String, bitrate: Int): AudioRingBuffer? {
+        val fanOut = synchronized(this) {
+            // CHANNEL_CONFIG is AudioFormat.CHANNEL_IN_MONO (16), which is a
+            // bitmask, not a channel count. MediaCodec wants the count: 1.
+            encoded ?: AudioEncoderFanOut(SAMPLE_RATE, 1).also { encoded = it }
+        }
+        val ring = fanOut.addClient(codecId, bitrate) ?: return null
+        // The recorder has to be running for feed() to ever be called, and it
+        // only starts for PCM clients. This is the same ordering rule as
+        // addClient: register first, then touch the hardware.
+        ensureCapture()
+        return ring
+    }
+
+    fun removeEncodedClient() {
+        encoded?.removeClient()
+    }
 
     /** Per-client sink. Returning false (or throwing) from [write] drops it. */
     class Client(val write: (ByteArray, Int) -> Boolean, val onDisconnect: () -> Unit) {
@@ -96,7 +130,10 @@ class AudioStreamManager(private val context: Context) {
             val next = if (cur > 0) cur - 1 else 0
             if (clients.compareAndSet(cur, next)) break
         }
-        if (clients.get() <= 0) stop()
+        // Same rule as the capture loop: a session that is encoded-only has no
+        // PCM clients, and stopping the recorder there would silence the
+        // encoded stream too.
+        if (clients.get() <= 0 && encodedCodecIds().isEmpty()) stop()
     }
 
     // canRecord() below checks the permission and throws SecurityException if
@@ -148,17 +185,31 @@ class AudioStreamManager(private val context: Context) {
                 // writes with the lock released; see AudioFanOut for the
                 // measurement that forced that split. Here it is one call.
                 val dropped = activeClients.broadcast(buffer, read)
+                // The encoded path gets the same bytes, from the same read, so
+                // a WAV client and an AAC client work at once without either
+                // opening a second microphone -- two AudioRecords on one phone
+                // fight, and the loser silences the other.
+                for (codecId in encodedCodecIds()) {
+                    encoded?.feed(codecId, buffer, read)
+                }
                 if (dropped > 0) {
                     while (true) {
                         val cur = clients.get()
                         val next = if (cur > dropped) cur - dropped else 0
                         if (clients.compareAndSet(cur, next)) break
                     }
-                    if (clients.get() <= 0) stop()
+                    // Only the PCM count may stop the recorder. An encoded-only
+                    // session leaves clients.get() at zero, so testing it alone
+                    // tore down the capture loop on the very first read and
+                    // every stream carried nothing after its header.
+                    if (clients.get() <= 0 && encodedCodecIds().isEmpty()) stop()
                 }
             }
-        } catch (_: Exception) {
-            // recorder died — fall through to cleanup
+        } catch (e: Exception) {
+            // Logged, not swallowed: the first version had a bare
+            // `catch (_: Exception)` here and the loop died silently on its
+            // first read, which looks exactly like a dead microphone.
+            android.util.Log.w("OcuBeaAudio", "capture loop died", e)
         } finally {
             try { record.stop() } catch (_: Exception) {}
             try { record.release() } catch (_: Exception) {}
@@ -171,6 +222,9 @@ class AudioStreamManager(private val context: Context) {
     }
 
     fun stop() {
+        if (capturing) {
+            Log.i("OcuBeaAudio", "stop() from ${Thread.currentThread().stackTrace.drop(1).take(4).joinToString(" <- ")}")
+        }
         capturing = false
         activeClients.removeAll()
         clients.set(0)

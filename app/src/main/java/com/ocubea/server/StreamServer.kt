@@ -437,13 +437,17 @@ class StreamServer(
      * exactly the old phones this app targets.
      */
     private fun serveEncodedAudio(option: AudioCodecProbe.Option): Response {
-        // Not implemented yet: this is the branch the codec menu needs, and
-        // until the encoder exists it must not silently answer with WAV bytes
-        // under an AAC or Opus name.
-        return newFixedLengthResponse(
-            Status.NOT_IMPLEMENTED, "text/plain",
-            "${option.id} encoding is not wired up yet; asking for /audio.wav works"
-        )
+        // A null ring means the encoder refused to start even though the probe
+        // said it could. Answering 501 with the reason is the honest option;
+        // falling back to serveWavAudio() here would hand the client PCM under
+        // an `audio/aac` content type, which is the exact lie this path was
+        // written to remove.
+        val ring = audio.addEncodedClient(option.id, option.bitrate)
+            ?: return newFixedLengthResponse(
+                Status.NOT_IMPLEMENTED, "text/plain",
+                "encoder for ${option.id} did not start; /audio.wav still works"
+            )
+        return newChunkedResponse(Status.OK, option.contentTypeForHttp, ring.asInputStream())
     }
 
     private fun handleOnvif(session: IHTTPSession): Response {
