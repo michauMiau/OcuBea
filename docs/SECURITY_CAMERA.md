@@ -897,3 +897,81 @@ Nie naprawiam tego automatycznie: usunięcie pliku po cichu gorsze od
 pokazania go z ostrzeżeniem, a decyzja „co pokazać" należy do użytkownika.
 Możliwe rozwiązania to osobny licznik `suspect` w `/clips` i znacznik w UI,
 albo walidacja `moov` przy skanowaniu. Do wyboru.
+
+## HLS: wyciekany MediaCodec i telemetria, która kłamała (2026-09-29)
+
+Audyt `HlsSession` znalazł dwa realne defekty. Oba potwierdzone w bieżącym
+kodzie przed naprawą.
+
+### Wycięknięty MediaCodec przy nieudanym starcie
+
+`H264Encoder.start()` trzymał `MediaCodec` jako lokalną `val mc` wewnątrz
+`try`. Gdy `configure()` albo `start()` rzuciło, `catch` ustawiał
+`codec = null` — zgubienie ostatniej referencji **bez** `release()`.
+`MediaCodec` nie ma finalizera odzyskującego zasób natywny, więc enkoder
+zostawał przydzielony do końca procesu.
+
+Naprawione: `mc` jest deklarowane przed `try`, więc `catch` ma uchwyt:
+
+```kotlin
+var mc: MediaCodec? = null
+return try {
+    mc = MediaCodec.createByCodecName(info.name)
+    ...
+} catch (e: Exception) {
+    ...
+    try { mc?.release() } catch (_: Exception) {}
+    false
+}
+```
+
+**Wzmocnione przy okazji**: `pickHardwareAvcEncoder()` i `pickColorFormat()`
+też były poza `try`, więc wyjątek z `MediaCodecList` uciekał z `start()`
+zamiast dać `false` + czytelne `lastError`. To złamało kontrakt, na którym
+polega `CameraManager.startHls()` — i znalazł to dopiero test, nie audyt.
+Teraz odkrywanie enkodera jest w tej samej ochronie co `configure()`.
+
+### `hls.clients` rósł w nieskończoność
+
+`handleHlsPlaylist()` wołał `clientJoined()` **przy każdym pollu playlista**,
+a `clientLeft()` nie miał ani jednego wywołania w całym repo. `hls.clients`
+rósł ~2/s i nigdy nie mógł spaść. Licznik, którego nie da się zmniejszyć,
+jest gorszy niż brak licznika — każda przyszła polityka idle na `clients`
+była skazana na zaufanie do liczby, która nie znaczy niczego.
+
+Usunięte w całości: pole `clients`, `clientJoined()`, `clientLeft()` oraz
+wpis `"clients"` w `hlsStatus()`. WebUI dotykał tylko `audio.clients` (osobna
+ścieżka, nietknięta). Zmierzone po naprawie: `clients` zniknął z `/status.json`,
+pozostałe 11 kluczy `hls` bez zmian.
+
+Zostawione celowo: `requestKeyFrame()` — audyt nazwał je martwym, ale to
+udokumentowany haczyk („e.g. right after a client joins") bez wywołującego.
+Skasowanie wyrzuciłoby działający sposób na wymuszenie IDR.
+
+### Czego nie dało się zmierzyć, i dlaczego
+
+Wyciek jest **nieosiągalny przez API**: `pickHardwareAvcEncoder()` odfiltrowuje
+każdy rozmiar, którego sprzętowy enkoder nie obsługuje, więc `configure()`
+nigdy nie dostaje kodeka, którego nie umie skonfigurować. Próba na 4K
+(oczywisty sposób na wymuszenie błędu) zakończyła się `configure failed` =
+**0** trafień w logu — 4K po prostu jest obsługiwane. Ta nieosiągalność jest
+dokładnie powodem, dla którego błąd przetrwał.
+
+Test mutacyjny to potwierdził wprost: usunięcie `release()` **nie wywala
+żadnego testu JVM**, bo na zwykłym JVM `createByCodecName()` rzuca, zanim
+cokolwiek przydzieli. Zamiast udawać pokrycie, zabezpieczenie sprawdza kształt
+źródła (`ocubea.srcRoot` podawane w `app/build.gradle.kts`) i mówi wprost,
+czego nie potrafi. Dwie mutacje sprawdzone ręcznie — usunięcie `release()` oraz
+przywrócenie `clients` — obie wywalają właściwy test.
+
+## HLS nie startuje na tym telefonie (otwarte, nie regresja)
+
+Po obu naprawach zmierzone: `GET /hls/init.mp4` → **404**, `frames_encoded: 0`,
+`measured_fps: 0.0`, `last_error: none`, playlista → 503 „Encoder warming up".
+Sprawdzone **na czystym HEAD** (`git stash`) — identycznie, więc to nie jest
+skutek tych zmian.
+
+`codec` wskazuje `c2.mtk.avc.encoder`, więc wybór enkodera działa; `started`
+nie jest ustawiane. Do zdiagnozowania potrzebny jest log z `TAG` enkodera
+(dodam go do audytu przy najbliższej okazji). MJPEG `/video` działa
+normalnie, 15 FPS — użytkownik nie traci obrazu, tylko ścieżkę HLS.

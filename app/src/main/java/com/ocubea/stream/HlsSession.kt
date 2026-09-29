@@ -58,8 +58,6 @@ class HlsSession(
     @Volatile private var initReady = false
     @Volatile var mediaSequence = 0
         private set
-    @Volatile var clients = 0
-        private set
     @Volatile var lastError: String = "none"
         private set
 
@@ -226,10 +224,6 @@ class HlsSession(
         return "$whole." + frac.toString().padStart(3, '0')
     }
 
-    fun clientJoined() { clients++ }
-
-    fun clientLeft() { if (clients > 0) clients-- }
-
     /**
      * Stops the encoder once nobody is watching.
      *
@@ -241,7 +235,6 @@ class HlsSession(
         encoder.stop()
         initReady = false
         synchronized(ring) { ring.clear() }
-        clients = 0
         Log.i(TAG, "stopped $codecName")
     }
 }
