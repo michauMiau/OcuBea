@@ -47,6 +47,15 @@ class AudioEncoder private constructor(
      */
     private var channels: Int = 1
 
+    /**
+     * Set when the last listener is gone, read by the capture thread.
+     *
+     * Volatile because it is written on an HTTP thread and read on the capture
+     * thread, and the whole point is that the capture thread must see it without
+     * waiting on a lock the stopping thread is not holding.
+     */
+    @Volatile private var stopping: Boolean = false
+
     companion object {
         private const val TAG = "OcuBeaAudioEnc"
 
@@ -344,7 +353,29 @@ class AudioEncoder private constructor(
         else -> ByteArray(0)
     }
 
+    /**
+     * Asks the encoder to stop, without touching MediaCodec yet.
+     *
+     * Separate from [stop] on purpose. The capture thread is inside
+     * `dequeueOutputBuffer` while an HTTP thread discovers the last client
+     * disconnected, and calling `codec.stop()` from there throws
+     * IllegalStateException out of a codec that is mid-frame. Setting a flag
+     * first lets the capture thread finish its current frame and reach a point
+     * where nobody is touching the codec, and only then may the codec actually
+     * be shut down.
+     */
+    fun markStopping() {
+        stopping = true
+    }
+
+    /** The codec id, for a log line that has to name the thing being closed. */
+    fun codecIdForLog(): String = codecId
+
+    /** True once [markStopping] has been called, for the capture loop to check. */
+    fun isStopping(): Boolean = stopping
+
     fun stop() {
+        stopping = true
         codec?.let {
             try {
                 it.stop()

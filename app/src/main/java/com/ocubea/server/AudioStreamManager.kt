@@ -72,6 +72,17 @@ class AudioStreamManager(private val context: Context) {
         encoded?.removeClient()
     }
 
+    /**
+     * Encoder counters, empty when nothing has ever been encoded.
+     *
+     * Exposed so an empty stream can be diagnosed from outside. "feed_misses"
+     * climbing means the capture loop never handed PCM to the encoder;
+     * "packets_out" staying at zero while it climbs means the codec itself is
+     * silent. Those are completely different bugs and neither is visible from
+     * the outside without these numbers.
+     */
+    fun encodedStats(): Map<String, Int> = encoded?.stats() ?: emptyMap()
+
     /** Per-client sink. Returning false (or throwing) from [write] drops it. */
     class Client(val write: (ByteArray, Int) -> Boolean, val onDisconnect: () -> Unit) {
         // AudioFanOut owns the same shape. This alias keeps call sites in

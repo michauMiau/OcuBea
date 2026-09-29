@@ -136,6 +136,22 @@ class TelemetryHandler(
                     "\"note\":\"${o.note.escapeIt()}\"}"
             })
             append("],")
+            // Codecs this device encodes but cannot itself decode. They are
+            // still offered -- a working encoder is worth having -- but a client
+            // that picks one of these may well get silence back, and that needs
+            // to be visible from outside instead of being a mystery.
+            append("\"undecodable\":[")
+            append(audioCodecs.probe().undecodable.joinToString(",") { "\"$it\"" })
+            append("],")
+            // Encoder counters, so "the stream is empty" can be told apart from
+            // "the encoder is producing nothing" without a logcat. These are the
+            // numbers that separate the two, and they were unreachable before:
+            // feed_misses means no PCM reached the encoder at all, packets_out
+            // means PCM arrived and the codec gave nothing back.
+            val enc = audio.encodedStats()
+            append("\"encoded\":{")
+            append(enc.entries.joinToString(",") { (k, v) -> "\"$k\":$v" })
+            append("},")
             append("\"available\":\"${audioCodecs.summary()}\"},")
             append("\"auth_required\":${auth.isEnabled()},")
             append("\"battery_level\":${batteryLevel()}")

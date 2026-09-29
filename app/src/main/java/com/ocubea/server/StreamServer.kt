@@ -465,7 +465,46 @@ class StreamServer(
                 Status.NOT_IMPLEMENTED, "text/plain",
                 "encoder for ${option.id} did not start; /audio.wav still works"
             )
-        return newChunkedResponse(Status.OK, option.contentTypeForHttp, ring.asInputStream())
+        return EncodedAudioResponse(ring, option)
+    }
+
+    /**
+     * Holds the client open until it disconnects, then hands the ring back.
+     *
+     * The ring is the encoder's only record that anybody is listening, so a
+     * client that goes away without its ring being returned keeps the encoder
+     * running forever. That was not hypothetical: `addEncodedClient` had no
+     * matching call on the way out, so every AAC or Opus client ever served left
+     * a permanent listener behind -- one leaked encoder per session, on a phone
+     * that has a fixed number of codec instances to spend.
+     *
+     * Subclasses NanoHTTPD's Response rather than implementing an interface,
+     * because Response is a concrete class with a protected constructor and the
+     * chunked flag is only settable on an instance. `close()` is the hook: it
+     * runs when NanoHTTPD tears the session down, which is the only notification
+     * a client that simply vanishes will ever produce.
+     */
+    private inner class EncodedAudioResponse(
+        private val ring: AudioRingBuffer,
+        private val option: AudioCodecProbe.Option
+    ) : fi.iki.elonen.NanoHTTPD.Response(
+        fi.iki.elonen.NanoHTTPD.Response.Status.OK,
+        option.contentTypeForHttp,
+        ring.asInputStream(),
+        0L
+    ) {
+        init {
+            setChunkedTransfer(true)
+        }
+
+        override fun close() {
+            // Guarded: a client that hung up before the ring existed must not
+            // decrement anything, and this must never propagate out of close()
+            // -- a failure to tidy up cannot be allowed to become a broken
+            // response on a stream that was serving fine.
+            runCatching { audio.removeEncodedClient() }
+            super.close()
+        }
     }
 
     private fun handleOnvif(session: IHTTPSession): Response {
