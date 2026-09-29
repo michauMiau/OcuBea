@@ -115,7 +115,7 @@
     <string name="perf_idle">Not measuring. Tap Start, then use the app normally.</string>
     <string name="perf_no_spans">No spans recorded yet. Start the stream, then come back.</string>
     <string name="perf_legend">\n* percentiles are the newest window only, max spans the whole run</string>
-    <string name="perf_rejected">%1$d span names were refused: the registry is full (max %2$d). A caller is probably building a span name from a value.</string>
+    <string name="perf_rejected">%1$d rejected lookups: the registry is full (max %2$d). A caller is probably building a span name from a value.</string>
     <string name="perf_thread_unavailable">Main thread CPU: unavailable on this device</string>
     <string name="perf_thread_sampling">Main thread CPU: sampling…</string>
     <string name="perf_thread_value">Main thread CPU: %1$.1f%%</string>

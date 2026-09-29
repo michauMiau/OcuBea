@@ -6,6 +6,7 @@ import android.os.Build
 import com.ocubea.camera.CameraManager
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
+import com.ocubea.perf.Metrics
 import com.ocubea.onvif.OnvifDiscovery
 import com.ocubea.onvif.OnvifSoap
 import com.ocubea.security.ClipRetention
@@ -95,6 +96,17 @@ class StreamServer(
         val uri = session.uri ?: "/"
         val method = session.method
 
+        // Measured on every request, camera or not.
+        //
+        // The three span producers that exist (analyze, encode, mux) are all
+        // downstream of a single camera frame, so with a camera that never
+        // opened the profiler screen reported "No spans recorded yet" -- which
+        // was correct, and also useless: the HTTP path runs whenever anything
+        // polls /status.json, so the screen can say something true even with
+        // the camera dead. The name was already declared and never wired.
+        val timer = if (Metrics.enabled) Metrics.timer(Metrics.HTTP) else null
+        val t0 = if (timer != null) timer.begin() else 0L
+
         return try {
             // CORS preflight for browser clients. A foreign origin gets a
             // bare answer with no allow header, so the browser refuses to
@@ -110,6 +122,12 @@ class StreamServer(
             withCors(newFixedLengthResponse(
                 Status.INTERNAL_ERROR, "text/plain", "error: ${e.message}"
             ), requestOrigin(session))
+        } finally {
+            // finally, not after the try: the CORS preflight, the auth refusal
+            // and the 500 all return from inside the try, and a span that
+            // records only the happy path would under-report exactly the slow
+            // requests worth knowing about.
+            if (timer != null) timer.end(t0)
         }
     }
 
