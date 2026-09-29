@@ -1172,3 +1172,73 @@ Pozostaje fakt, że enkoder przestaje kodować w tej samej sesji, w której
 zapisuje pierwszy klip — dlatego `armed` wraca do `false` i kolejny ruch
 już nie nagrywa (audyt F3: nic nie uzbraja ponownie). To jest **osobny,
 nadal otwarty** defekt, nie ten sam.
+
+## HLS: wycofanie twierdzenia, że nie działa (2026-09-29)
+
+Pisałem przez kilka sesji, że „HLS nie startuje na telefonie" (`init=404`,
+`active=false`, `frames=0`). **To było fałszywe.** Powód był zawsze ten sam:
+`startHls()` jest wołany leniwie z handlera playlista, a telemetria
+`/status.json` czytana **przed** pierwszym żądaniem playlista zawsze
+pokazuje `active:false`.
+
+Stan faktyczny po `POST /hls/profile?set=low`:
+
+```
+active=true  codec=c2.mtk.avc.encoder  frames_encoded=84  segments=82
+bytes=3538800  measured_fps=12.1  profile=low  segment_ms=120
+last_error=none
+```
+
+Strumień nieprzerwany: `tfdt` = 896.45 s przy pierwszym pomiarze,
+`#EXT-X-MEDIA-SEQUENCE` rosnące (6601 → 10010), 20 segmentów w pierścieniu,
+playlista pobrana w 28–55 ms.
+
+### Kontrola spójności playlista ↔ bajty
+
+Pobrane 20 segmentów, porównane `EXTINF` z `tfdt` kolejnych segmentów:
+
+```
+seg6602  EXTINF=0.089  tfdt=590.706  (pierwszy)
+seg6603  EXTINF=0.089  realne=0.087  samples=1 dur=89306 size=48733
+seg6604  EXTINF=0.089  realne=0.088  samples=1 dur=89306 size=59389
+...
+seg6613  EXTINF=0.089  realne=0.088  samples=1 dur=89651 size=48813
+```
+
+Rozjazd mieści się w 30 ms, czyli w granicy samego kodera, i `size` z `trun`
+zgadza się z `mdat` bajt w bajt. Playlista nie kłamie.
+
+### Odtwarzalność
+
+Surowa konkatenacja `init.mp4` + 19 segmentów (bez demuxera HLS):
+
+```
+codec_name=h264  width=1280  height=720
+nb_read_packets=19  duration=1.71s  size=863994
+frame=19 fps=0.0 time=00:00:01.71   (ffmpeg -f null, zero bledow)
+```
+
+19 pakietów = 19 segmentów, każdy jedna klatka, dekoduje się bez błędu.
+Uwaga metodologiczna: demuxer HLS ffmpega raportował `nb_read_packets=3`
+dla tej samej zawartości. To limit demuxera, nie wada segmentów — surowa
+konkatenacja daje pełne 19. **Nie wnioskuj o zawartości mediów z demuxera
+HLS.**
+
+### `keyFrameIntervalSec = 0` w profilu low
+
+Ustawienie jest celowe: IDR co klatka to jedyny sposób, żeby segment
+zawsze zaczynał się klatką niezależną, czyli żeby klient nigdy nie czekał
+na poprzedni GOP. Cena to bitrate.
+
+Skutek uboczny: `segmentMs = 120` w tym profilu **nie jest osiągany**.
+`Fmp4Writer` tnie segment w momencie przyjścia IDR, a przy IDR co klatka
+każdy segment ma długość jednej klatki (~89 ms przy 12 fps). `EXTINF`
+opisuje prawdziwą długość, więc playlista jest uczciwa, ale nazwa
+`segment_ms` w telemetrii kłamie o 25%.
+
+`#EXT-X-TARGETDURATION:1` to `ceil(89ms) = 1`, zgodne ze specyfikacją
+(RFC 8216 §4.3.3.1) — konserwatywne, nie błędne.
+
+**Status: HLS działa, nie wymaga naprawy.** Do rozważenia jako decyzja
+produktowa: czy `segment_ms` w telemetrii ma raportować długość
+deklarowaną, czy realną.
