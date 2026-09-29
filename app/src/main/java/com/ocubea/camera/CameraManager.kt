@@ -3,18 +3,23 @@ package com.ocubea.camera
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.os.Handler
+import android.os.Looper
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Observer
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
 import com.ocubea.stream.FrameHub
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicInteger
 import com.ocubea.perf.Metrics
 
 /**
@@ -42,6 +47,42 @@ class CameraManager(
 
     @Volatile var isStreaming = false
         private set
+
+    /**
+     * What the caller asked for, as opposed to what the device is doing.
+     *
+     * `isStreaming` answers "is the camera open", which is what /status.json
+     * must report. This answers "should it be open", which is what start(),
+     * stop() and rebind() branch on. Conflating the two is how a settings change
+     * arriving while the device is still PENDING_OPEN gets dropped.
+     */
+    @Volatile private var wantStreaming = false
+
+    /**
+     * Monotonic token for the current open attempt.
+     *
+     * start() is asynchronous: bindToLifecycle returns a handle immediately and
+     * the device opens later, so two callers can both pass an `isStreaming`
+     * guard and both bind -- and the second unbindAll() cancels the first. Every
+     * async continuation carries the generation it began with and checks it
+     * before touching the camera, so only the newest one wins.
+     */
+    private val openGeneration = AtomicInteger(0)
+
+    /**
+     * Reopen backoff, doubling from 1 s to a 30 s ceiling.
+     *
+     * The old watchdog reopened every 30 s with no backoff, and a stop/open
+     * pair overlapping the previous device's async close is itself a way to
+     * provoke another error -- a restart loop feeding itself.
+     */
+    @Volatile private var retryDelayMs = 1_000L
+    @Volatile private var retryScheduled = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var stateObserver: Observer<CameraState>? = null
+
+    /** True while a reopen is already queued, so the watchdog does not stack one. */
+    val isRetryPending: Boolean get() = retryScheduled
 
     /** Live values mirrored from config at bind time, safe to read from any thread. */
     @Volatile var nightVisionEnabled = config.nightVision
@@ -195,33 +236,126 @@ class CameraManager(
      * being minimized or destroyed.
      */
     fun start(onError: (String) -> Unit = {}) {
-        if (isStreaming) return
+        if (wantStreaming && isStreaming) return
+        wantStreaming = true
         val owner = lifecycleOwner
         if (owner == null) {
+            wantStreaming = false
             onError("No lifecycle owner — camera cannot be bound")
             return
         }
+        val generation = openGeneration.incrementAndGet()
         try {
             val future = ProcessCameraProvider.getInstance(context)
             future.addListener({
+                // A newer start(), or a stop(), may have run while this future
+                // was in flight. The generation decides who may bind.
+                if (generation != openGeneration.get() || !wantStreaming) return@addListener
                 try {
                     val provider = future.get()
                     cameraProvider = provider
                     applyConfigToFields()
-                    bindAnalysis(provider, owner)
-                    isStreaming = true
+                    bindAnalysis(provider, owner, generation)
+                    // isStreaming is deliberately NOT set here. bindToLifecycle
+                    // returns before the device is open, so setting it now is
+                    // reporting a wish as a fact -- which is exactly what
+                    // /status.json was reporting while the camera was dead. It
+                    // is set by the state observer on CameraState.Type.OPEN.
                 } catch (e: Exception) {
                     isStreaming = false
                     val msg = "Failed to start camera: ${e.message}"
                     onError(msg)
                     onCameraError?.invoke(msg)
+                    scheduleReopen(msg)
                 }
             }, ContextCompat.getMainExecutor(context))
         } catch (e: Exception) {
             val msg = "Failed to start camera: ${e.message}"
             onError(msg)
             onCameraError?.invoke(msg)
+            scheduleReopen(msg)
         }
+    }
+
+    /**
+     * Reacts to CameraX's own view of the device.
+     *
+     * This is the only way to learn about an asynchronous device failure.
+     * bindToLifecycle returns before the camera is open, so an exception from
+     * it says nothing about whether the device ever opened, and a device error
+     * arrives long after start() returned.
+     *
+     * CameraX 1.3.0 treats camera2 code 3 (ERROR_CAMERA_DISABLED) as terminal by
+     * design: Camera2CameraImpl$StateCallback.handleErrorOnOpen routes only 1
+     * (IN_USE), 2 (MAX_CAMERAS_IN_USE) and 4 (DEVICE) to reopenCameraAfterError,
+     * and for 3 it publishes CLOSED with StateError code 5 and closes the device
+     * for good. Nothing in this app ever re-opened it, so one disabled camera
+     * meant `camera=false` and `HTTP 204` on /shot.jpg until the phone was
+     * rebooted -- and the reboot did not help either, because the disable is
+     * what persists.
+     */
+    private inner class CameraStateObserver(private val generation: Int) : Observer<CameraState> {
+        override fun onChanged(state: CameraState) {
+            // A superseded bind, or a stop() that arrived meanwhile, must not
+            // make this observer act on a camera the caller no longer wants.
+            if (generation != openGeneration.get() || !wantStreaming) return
+            when (state?.type) {
+                CameraState.Type.OPEN -> {
+                    retryDelayMs = 1_000L
+                    isStreaming = true
+                }
+                CameraState.Type.CLOSED -> {
+                    val code = state.error?.code ?: 0
+                    isStreaming = false
+                    val msg = "Camera closed by device (code $code)"
+                    onCameraError?.invoke(msg)
+                    scheduleReopen(msg)
+                }
+                // PENDING_OPEN, OPENING and CLOSING are transient: acting on
+                // them is what produced the open/close churn that provokes
+                // device errors in the first place.
+                else -> Unit
+            }
+        }
+    }
+
+    /**
+     * Reopens with a growing delay.
+     *
+     * Backs off rather than hammering, and does nothing once the caller has
+     * asked for the camera to be off.
+     */
+    private fun scheduleReopen(reason: String) {
+        if (!wantStreaming || retryScheduled) return
+        retryScheduled = true
+        val delay = retryDelayMs
+        retryDelayMs = (retryDelayMs * 2).coerceAtMost(30_000L)
+        mainHandler.postDelayed({
+            retryScheduled = false
+            val owner = lifecycleOwner ?: return@postDelayed
+            if (!wantStreaming) return@postDelayed
+            val generation = openGeneration.incrementAndGet()
+            android.util.Log.w("OcuBeaCam", "Reopening camera after ${delay}ms: $reason")
+            try {
+                // Already completed after the first start(), so get() returns at
+                // once rather than blocking.
+                val provider = cameraProvider ?: ProcessCameraProvider.getInstance(context).get()
+                cameraProvider = provider
+                applyConfigToFields()
+                bindAnalysis(provider, owner, generation)
+            } catch (e: Exception) {
+                val msg = "Camera reopen failed: ${e.message}"
+                onCameraError?.invoke(msg)
+                scheduleReopen(msg)
+            }
+        }, delay)
+    }
+
+    private fun removeStateObserver() {
+        val old = stateObserver ?: return
+        stateObserver = null
+        val cam = cameraRef ?: return
+        runCatching { cam.cameraInfo.getCameraState().removeObserver(old) }
     }
 
     private fun applyConfigToFields() {
@@ -238,8 +372,15 @@ class CameraManager(
 
     private fun bindAnalysis(
         provider: ProcessCameraProvider,
-        owner: androidx.lifecycle.LifecycleOwner
+        owner: androidx.lifecycle.LifecycleOwner,
+        generation: Int
     ): androidx.camera.core.Camera {
+        // Remove the observer BEFORE unbindAll(). Closing the old device
+        // publishes CLOSED, and a live observer would read a deliberate rebind
+        // as a device failure and queue a reopen that fights the bind happening
+        // right here.
+        removeStateObserver()
+        imageAnalysis?.clearAnalyzer()
         provider.unbindAll()
         imageAnalysis = ImageAnalysis.Builder()
             .setResolutionSelector(resolutionSelector())
@@ -247,6 +388,9 @@ class CameraManager(
             .build()
             .also { it.setAnalyzer(analysisExecutor, ::analyzeFrame) }
         val camera = provider.bindToLifecycle(owner, cameraSelector, imageAnalysis!!)
+        val observer = CameraStateObserver(generation)
+        stateObserver = observer
+        camera.cameraInfo.getCameraState().observeForever(observer)
         cameraRef = camera
         lastFrameNanos = 0
         return camera
@@ -320,11 +464,23 @@ class CameraManager(
     }
 
     fun stop() {
+        wantStreaming = false
         isStreaming = false
-        try { cameraProvider?.unbindAll() } catch (_: Exception) {}
+        // Bump the generation so an open attempt still in flight for the old
+        // camera sees itself as superseded and bails instead of binding over
+        // the top of this one.
+        openGeneration.incrementAndGet()
+        mainHandler.removeCallbacksAndMessages(null)
+        retryScheduled = false
+        retryDelayMs = 1_000L
+        // The observer goes first: unbindAll() publishes CLOSED, and a live
+        // observer would read this deliberate stop as a device failure and
+        // queue a reopen.
+        removeStateObserver()
         try { imageAnalysis?.clearAnalyzer() } catch (_: Exception) {}
         imageAnalysis = null
         cameraRef = null
+        try { cameraProvider?.unbindAll() } catch (_: Exception) {}
         runCatching { hlsSession?.stop() }
         hlsSession = null
         frameHub.reset()
@@ -902,12 +1058,19 @@ class CameraManager(
     }
 
     private fun rebind(owner: androidx.lifecycle.LifecycleOwner) {
-        if (!isStreaming) return
+        // wantStreaming, not isStreaming: a settings change arriving while the
+        // device is still PENDING_OPEN must not be dropped.
+        if (!wantStreaming) return
         val provider = cameraProvider ?: return
+        // A rebind is an open/close pair and follows the same generation
+        // discipline as start(): the watchdog may be restarting concurrently.
+        val generation = openGeneration.incrementAndGet()
         try {
-            bindAnalysis(provider, owner)
+            bindAnalysis(provider, owner, generation)
         } catch (e: Exception) {
-            onCameraError?.invoke("Rebind failed: ${e.message}")
+            val msg = "Rebind failed: ${e.message}"
+            onCameraError?.invoke(msg)
+            scheduleReopen(msg)
         }
     }
 
