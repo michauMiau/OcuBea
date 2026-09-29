@@ -62,6 +62,17 @@ class HlsSession(
         private set
 
     /**
+     * Length of the most recent segment actually cut, in milliseconds.
+     *
+     * The profile's segmentMs is a request, not a promise. Fmp4Writer cuts on
+     * the next IDR, so in low-latency mode - one IDR per frame - every segment
+     * is exactly one frame long, and the request is never reached. Telemetry
+     * that reports only the request describes a stream that does not exist.
+     */
+    @Volatile var lastSegmentDurationMs: Long = 0L
+        private set
+
+    /**
      * True once the encoder is running, regardless of whether it has produced
      * its first output yet.
      *
@@ -153,6 +164,7 @@ class HlsSession(
                     while (ring.size > RING_SIZE) ring.removeFirst()
                 }
                 mediaSequence = seg.sequence
+                lastSegmentDurationMs = seg.durationMs
             }
         }
     }

@@ -1242,3 +1242,45 @@ opisuje prawdziwą długość, więc playlista jest uczciwa, ale nazwa
 **Status: HLS działa, nie wymaga naprawy.** Do rozważenia jako decyzja
 produktowa: czy `segment_ms` w telemetrii ma raportować długość
 deklarowaną, czy realną.
+
+## HLS: realny czas segmentu w telemetrii i w UI (2026-09-29)
+
+`segment_ms` w `/status.json` i w odpowiedzi `POST /hls/profile` to
+**żądanie**, nie obietnica. Muxer tnie segment w momencie przyjścia IDR, a
+przy `keyFrameIntervalSec = 0` każda klatka jest IDR, więc segment zawsze
+ma długość jednej klatki.
+
+Pomiar na telefonie, wszystkie trzy profile:
+
+| profil | segment_ms (żądanie) | real_segment_ms | fps | segmentów |
+|---|---|---|---|---|
+| low | 120 | **88** | 11.3 | 63 |
+| default | 250 | **88** | 11.2 | 98 |
+| high | 2000 | **1263** | 11.2 | 4 |
+
+Dodane:
+- `HlsSession.lastSegmentDurationMs` — długość ostatnio ciętego segmentu,
+  liczona z `tfdt` przez muxer, nie z profilu.
+- `real_segment_ms` w `/status.json` oraz w odpowiedzi `POST /hls/profile`.
+- WebUI pokazuje `0.12 s (realne 0.088 s)`, gdy wartości się różnią, i
+  dostraja `maxBufferLength` do realnej długości segmentu, bo to warunek,
+  przy którym `lowLatencyMode` w ogóle działa poprawnie.
+
+Komentarz w `HlsProfile.DEFAULT` obiecywał „IDR every half second", a pole
+miało wartość `0`. Wartość była zgodna z kodem, komentarz nie — poprawiony
+i opisany jako historia, bo to właśnie on kazał czytać profil default jako
+strumień 250 ms, podczas gdy jest to strumień per-klatka.
+
+## Kolejność pomiaru HLS, która daje fałszywy wynik
+
+`startHls()` jest **leniwe**: enkoder powstaje dopiero przy pierwszym
+żądaniu playlista. Kolejność `POST /hls/profile` przed jakimkolwiek
+żądaniem playlista daje:
+
+```
+active=False  real_segment_ms=0
+```
+
+i wygląda jak awaria. Poprawna kolejność to playlista → profil → pomiar.
+To samo wyjaśnia wcześniejsze „HLS nie startuje": telemetria była czytana
+przed pierwszą playlistą.
