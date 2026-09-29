@@ -234,7 +234,11 @@ Sprawdzone **na urządzeniu**, nie wywnioskowane:
 
 ## Testy
 
-`app/src/test/java/com/ocubea/stream/Fmp4WriterBoxTest.kt` — 14 testów JVM
+Stan na 2026-09-30 (commit 9948d51): `./gradlew :app:testDebugUnitTest`
+przechodzi w całości — **256 testów w 28 plikach, 0 pominiętych, 0 błędów**
+(liczone z `app/build/test-results/testDebugUnitTest/*.xml`).
+
+`app/src/test/java/com/ocubea/stream/Fmp4WriterBoxTest.kt` — 16 testów JVM
 bez telefonu. `Fmp4Writer` nie importuje nic z Androida, więc logika pudełek
 da się sprawdzić na maszynie.
 
@@ -1473,54 +1477,121 @@ więc przez dłuższy czas **nie było klatek do zmierzenia**. Restart to napraw
 `camera=True` — i od tego czasu ekran profilera ma już realne spany do
 odczytania, patrz sekcja niżej.
 
-## Kamera znowu pada — `code 3` wraca (2026-09-29)
+## `code 3` rozpoznany: to `ERROR_CAMERA_DISABLED`, nie błąd urządzenia (2026-09-30)
 
-Restart „naprawił" kamerę w sekcji powyżej i faktycznie — w tej sesji
-`camera=True`. Ale błąd jest **nawracający**, nie usunięty: przy kolejnym
-otwarciu sensora znowu `Device error received, code 3`. Nie ma w tym dokumencie
-przyczyny ani obejścia, bo go nie zdiagnozowano.
+Sekcja wyżej opisuje objaw (`Device error received, code 3`) i poprawnie
+ustala, że jest nawracający. Diagnoza przyczyny jest teraz znana:
 
-Praktyczna konsekwencja dla wszystkich pomiarów powyżej: każda liczba
-zmierzona „na urządzeniu" pochodzi z sesji, w której akurat kamera działała.
-Dlatego dokument trzyma je przy sobie z datą, a nie jako stałe własności
-aplikacji. Weryfikacja zdalna: `camera_active` w `/status.json` oraz
-`pipeline.last_error`; `/video`, `/hls` i `/startvideo` dają wtedy `503
-Camera not streaming`, `/shot.jpg` — `204 No frame yet`.
+**Kod 3 to `ERROR_CAMERA_DISABLED`, a nie `ERROR_CAMERA_DEVICE` (który ma 4).**
+CameraX 1.3.0 w `Camera2CameraImpl$StateCallback.handleErrorOnOpen` przekazuje do
+`reopenCameraAfterError` **tylko** kody 1 (`IN_USE`), 2
+(`MAX_CAMERAS_IN_USE`) i 4 (`DEVICE`). Dla 3 publikuje `CLOSED` ze
+`StateError` code 5 i zamyka urządzenie **na stałe**. Nic w aplikacji wcześniej
+nie otwierało kamery ponownie, więc jedno wyłączenie przez system dawało
+`camera=false` i `HTTP 204` na `/shot.jpg` do restartu telefonu — a restart nie
+pomagał, bo wyłączenie właśnie jest tym, co przeżywa.
 
-Pułapka po drodze: ekran główny aplikacji **i tak pokazuje zielone „live"**,
-bo `applyStatus` czyta fps i liczbę widzów, a ignoruje `camera_active`
-(`MainActivity.kt:277-286`). Nie ufaj ekranowi telefonu — sprawdzaj
-`camera_active` zdalnie.
+Naprawa: aplikacja **sama obserwuje `CameraState`**
+(`CameraManager.CameraStateObserver`, `CameraManager.scheduleReopen`) i otwiera
+ponownie z narastającym opóźnieniem. `OPEN` zeruje backoff, `CLOSED` z błędem
+kolejkuje ponowne otwarcie, a `PENDING_OPEN` / `OPENING` / `CLOSING` są
+pomijane — reagowanie na nie powodowało chaotyczne otwieranie i zamykanie,
+które samo w sobie prowokuje błędy urządzenia.
 
-## Koksyk AAC i Opus: enkoder działa, ale nie jest podpięty do strumienia
+Uwaga na pułapkę, o której mowa niżej: ekran główny aplikacji **i tak pokazuje
+zielone „live"**, bo `applyStatus` czyta fps i liczbę widzów, a ignoruje
+`camera_active` (`MainActivity.kt:277-286`). Nie ufaj ekranowi telefonu —
+sprawdzaj `camera_active` zdalnie.
 
-`/audio.aac` i `/audio.opus` **nie wydają** dźwięku. Oba kończą się `501`
-(`StreamServer.kt:439-447`) z tekstem
-„<codec> encoding is not wired up yet; asking for /audio.wav works".
-Kiedyś zwracały bajty WAV pod nazwą, o którą prosił klient — to było
-prawdziwsze niż wygląda, bo klient proszący o Opus dostawał WAV i nie mógł
-tego wykryć. Teraz zawodzą głośno, co jest uczciwe.
+### Zmierzone z otwartą kamerą
 
-Co **działa**, zmierzone na telefonie:
+Na telefonie testowym, z otwartą kamerą: **12–15 fps**,
+`/shot.jpg` → `HTTP 200` z prawdziwym JPEG-iem rzędu **63 KB**.
 
-- AAC 64 kbps i Opus 32 kbps realnie kodują (`MediaCodec` wyprodukował
-  niepuste wyjście), więc to nie jest „brak kodeka na urządzeniu";
-- `/status.json` → `audio.available_list` wymienia to, co probe potwierdził;
-- wybór kodeka w WebUI zapisuje się i wraca w `/status.json` — kliknięcie
-  Opus / No audio / AAC każdy round-tripuje.
+## Wycofanie: AAC i Opus nie są „niepodpięte" — są podpięte i działają (2026-09-30)
 
-Rozdźwięk jest w warstwie serwera: `AudioEncoder.kt` i `OggPage.kt` istnieją
-i są poprawne, ale nic nie wywołuje ścieżki kodującej w handlerze. Klasa
-`AudioEncoderFanOut.kt` jest w tym momencie **nieśledzona w gicie i nigdzie
-nieużywana** — audyt szukający „czy AAC działa" przez `grep AudioEncoder`
-dostanie „tak" i wyjdzie z błędnym wnioskiem. Wybór kodeka w UI jest zapisany
-i potwierdzony przez serwer, ale nie oznacza, że dźwięk popłynie.
+Poprzednia wersja tej sekcji twierdziła, że `/audio.aac` i `/audio.opus`
+kończą się `501`, bo enkoder „nie jest podpięty do strumienia". **To było
+nieprawdziwe i zostało naprawione.** Ścieżka kodująca jest wywoływana
+(`StreamServer.serveEncodedAudio`, `handleAudio` wybiera kodek z rozszerzenia
+URL), a `POST /audio/codec` zapisuje preferencję. Poniżej stan faktyczny,
+zmierzony na Redmi Note 10 Pro (MIUI, Android 13).
 
-Stan ruchu: `/audio.wav` działa i jest jedyną działającą ścieżką audio.
-Zmierzony koszt: 86 868 B/s = ~695 kbps, czyli **~5,2 MB na minutę na
-klienta** — 16-bitowy PCM, 44,1 kHz (`AudioStreamManager.SAMPLE_RATE = 44100`).
-Dlatego AAC i Opus były potrzebne; dopóki nie są podpięte, budżet przepustowości
-trzeba liczyć właśnie tak.
+### Kodek wybiera urządzenie, nie lista w kodzie
 
-Limit 8 klientów audio przy 12 wątkach puli jest opisany wyżej i nadal
-obowiązuje.
+Menu buduje `AudioCodecProbe`
+(`app/src/main/java/com/ocubea/server/AudioCodecProbe.kt`): pyta
+`MediaCodecList`, co istnieje, i **potwierdza każdy enkoder przez faktyczne
+kodowanie bufora**. Do menu wchodzi tylko to, co wyprodukowało bajty. Na
+telefonie testowym menu to: Opus 32 kbps, AAC 64 kbps, AMR-NB 12 kbps, WAV
+(surowy PCM), FLAC.
+
+**MP3 celowo nie ma.** Żadne urządzenie z Androidem nie ma w
+`MediaCodecList` enkodera MP3 — jest tylko dekoderem, i tak było cały czas.
+Pozycja w menu byłaby kłóstwem.
+
+### AAC działa i jest domyślny
+
+`GET /audio.aac` → `Content-Type: audio/aac`, `Transfer-Encoding: chunked`,
+bajty to surowy AAC LC w ramkach ADTS (strumień zaczyna się `0xFF 0xF1`),
+ffmpeg dekoduje to do PCM. **Zmierzone ~66 kbps.**
+
+Domyślnym jest AAC, a nie Opus, bo enkodery AAC istnieją na każdym Androidzie,
+który ten wspiera, a `c2.android.opus.encoder` pojawił się dopiero w Androidzie
+11 (`ProbeResult.defaultId()`). Wybór „najlepszego kodeka na najnowszym
+telefonie" psułby strumień na starszym telefonie, który jest głównym
+powodem istnienia tej aplikacji.
+
+### Opus działa — i wymagał brakującej strony nagłówkowej, żeby to odkryć
+
+`c2.android.opus.encoder` na tym HALu produkuje pakiety, których bajt TOC to
+`0x78` — konfiguracja Opus **15**, czyli code 3, tryb tylko-CELT. To dozwolona
+konfiguracja **dekodowania**; RFC 6716 zakazuje jej wyłącznie dla sygnalizacji
+inpback 24 kHz. Wcześniejsza wersja tego dokumentu nazywała ją nielegalną i
+obwiniała HAL — to było złe, ffmpeg dekoduje każdy pakiet, który telefon
+produkuje.
+
+Prawdziwy błąd był w tej aplikacji: strumień Ogg zawierał `OpusHead`, ale nie
+zawierał `OpusTags`. Demuxer ffmpeg przechodzi przez cały łańcuch nagłówków,
+zanim otworzy strumień, więc wychodził poza koniec pierwszej strony i odrzucał
+cały plik komunikatem „Header processing failed" — mimo że CRC, numery sekwencji
+i pozycje granule były poprawne i żadna z tych rzeczy nie była problemem.
+Po dodaniu `OggPage.opusTags()` ffmpeg dekoduje strumień do PCM, **zero
+odrzuconych pakietów**, przy około 42 kbps transportu.
+
+`audio.undecodable` raportuje mime, które urządzenie **koduje**, ale których
+własny dekoder `MediaCodec` by nie przyjął. To ostrzeżenie o lokalnym
+dekoderze, nie werdykt o strumieniu, więc nigdy nie usuwa kodeka z menu — na
+telefonie testowym lista zawiera `audio/mp4a-latm` i `audio/flac`, a oba
+odtwarzają się bez problemu pod ffmpeg.
+
+### Pola `audio` w `/status.json`
+
+`enabled`, `clients`, `codec`, `available_list` (tablica
+`{id,label,bitrate,container,note}` — picker w WebUI iteruje po niej, a nie po
+stringu), `undecodable`, `encoded` (`clients`, `feed_calls`, `feed_misses`,
+`packets_out`, `empty_out`) oraz `available` (wiersz podsumowania dla człowieka).
+`feed_misses` rosnące przy `packets_out` równym zero oddziela „PCM nie dotarł
+do enkodera" od „kodek nie produkuje nic" — dwie zupełnie różne usterki, obie
+wcześniej niewidoczne z zewnątrz.
+
+### Wyciek enkodera: naprawiony
+
+`EncodedAudioResponse.close()` oddaje pierścień z powrotem
+(`StreamServer.kt:487-508`). Wcześniej `addEncodedClient` nie miał odpowiednika
+na drodze wyjścia, więc **każda obsłużona sesja AAC lub Opus zostawiała za sobą
+na stałe jednego klienta** — jeden wyciekły enkoder na sesję, na telefonie, który
+ma ograniczoną liczbę instancji kodeka. Jeden enkoder obsługuje wszystkich
+klientów, tak jak ścieżka wideo.
+
+### Koszt i limit
+
+WAV: 44,1 kHz, mono, 16-bit, `AudioStreamManager.SAMPLE_RATE = 44100`,
+**86 868 B/s ≈ 695 kbps ≈ 5,2 MB na minutę na klienta**. To zawsze dostępna
+ścieżka zgodności, nie oszczędność — dlatego domyślny jest AAC.
+
+Limit **8 klientów audio** (`AudioAdmissionControl`), dziewiąty dostaje
+`503 Too many audio clients`; każdy klient trzyma jeden z 12 wątków puli przez
+cały czas połączenia. Każdy ma własny nieblokujący `AudioRingBuffer` 64 KiB.
+**Zmierzone:** 10 równoległych klientów `/audio.aac`, każdy otrzymał
+45 056 B, bez wyjątków.

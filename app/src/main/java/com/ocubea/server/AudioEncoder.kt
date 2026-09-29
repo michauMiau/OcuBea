@@ -337,7 +337,9 @@ class AudioEncoder private constructor(
                 OggPage.opusHead(channels = 1), granule = 0, pageSeq = pageSeq
             )
             pageSeq++
-            head
+            head + OggPage.page(OggPage.opusTags(), granule = 0, pageSeq = pageSeq).also {
+                pageSeq++
+            }
         }
         else -> ByteArray(0)
     }

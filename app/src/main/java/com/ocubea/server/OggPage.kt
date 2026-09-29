@@ -84,6 +84,28 @@ object OggPage {
     }
 
     /**
+     * The comment header an Ogg Opus stream needs after `OpusHead`.
+     *
+     * Twelve bytes, not eight: the 8-byte `OpusTags` magic followed by a
+     * 4-byte little-endian vendor comment length. An eight-byte version is a
+     * silent truncation -- the demuxer reads four more bytes as the length,
+     * takes them from the following page, and the whole header chain falls
+     * apart. The first version of this function was exactly that, and the
+     * symptom was ffmpeg reporting "Header processing failed" on a stream
+     * whose CRCs were all valid.
+     *
+     * A zero length is the correct value, not a stub: this is a live
+     * microphone, so there is no encoder name or version worth claiming, and
+     * libopus writes zero tags for a bare stream too.
+     */
+    fun opusTags(): ByteArray {
+        val out = ByteArray(12)
+        "OpusTags".toByteArray(Charsets.US_ASCII).copyInto(out, 0)
+        // Bytes 8..11 stay zero: vendor comment length, little endian, none.
+        return out
+    }
+
+    /**
      * One Ogg page around [payload].
      *
      * [pageSeq] is the page counter and [granule] the sample position the page

@@ -10,8 +10,9 @@
 - [x] WebUI — full dark theme with controls (torch, night vision, camera switch, zoom, quality, focus)
 - [x] App UI — SettingsActivity with port, resolution, FPS, night vision, mic toggles
 - [x] IP Webcam compatible API (status.json, /info, /shot.jpg, /focus, /ptz, /api/camera, /torchon, /torchoff)
-- [x] Audio streaming (WAV, one-way — 695 kbps; AAC/Opus encoders work but
-      are not wired to the stream, endpoints return 501)
+- [x] Audio streaming (one-way, codec chosen per device: AAC, Opus, AMR-NB, WAV
+      or FLAC. AAC is the default and works. Opus is offered by the probe but
+      its packets are invalid on some vendor HALs — see the audio notes below)
 - [x] Software Night Vision Enhancement
 - [x] Configurable HTTP server port (default 8080, stored in SharedPreferences)
 - [x] Motion Detection Recording (MJPEG-in-AVI to `/recordings`, fMP4 clips to `/clips`)
@@ -30,11 +31,15 @@
 
 ### Test-device status (2026-09-29)
 
-The camera is **not** reliably available on the test phone. Opening the sensor
-intermittently fails with `Device error received, code 3`; a reboot cleared it
-once, and it has come back. Anything below that describes video, HLS or clips
-being measured is a report of what worked in the session where it was measured,
-not a promise that it works on any given start.
+The camera now reports its **real** state, and reopens itself when the device
+kills it. The recurring failure — `Device error received, code 3` — is
+**`ERROR_CAMERA_DISABLED`**, not `ERROR_CAMERA_DEVICE` (which is 4). CameraX
+1.3.0 routes only codes 1 (`IN_USE`), 2 (`MAX_CAMERAS_IN_USE`) and 4 (`DEVICE`)
+to its own `reopenCameraAfterError`; code 3 is treated as **terminal** and the
+camera is closed for good. The app therefore observes `CameraState` itself and
+reopens with backoff (`CameraManager.CameraStateObserver`,
+`CameraManager.scheduleReopen`), so a device disable no longer needs a reboot
+to clear.
 
 When the camera is down the server stays up and says so rather than pretending:
 `/status.json` reports `camera_active: false` and `pipeline.last_error`,
@@ -43,6 +48,9 @@ When the camera is down the server stays up and says so rather than pretending:
 still shows a green "live" line in this state — it reads fps and viewer counts,
 not `camera_active` — so check `camera_active` remotely rather than trusting
 the phone's screen.
+
+Verified live on the test phone with the camera open: **12–15 fps**, and
+`/shot.jpg` returns HTTP 200 with a real JPEG of about **63 KB**.
 
 ### HTTP surface
 
@@ -58,7 +66,7 @@ delegated to `TelemetryHandler`.
 | HLS (fMP4) | `/hls`, `/hls/index.m3u8`, `/hls.m3u8`, `/hls/init.mp4`, `/hls/seg<N>.m4s`, `/hls/profile` |
 | Clips (fMP4) | `/clips`, `/clips/<name>`, `/clips/<name>/download`, `DELETE /clips/<name>`, `POST /clips/record`, `/clips/record/stop`, `/clips/delete`, `/clips/clear`, `/clips/prune`, `/clips/recording` |
 | Recordings (AVI) | `/recordings`, `/recordings/<name>.avi`, `/startvideo`, `/stopvideo`, `/list_videos`, `/videos`, `/v/<name>` |
-| Audio | `/audio.wav` (works), `/audio.aac`, `/audio.opus`, `/inband.aac`, `/talk` (501 — encoder not wired) |
+| Audio | `/audio.wav`, `/audio.aac`, `/audio.opus`, `/inband.aac`, `/talk`, `POST /audio/codec` |
 | Controls | `/focus`, `/nofocus`, `/ptz`, `/ptt`, `/torchon`, `/torchoff`, `/enabletorch`, `/disabletorch`, `/api/camera` |
 | Settings | `POST /settings`, `/settings/<name>?set=<value>` |
 | Telemetry | `/status.json`, `/info`, `/sensors.json`, `/config.json`, `/codecs.json` |
@@ -66,24 +74,67 @@ delegated to `TelemetryHandler`.
 
 Notes, all verified in code:
 
-* **The phone's address is not fixed.** It is on DHCP, and there is no mDNS,
-  Bonjour, hostname registration or pairing flow anywhere in the app, so there is
-  no name to resolve and no address worth hardcoding. The app prints its own
+* The phone's address is not fixed. It is on DHCP. The app implements **no**
+  mDNS, Bonjour or `NsdManager` discovery, no hostname registration and no
+  pairing flow, so there is no name to resolve and no address worth
+  hardcoding. The one discovery mechanism present is ONVIF WS-Discovery on
+  UDP 3702, which only ONVIF-aware clients (NVRs) use. The app prints its own
   current URL on the main and settings screens (`MainActivity.kt:320-322`,
   `SettingsActivity.kt:343-353`), and `/sensors.json` reports it as
   `network.ip`. An address that was correct yesterday may be a laptop today.
-* `/audio.wav` is the **only** working audio endpoint. `/audio.aac` and
-  `/audio.opus` are routed and the encoders work on the test phone, but the
-  encoder is not wired to the stream, so both return **HTTP 501**
-  (`StreamServer.kt:439-447`). They used to return WAV bytes under the name you
-  asked for; that was a lie a client could not detect, so it was removed.
-* WAV costs about **695 kbps — 5.2 MB a minute per client** (measured:
-  86,868 B/s). It is 16-bit PCM at 44.1 kHz. At most 8 clients can stream audio
-  at once; the cap exists because each chunked response holds one of the 12 HTTP
-  pool threads for the life of the connection.
-* The WebUI audio picker does round-trip — Opus / No audio / AAC each save and
-  show up in `/status.json` — but the picker also offers codecs the server will
-  501 on. Picking one is not the same as getting audio.
+* **The audio codec is chosen per device, at runtime.** The menu comes from
+  `AudioCodecProbe` (`app/src/main/java/com/ocubea/server/AudioCodecProbe.kt`),
+  which asks `MediaCodecList` what encoders exist and then *proves* each one by
+  actually encoding a buffer. Only codecs that emit real bytes appear. On the
+  test phone (Redmi Note 10 Pro, MIUI, Android 13) the menu is Opus 32 kbps,
+  AAC 64 kbps, AMR-NB 12 kbps, WAV raw PCM, FLAC. MP3 is deliberately absent:
+  no Android device ships an MP3 *encoder* in `MediaCodecList` — it is
+  decode-only — so a menu entry for it would be a lie.
+* **AAC is the default codec and it works.** `GET /audio.aac` returns
+  `Content-Type: audio/aac` with `Transfer-Encoding: chunked`; the bytes are
+  raw AAC LC in ADTS frames (the stream starts `0xFF 0xF1`) and ffmpeg decodes
+  them to PCM. Measured **~66 kbps**. AAC is the default rather than Opus
+  because AAC encoders exist on every Android this app supports while software
+  Opus only starts at Android 11 (`AudioCodecProbe.ProbeResult.defaultId()`).
+* **Opus works, and it took a missing header page to find that out.**
+  `c2.android.opus.encoder` on this vendor HAL emits packets whose TOC byte is
+  `0x78`. That is Opus **configuration 15 = code 3 = CELT-only**, which is a
+  normal *decoding* mode — RFC 6716 forbids it only for 24 kHz inpback signalling,
+  not for decoding. An earlier version of this document called it an illegal
+  configuration and blamed the vendor HAL; that was wrong, and ffmpeg decodes
+  every packet the phone produces. The actual defect was in this app: the Ogg
+  stream carried `OpusHead` but no `OpusTags`, and ffmpeg's demuxer walks the
+  whole header chain before opening a stream, so it ran off the end of the first
+  page and refused the file with "Header processing failed" — even though CRC,
+  sequence numbers and granule positions were all valid. `OggPage.opusTags()`
+  now writes the empty comment header and Opus is live: measured ~42 kbps
+  transport, decoded by ffmpeg to 828 816 bytes of PCM with zero packets
+  rejected. `opus-flags` in `MediaFormat` makes no difference and is not used.
+* **`audio.undecodable` exists and is not always empty.** It lists mime types
+  this device encodes but whose own `MediaCodec` decoder would not take the
+  bytes back. On the validation phone that set includes `audio/mp4a-latm` and
+  `audio/flac` even though both play perfectly under ffmpeg — the device's own
+  software decoders are the thing being tested there, and they refuse. It is a
+  warning about the local decoder, not a verdict on the stream, so it never
+  removes a codec from the menu.
+* **WAV works and is expensive**: **44.1 kHz** mono 16-bit (`AudioStreamManager.SAMPLE_RATE = 44100`,
+  and that is the rate written into the RIFF header), **86 868 B/s ≈ 695 kbps**,
+  roughly **5.2 MB a minute per client**. It is the always-available
+  compatibility path, not a savings option. (86 868 B/s ÷ 2 bytes per sample
+  = ~43 434 samples/s, which is 44.1 kHz with capture gaps, not 48 kHz — a
+  48 kHz stream would be 96 000 B/s.)
+* One encoder feeds every compressed client rather than one per client, and the
+  ring is handed back when the response closes — the encoder used to leak one
+  instance per served session, on a phone with a fixed number of codec
+  instances to spend (`StreamServer.kt:471-508`).
+* The WebUI audio picker is built from `audio.available_list`, so it lists what
+  this phone can actually encode, and posts the choice to
+  `POST /audio/codec`. The change applies to the next client that connects;
+  running streams keep what they started with.
+* The audio client cap is **8** (`AudioAdmissionControl`); the ninth gets
+  `503 Too many audio clients`. Each audio client holds one of the 12 HTTP pool
+  threads for the life of the connection. Verified: 10 concurrent
+  `/audio.aac` clients each received 45 056 bytes with no exceptions.
 * `/startvideo` only *arms* the Motion-JPEG recorder; the file opens on the
   next motion event (`StreamServer.kt:1178`).
 * Clips use HTTP byte ranges, so a browser can seek in them
@@ -157,8 +208,9 @@ See [docs/SECURITY_CAMERA.md](docs/SECURITY_CAMERA.md) and
 - [x] Basic App UI to change settings
 - [x] Basic API
 - [x] Motion Detection Recording (security camera)
-- [x] Audio Streaming (one-way, WAV only — AAC/Opus endpoints exist but return
-      501 until the encoder is wired)
+- [x] Audio Streaming (one-way, codec chosen per device — AAC (default),
+      Opus, AMR-NB, WAV or FLAC; see the audio notes above for what actually
+      decodes on a given phone)
 - [ ] Bidirectional Audio
 - [ ] HTTPS Support
 - [ ] More Streaming codecs
@@ -175,7 +227,8 @@ See [docs/SECURITY_CAMERA.md](docs/SECURITY_CAMERA.md) and
 ./gradlew test
 ```
 
-241 unit tests under `app/src/test/` (27 files, none skipped).
+256 unit tests under `app/src/test/` (28 files, none skipped), all green as of
+commit 9948d51.
 
 ## 📄 License
 GPL — see [LICENSE](LICENSE) (GPLv3).
