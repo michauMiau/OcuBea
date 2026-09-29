@@ -97,4 +97,19 @@
     <string name="addr_snapshot_value">Zrzut:     http://%1$s:%2$d/shot.jpg%3$s</string>
     <string name="addr_audio_value">Audio:     http://%1$s:%2$d/audio.wav%3$s</string>
     <string name="onvif_value">ONVIF:     %1$s:%2$d/onvif/device_service</string>
+
+    <!-- Profiler -->
+    <string name="perf_title">Wydajność</string>
+    <string name="perf_subtitle">Koszt spanów w milisekundach. Percentyle obejmują najnowsze okno pierścienia; * oznacza pierścień zawinięty, więc czytaj je jako ostatnie, nie całą sesję. max jest skumulowane.</string>
+    <string name="perf_start">Rozpznij pomiar</string>
+    <string name="perf_stop">Zatrzymaj pomiar</string>
+    <string name="perf_reset">Wyczyść</string>
+    <string name="perf_idle">Pomiar wyłączony. Naciśnij Rozpocznij i używaj aplikacji normalnie.</string>
+    <string name="perf_no_spans">Brak zapisanych spanów. Włącz strumień i wróć tutaj.</string>
+    <string name="perf_legend">\n* percentyle to najnowsze okno, max obejmuje cały przebieg</string>
+    <string name="perf_rejected">Odrzucono %1$d nazw spanów: rejestr jest pełny (max %2$d). Ktoś prawdopodobnie buduje nazwę spana ze zmiennej.</string>
+    <string name="perf_thread_unavailable">CPU wątku głównego: niedostępne na tym urządzeniu</string>
+    <string name="perf_thread_sampling">CPU wątku głównego: próbkowanie…</string>
+    <string name="perf_thread_value">CPU wątku głównego: %1$.1f%%</string>
+    <string name="perf">Wydajność</string>
 </resources>

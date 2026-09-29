@@ -15,6 +15,7 @@ import com.ocubea.stream.FrameHub
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import com.ocubea.perf.Metrics
 
 /**
  * Headless camera manager for background streaming.
@@ -573,6 +574,8 @@ class CameraManager(
     // ─── Frame pipeline ─────────────────────────────────────────
 
     private fun analyzeFrame(imageProxy: ImageProxy) {
+        val t = if (Metrics.enabled) Metrics.timer(Metrics.FRAME_ANALYZE) else null
+        val t0 = if (t != null) t.begin() else 0L
         try {
             if (!isStreaming) { imageProxy.close(); return }
 
@@ -690,6 +693,12 @@ class CameraManager(
             pipelineErrors++
             lastPipelineError = "${e.javaClass.simpleName}: ${e.message}"
             try { imageProxy.close() } catch (_: Exception) {}
+        } finally {
+            // The early returns above (not streaming, frame skipped by the FPS
+            // limit) leave through here, so those frames are recorded too. A
+            // dropped frame is cheap, and a report that only contains frames
+            // that were kept would make the pipeline look slower than it is.
+            if (t != null) t.end(t0)
         }
     }
 
