@@ -88,8 +88,22 @@ class H264Encoder(
      * fallback, not a degraded mode, because HLS needs real H.264.
      */
     fun start(): Boolean {
-        val info = pickHardwareAvcEncoder() ?: run {
+        // Codec discovery is inside the guard, not just configure(). These
+        // calls touch MediaCodecList, which can throw on its own - a locked
+        // encoder service, or a stubbed android.jar under JVM test. Letting that
+        // escape start() meant the caller got an exception where the whole
+        // contract promises a false return plus a readable lastError, and
+        // CameraManager.startHls() had nothing to report to /status.json.
+        val info = try {
+            pickHardwareAvcEncoder()
+        } catch (e: Exception) {
+            lastError = e.message ?: e.javaClass.simpleName
+            Log.w(TAG, "encoder discovery failed", e)
+            started = false
+            return false
+        } ?: run {
             lastError = "no hardware AVC encoder"
+            started = false
             return false
         }
         codecName = info.name
@@ -122,8 +136,14 @@ class H264Encoder(
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
         }
 
+        // mc is declared outside the try so a failed configure() still has a
+        // handle to release. MediaCodec has no finalizer reclaiming the native
+        // encoder, so dropping the last reference leaks it for the life of the
+        // process - and handleHlsPlaylist retries startHls() on every playlist
+        // poll, which turns one failed start into a leak every half second.
+        var mc: MediaCodec? = null
         return try {
-            val mc = MediaCodec.createByCodecName(info.name)
+            mc = MediaCodec.createByCodecName(info.name)
             mc.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             mc.start()
             codec = mc
@@ -136,6 +156,9 @@ class H264Encoder(
             Log.w(TAG, "configure failed", e)
             started = false
             codec = null
+            // Release the half-built codec; swallowing a release failure is
+            // deliberate - the configure error is the one worth reporting.
+            try { mc?.release() } catch (_: Exception) {}
             false
         }
     }

@@ -682,7 +682,6 @@ class CameraManager(
         return mapOf(
             "active" to (s?.isActive == true),
             "codec" to (s?.codecName ?: "none"),
-            "clients" to (s?.clients ?: 0),
             "frames_encoded" to (s?.framesEncoded ?: 0L),
             "frames_queued" to (s?.framesQueued ?: 0L),
             "frames_dropped" to (s?.framesDropped ?: 0L),

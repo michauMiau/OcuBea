@@ -53,6 +53,28 @@ class StreamServer(
      */
     private val connectionRunner = BoundedAsyncRunner()
 
+    /**
+     * Read-only JSON endpoints, lifted out of this class. `torchOn` and the
+     * listening port are passed as lambdas so the handler reads live state
+     * without holding a reference to the server.
+     */
+    private val telemetry = TelemetryHandler(
+        context = context,
+        cameraManager = cameraManager,
+        audio = audio,
+        auth = auth,
+        config = config,
+        sensors = sensors,
+        motionRecorder = motionRecorder,
+        motionDetector = motionDetector,
+        connectionStats = { connectionStats() },
+        localIpFallback = { localIpFallback() },
+        torchOn = { torchOn },
+        listeningPort = { listeningPort },
+        pipelineJson = { pipelineJson() },
+        hlsJson = { hlsJson() },
+    )
+
     init {
         setAsyncRunner(connectionRunner)
     }
@@ -138,10 +160,10 @@ class StreamServer(
         }
 
         // ── Extended API ──
-        uri == "/status.json" || uri == "/info" -> handleStatusJson()
-        uri == "/sensors.json" -> handleSensorsJson(session)
-        uri == "/config.json" -> handleConfigJson()
-        uri == "/codecs.json" -> handleCodecsJson()
+        uri == "/status.json" || uri == "/info" -> telemetry.handleStatusJson()
+        uri == "/sensors.json" -> telemetry.handleSensorsJson(session)
+        uri == "/config.json" -> telemetry.handleConfigJson()
+        uri == "/codecs.json" -> telemetry.handleCodecsJson()
 
         // ── HLS (low-latency hardware H.264) ──
         uri == "/hls" || uri == "/hls/index.m3u8" || uri == "/hls.m3u8" -> handleHlsPlaylist(session)
@@ -685,161 +707,6 @@ class StreamServer(
         return okText("applied $applied")
     }
 
-    // ── Telemetry ──────────────────────────────────────────────
-
-    private fun handleStatusJson(): Response {
-        val cfg = cameraManager.getConfiguration()
-        val json = buildString {
-            append("{")
-            append("\"status\":\"ok\",")
-            append("\"app\":\"OcuBea\",")
-            append("\"version\":\"${versionName()}\",")
-            append("\"uptime_s\":${uptimeSeconds()},")
-            append("\"camera_active\":${cameraManager.isStreaming},")
-            append("\"resolution\":\"${cfg["resolution"]}\",")
-            append("\"fps\":${cfg["fps"]},")
-            append("\"target_fps\":${cfg["target_fps"]},")
-            append("\"frames\":${cfg["frames"]},")
-            append("\"dropped\":${cfg["dropped"]},")
-            append("\"pipeline\":" + pipelineJson() + ",")
-            append("\"hls\":" + hlsJson() + ",")
-            append("\"viewers\":${cfg["viewers"]},")
-            // Refused connections are the visible half of BoundedAsyncRunner:
-            // without them a device hammering the camera looks like a healthy
-            // server that happens to be slow.
-            append("\"connections\":{" +
-                "\"active\":${connectionStats()["active"]}," +
-                "\"refused\":${connectionStats()["refused"]}," +
-                "\"max_threads\":${connectionStats()["max_threads"]}},")
-            append("\"jpeg_quality\":${cfg["jpeg_quality"]},")
-            append("\"video_bitrate_kbps\":${cfg["video_bitrate_kbps"]},")
-            append("\"night_vision\":${cfg["night_vision"]},")
-            append("\"effect\":\"${cfg["effect"]}\",")
-            append("\"front_camera\":${cfg["front_camera"]},")
-            append("\"torch\":$torchOn,")
-            append("\"zoom\":{\"level\":${cameraManager.zoomRatio()},")
-            append("\"max\":${cameraManager.maxZoomRatio()}},")
-            append("\"motion\":{\"enabled\":${motionDetector.enabled},")
-            append("\"detected\":${motionDetector.motionDetected},")
-            append("\"sensitivity\":${motionDetector.sensitivity}},")
-            append("\"recording\":{\"enabled\":${motionRecorder.enabled},")
-            append("\"active\":${motionRecorder.recording},")
-            append("\"count\":${motionRecorder.listRecordings().size},")
-            append("\"last\":\"${motionRecorder.lastRecordingFile.orEmpty()}\"},")
-            append("\"audio\":{\"enabled\":${config.audioEnabled},")
-            append("\"clients\":${audio.clientCount()}},")
-            append("\"auth_required\":${auth.isEnabled()},")
-            append("\"battery_level\":${batteryLevel()}")
-            append("}")
-        }
-        return newFixedLengthResponse(Status.OK, "application/json", json)
-    }
-
-    /**
-     * GET /sensors.json                 — full nested telemetry (OcuBea extra)
-     * GET /sensors.json?sense=<name>    — single value, upstream-compatible
-     *
-     * The single-sensor form must return a BARE value (`52`, `true`, `"auto"`),
-     * not an object wrapped in a key: Home Assistant's android_ip_webcam
-     * integration and long-standing user scripts both parse it that way.
-     */
-    private fun handleSensorsJson(session: IHTTPSession): Response {
-        val sense = parseParams(session)["sense"]?.lowercase()
-        if (sense.isNullOrEmpty()) {
-            return newFixedLengthResponse(
-                Status.OK, "application/json",
-                sensors.snapshotJson(listeningPort, cameraManager.isStreaming)
-            )
-        }
-        if (sense !in IpWebcamCompat.SENSOR_NAMES) {
-            return notFound("unknown sensor: $sense")
-        }
-        val value = singleSensor(sense)
-        return newFixedLengthResponse(Status.OK, "application/json", value)
-    }
-
-    /** Resolves one upstream sensor name to its bare JSON value. */
-    private fun singleSensor(name: String): String = when (name) {
-        "battery_level" -> batteryLevel().toString()
-        "motion", "motion_detect", "motion_active", "motion_event" ->
-            (motionDetector.motionDetected || motionRecorder.recording).toString()
-        "torch" -> torchOn.toString()
-        "ffc" -> cameraManager.isUsingFrontCamera().toString()
-        "night_vision" -> cameraManager.nightVisionEnabled.toString()
-        "focus" -> "true"
-        "exposure_lock" -> "false"
-        "whitebalance_lock" -> "false"
-        "coloreffect", "effect" -> "\"${cameraManager.effect}\""
-        "quality" -> cameraManager.jpegQualityOverride.toString()
-        "video_size" -> "\"${cameraManager.currentTargetWidth}x${cameraManager.currentTargetHeight}\""
-        "photo_size" -> "\"${cameraManager.currentTargetWidth}x${cameraManager.currentTargetHeight}\""
-        "zoom" -> cameraManager.zoomRatio().toString()
-        "video_connections" -> cameraManager.frameHub.viewerCount().toString()
-        "audio_connections" -> audio.clientCount().toString()
-        "video_recording" -> motionRecorder.recording.toString()
-        "video_chunk_len" -> (cameraManager.frameHub.getLatest()?.size ?: 0).toString()
-        "audio_only" -> (!config.audioEnabled).toString()
-        "ivideon_streaming" -> "false"
-        "idle" -> (!cameraManager.isStreaming).toString()
-        "light" -> (if (torchOn) 255 else 0).toString()
-        "gps_active" -> "false"
-        "antibanding" -> "\"auto\""
-        "scenemode" -> "\"${if (cameraManager.nightVisionEnabled) "night" else "auto"}\""
-        "whitebalance" -> "\"auto\""
-        "focusmode" -> "\"auto\""
-        "flashmode" -> (if (torchOn) "torch" else "off").toString()
-            .let { "\"$it\"" }
-        "focus_distance" -> "0.0"
-        "motion_limit" -> motionRecorder.maxClipSeconds.toString()
-        "sound", "sound_event" -> "false"
-        "sound_timeout" -> "0"
-        "battery_temp" -> "0.0"
-        "battery_voltage" -> "0"
-        "night_vision_gain" -> "0"
-        "night_vision_average" -> "0"
-        "focus_homing", "focus_region" -> "false"
-        "orientation" -> "0"
-        "overlay" -> "false"
-        "proximity", "pressure" -> "false"
-        "mirror_flip" -> "false"
-        "adet_limit" -> motionDetector.sensitivity.toString()
-        "ip_address" -> "\"${localIpFallback()}\""
-        "ipv6_address" -> "\"\""
-        else -> "null"
-    }
-
-    private fun handleConfigJson(): Response {
-        val entries = config.snapshot().entries.joinToString(",") { (k, v) ->
-            val jv = when (v) {
-                is String -> "\"${v.jsonEscape()}\""
-                is Boolean, is Int, is Long, is Float -> v.toString()
-                else -> "null"
-            }
-            "\"$k\":$jv"
-        }
-        return newFixedLengthResponse(Status.OK, "application/json", "{$entries}")
-    }
-
-    /**
-     * GET /codecs.json — what this device can actually encode.
-     *
-     * Exists because codec capability claims on MediaTek devices are often
-     * wrong; this reports encoders that were configured and started for real.
-     */
-    private fun handleCodecsJson(): Response {
-        val r = com.ocubea.camera.CodecProbe.probe()
-        val arr: (List<String>) -> String = { xs -> xs.joinToString(",", "[", "]") { "\"${it.jsonEscape()}\"" } }
-        return newFixedLengthResponse(
-            Status.OK, "application/json",
-            """{"encoders":${arr(r.encoders)},""" +
-                """"hardware_avc":${arr(r.hardwareAvc)},""" +
-                """"software_avc":${arr(r.softwareAvc)},""" +
-                """"hardware_hevc":${arr(r.hardwareHevc)},""" +
-                """"largest_working_avc":"${r.largestWorkingAvc.jsonEscape()}",""" +
-                """"avc_configurable":${r.avcConfigurable},""" +
-                """"summary":"${r.summary().jsonEscape()}"}"""
-        )
-    }
 
     /**
      * GET /hls/index.m3u8 — the live playlist.
@@ -873,7 +740,13 @@ class StreamServer(
                 "Encoder warming up — first keyframe not encoded yet"
             )
         }
-        hls.clientJoined()
+        // No client accounting here on purpose. A playlist poll is not a
+        // viewer: hls.js re-requests the playlist roughly twice a second for
+        // the whole time a tab is open, and every request is a stateless
+        // newFixedLengthResponse - the server is never told when a viewer goes
+        // away, only when it stops asking. A counter incremented here would
+        // climb at ~2/s and could never be decremented, which is worse than no
+        // number at all. See HlsSession for why the encoder stays warm.
         return newFixedLengthResponse(
             Status.OK, "application/vnd.apple.mpegurl", hls.playlist()
         )
@@ -945,18 +818,6 @@ class StreamServer(
         }
         return sb.toString()
     }
-
-    private fun versionName(): String = try {
-        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "dev"
-    } catch (_: Exception) { "dev" }
-
-    private val startedAt = System.currentTimeMillis()
-    private fun uptimeSeconds(): Long = (System.currentTimeMillis() - startedAt) / 1000
-
-    private fun batteryLevel(): Int = try {
-        val bm = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
-        bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
-    } catch (_: Exception) { -1 }
 
     // ── Recordings ─────────────────────────────────────────────
 
@@ -1264,7 +1125,7 @@ class StreamServer(
     private fun requestOrigin(session: IHTTPSession): String? = session.headers["origin"]?.takeIf { it.isNotBlank() }
 
     private fun describe(): String = buildString {
-        appendLine("OcuBea ${versionName()} — IP Webcam compatible IP camera")
+        appendLine("OcuBea ${telemetry.versionName()} — IP Webcam compatible IP camera")
         appendLine("stream:      /video  /shot.jpg  /audio.wav")
         appendLine("status:      /status.json  /sensors.json  /config.json")
         appendLine("controls:    /focus  /ptz?zoom=  /torchon  /torchoff  /settings/<name>?set=<v>")
