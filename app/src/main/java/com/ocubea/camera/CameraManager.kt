@@ -472,10 +472,20 @@ class CameraManager(
         clipStopAtMs = 0L
         runCatching { clipWriter?.stop() }
         clipWriter = null
-        runCatching { clipEncoder?.stop() }
+        // Clear the reference BEFORE releasing the codec. stop() is reachable
+        // from the analyzer thread: onCameraFrame() runs on an ocubea-encode-N
+        // thread and calls this once the motion tail expires, while the next
+        // camera frame may already be inside feedClipFrame() holding the
+        // encoder's input buffer. Releasing first and nulling second left that
+        // frame writing into a freed buffer - "IllegalStateException: buffer is
+        // inaccessible" out of copyPlane, which killed the encoder seconds after
+        // arming. Both HLS and the clip path failed this way, and it looked
+        // like a MediaCodec that could not start.
+        val enc = clipEncoder
         clipEncoder = null
         clipMuxer = null
         clipReason = null
+        runCatching { enc?.stop() }
         // Retention must be told, not asked: the sweep runs on its own thread
         // and the clip that was open a moment ago is no longer protected, so
         // leaving the old name in place would make that file immortal.
@@ -593,6 +603,11 @@ class CameraManager(
             // inside encode(), so the proxy stays valid and the MJPEG path below
             // can still read it. This ordering matters — encoding first means
             // the hardware encoder never waits behind a JPEG compress.
+            //
+            // Synchronous does not mean safe against teardown: the codec can be
+            // released by the HTTP thread or the motion tail on another thread
+            // while this copy is in flight, so isEncoding/isRunning are the
+            // gate and they are re-read immediately before each feed.
             val hls = hlsSession
             val hlsFed = hls != null && hls.isEncoding
             if (hlsFed) {
