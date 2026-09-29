@@ -1100,3 +1100,51 @@ Po naprawie, przy `viewers: 0` i `motion.enabled: True`:
 
 Wniosek: pomiar `null_bitmaps` jest najtańszym wskaźnikiem tego, czy
 detekcja w ogóle żyje. Warto zerowy przy zerowej liczbie widzów.
+
+## Oba enkodery MediaCodec giną 5 s po starcie (2026-09-29, OTWARTY)
+
+Pomiary z trzeciego audytu ujawniły wspólną przyczynę trzech objawów,
+które do tej pory traktowałem jako osobne: `armed: false` przy
+`motion_record: true`, martwy HLS (`init=404`) i brak klipów mp4.
+
+Z logcatu telefonu (`c2.mtk.avc.encoder`, format 19, 1280x720@15):
+
+```
+10:20:32.941  started c2.mtk.avc.encoder 1280x720@15 color=19 bitrate=4000000
+10:20:37.257  MediaCodec setState: 9
+10:20:37.263  MediaCodec setState: 2
+10:20:37.263  MediaCodec setState: 10
+10:20:37.263  OcuBeaH264: encode failed
+              java.lang.IllegalStateException: buffer is inaccessible
+                at java.nio.DirectByteBuffer.put(DirectByteBuffer.java:343)
+                at H264Encoder.copyPlane(H264Encoder.kt:367)
+                at H264Encoder.copyPlanes(H264Encoder.kt:323)
+                at H264Encoder.encode(H264Encoder.kt:196)
+                at CameraManager.feedClipFrame(CameraManager.kt:533)
+                at CameraManager.analyzeFrame(CameraManager.kt:608)
+```
+
+Fakty potwierdzone, nie domysły:
+
+- `encode()` jest wołany **synchronicznie** z `analyzeFrame` — na stosie nie ma
+  `encodePool`, więc to nie wyścig o `ImageProxy` i nie kolejność z `close()`.
+- `copyPlanes` sprawdza `dst.capacity() >= w*h + 2*cw*ch` przed zapisem, a
+  `dst.clear()` jest wywoływany. Rozmiar bufora więc nie jest przyczyną.
+- `H264Encoder.stop()` zeruje `codec`, a `encode()` kończy się na
+  `codec ?: return` — po `stop()` nie da się dostać do `copyPlanes`.
+- Żaden kod w `app/src/main` nie woła `MediaCodec.flush()`, a `clipEncoder`
+  jest osiągalny wyłącznie z `CameraManager`.
+- Jeden `start`, jedna instancja enkodera, zero zakodowanych klatek.
+- Ścieżka MJPEG działa: `MotionRecorder` zapisał 2.7 MB `.avi` w tej samej sesji.
+
+Czyli `MediaCodec` przechodzi w stan Released **z zewnątrz**, po 4.3 s, a
+`analyzeFrame` w tym momencie pisze do jego bufora. Kto wywołuje
+`stop()`/`release()` na tym obiekcie — jeszcze nie wiadomo. Kandydat, którego
+nie wykluczyłem: `drain()` wykonuje `mc.dequeueOutputBuffer(info, 0)` w pętli
+bez limitu iteracji, więc przy zerowym czasie oczekiwania pętla kręci się
+przez te same sloty i może wypchnąć enkoder w stan, w którym kolejny
+`dequeueInputBuffer` zwraca bufor oznaczony jako niedostępny.
+
+**Status: OTWARTY.** Nie naprawiam na podstawie domysłu. Do rozstrzygnięcia
+potrzebny jest albo ślad `stop()` (np. log w `H264Encoder.stop()` z
+thread name i stackiem), albo pomiar z instrumentacją.
