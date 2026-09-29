@@ -56,6 +56,17 @@
             android:label="OcuBea Settings"
             android:parentActivityName=".MainActivity"/>
 
+        <!-- Span-cost report. Not exported: it is a diagnostic surface over
+             numbers this process already holds, and an exported one would let
+             any app on the device read a fingerprint of the device's speed. -->
+        <activity
+            android:name=".perf.PerfActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.OcuBea.NoActionBar"
+            android:label="@string/perf"
+            android:parentActivityName=".MainActivity"/>
+
         <!-- Native clip management. Needs network permission for the loopback
              player; that permission is already held for the live stream. -->
         <activity

@@ -2,6 +2,7 @@ package com.ocubea.stream
 
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import com.ocubea.perf.Metrics
 
 /**
  * Minimal fragmented-MP4 writer for CMAF-style HLS video.
@@ -199,19 +200,28 @@ class Fmp4Writer(
      * random-access point, which is the hard requirement for CMAF.
      */
     fun append(sample: H264Encoder.Sample): Segment? {
-        // A live stream must start its media timeline at zero, not at the
-        // encoder's absolute PTS. The PTS comes from System.nanoTime()/1000, so
-        // it is already ~17 million microseconds by the time anyone connects.
-        // Subtracting the first sample's timestamp keeps the deltas exact while
-        // making every tfdt and every segment start at a small, sane value —
-        // which is also what a player expects from a live source, and what
-        // keeps MSE from rejecting the first buffer as non-monotonic.
-        if (!basePtsUsSet) {
-            basePtsUs = sample.ptsUs
-            basePtsUsSet = true
+        val t = if (Metrics.enabled) Metrics.timer(Metrics.MUX) else null
+        val t0 = if (t != null) t.begin() else 0L
+        return try {
+            // A live stream must start its media timeline at zero, not at the
+            // encoder's absolute PTS. The PTS comes from System.nanoTime()/1000,
+            // so it is already ~17 million microseconds by the time anyone
+            // connects. Subtracting the first sample's timestamp keeps the
+            // deltas exact while making every tfdt and every segment start at
+            // a small, sane value — which is also what a player expects from a
+            // live source, and what keeps MSE from rejecting the first buffer
+            // as non-monotonic.
+            if (!basePtsUsSet) {
+                basePtsUs = sample.ptsUs
+                basePtsUsSet = true
+            }
+            appendRelative(sample.copy(ptsUs = sample.ptsUs - basePtsUs))
+        } finally {
+            // finally, not a tail statement: a segment cut that throws must
+            // still show up, and an exception here would otherwise be read as
+            // "the muxer got cheaper" in the very run where it broke.
+            if (t != null) t.end(t0)
         }
-        val rel = sample.copy(ptsUs = sample.ptsUs - basePtsUs)
-        return appendRelative(rel)
     }
 
     private fun appendRelative(sample: H264Encoder.Sample): Segment? {

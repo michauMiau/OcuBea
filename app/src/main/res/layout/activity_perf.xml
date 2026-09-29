@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0d1117"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/tvPerfTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/perf_title"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="#4CAF50"/>
+
+    <TextView
+        android:id="@+id/tvPerfSubtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/perf_subtitle"
+        android:textSize="12sp"
+        android:textColor="#9E9E9E"
+        android:paddingTop="4dp"
+        android:paddingBottom="8dp"/>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:baselineAligned="false">
+
+        <Button
+            android:id="@+id/btnPerfToggle"
+            android:layout_width="0dp"
+            android:layout_height="46dp"
+            android:layout_weight="1"
+            android:layout_margin="2dp"
+            android:text="@string/perf_start"
+            android:textSize="12sp"
+            android:backgroundTint="#2E7D32"
+            android:textColor="#ffffff"/>
+
+        <Button
+            android:id="@+id/btnPerfReset"
+            android:layout_width="0dp"
+            android:layout_height="46dp"
+            android:layout_weight="1"
+            android:layout_margin="2dp"
+            android:text="@string/perf_reset"
+            android:textSize="12sp"
+            android:backgroundTint="#37474F"
+            android:textColor="#ffffff"/>
+
+    </LinearLayout>
+
+    <!-- Monospace, because the report is a table and a proportional font
+         makes the columns lie about which number belongs to which span. -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="8dp">
+
+        <TextView
+            android:id="@+id/tvPerfReport"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="11sp"
+            android:textColor="#e6edf3"
+            android:textIsSelectable="true"/>
+
+    </ScrollView>
+
+    <TextView
+        android:id="@+id/tvPerfThread"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:textSize="12sp"
+        android:textColor="#9E9E9E"
+        android:paddingTop="8dp"/>
+
+</LinearLayout>

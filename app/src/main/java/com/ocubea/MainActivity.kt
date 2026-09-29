@@ -39,6 +39,15 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val PERMS_REQUEST = 1001
 
+        /**
+         * Compiled status-field patterns, built on first use and kept.
+         *
+         * The field names are a fixed set this class itself passes, so this
+         * map cannot grow from request data — it is a lookup table, not a
+         * cache with an attacker-chosen key.
+         */
+        private val NUM_FIELDS = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+
         /** Known launcher packages, tried in order when leaving kiosk mode. */
         val HOME_PACKAGES = arrayOf(
             "com.google.android.apps.nexuslauncher",
@@ -137,6 +146,9 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<View>(R.id.btnClips).setOnClickListener {
             startActivity(Intent(this, ClipActivity::class.java))
+        }
+        findViewById<View>(R.id.btnPerf).setOnClickListener {
+            startActivity(Intent(this, com.ocubea.perf.PerfActivity::class.java))
         }
 
         // Two ways out of kiosk mode, identical behaviour
@@ -274,9 +286,22 @@ class MainActivity : AppCompatActivity() {
         tvStatus.setTextColor(0xFF4CAF50.toInt())
     }
 
-    /** Reads a numeric field, returning null when absent. */
-    private fun numField(json: String, name: String): Float? =
-        Regex("\"$name\":([0-9.]+)").find(json)?.groupValues?.get(1)?.toFloatOrNull()
+    /**
+     * Reads a numeric field, returning null when absent.
+     *
+     * The patterns are built once, not per call. This runs five times per
+     * status poll and the poll is every 2 s, so compiling five regexes each
+     * time is 15 Pattern objects a minute for a screen that shows three
+     * numbers. Precompiled, it is a field lookup.
+     */
+    private fun numField(json: String, name: String): Float? {
+        var re = NUM_FIELDS[name]
+        if (re == null) {
+            re = Regex("\"$name\":([0-9.]+)")
+            NUM_FIELDS[name] = re
+        }
+        return re.find(json)?.groupValues?.get(1)?.toFloatOrNull()
+    }
 
     // ── Rendering ──────────────────────────────────────────────
 

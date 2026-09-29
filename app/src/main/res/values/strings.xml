@@ -105,4 +105,19 @@
     <string name="addr_snapshot_value">Snapshot:  http://%1$s:%2$d/shot.jpg%3$s</string>
     <string name="addr_audio_value">Audio:     http://%1$s:%2$d/audio.wav%3$s</string>
     <string name="onvif_value">ONVIF:     %1$s:%2$d/onvif/device_service</string>
+
+    <!-- Profiler -->
+    <string name="perf_title">Performance</string>
+    <string name="perf_subtitle">Span costs in milliseconds. Percentiles cover the ring\'s newest window; * marks a wrapped ring, so read those as recent, not whole-session. max is cumulative.</string>
+    <string name="perf_start">Start measuring</string>
+    <string name="perf_stop">Stop measuring</string>
+    <string name="perf_reset">Reset</string>
+    <string name="perf_idle">Not measuring. Tap Start, then use the app normally.</string>
+    <string name="perf_no_spans">No spans recorded yet. Start the stream, then come back.</string>
+    <string name="perf_legend">\n* percentiles are the newest window only, max spans the whole run</string>
+    <string name="perf_rejected">%1$d span names were refused: the registry is full (max %2$d). A caller is probably building a span name from a value.</string>
+    <string name="perf_thread_unavailable">Main thread CPU: unavailable on this device</string>
+    <string name="perf_thread_sampling">Main thread CPU: sampling…</string>
+    <string name="perf_thread_value">Main thread CPU: %1$.1f%%</string>
+    <string name="perf">Performance</string>
 </resources>

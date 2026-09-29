@@ -6,6 +6,7 @@ import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.util.Log
 import androidx.camera.core.ImageProxy
+import com.ocubea.perf.Metrics
 import java.nio.ByteBuffer
 
 /**
@@ -172,6 +173,13 @@ class H264Encoder(
      * The ImageProxy is *not* closed here — the caller owns its lifetime.
      */
     fun encode(image: ImageProxy, ptsUs: Long, onSample: (Sample) -> Unit) {
+        // Measured, not optimised. copyPlanes does three memcpys of a full
+        // frame per call and is the most likely place for a regression to
+        // appear, so the cost is recorded rather than guessed at. The lookup
+        // is skipped entirely while Metrics is off, which is the default, so
+        // an unmeasured build pays one volatile read.
+        val t = if (Metrics.enabled) Metrics.timer(Metrics.ENCODE) else null
+        val t0 = if (t != null) t.begin() else 0L
         val mc = codec ?: return
         if (!started) return
 
@@ -206,6 +214,12 @@ class H264Encoder(
         } catch (e: Exception) {
             lastError = e.message ?: e.javaClass.simpleName
             Log.w(TAG, "encode failed", e)
+        } finally {
+            // A `return` above skips the rest of the try, so the span has to be
+            // closed in a finally or a back-pressured frame would never be
+            // recorded and the report would understate the cost exactly when
+            // the encoder is struggling.
+            if (t != null) t.end(t0)
         }
     }
 

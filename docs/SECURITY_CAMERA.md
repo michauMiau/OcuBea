@@ -1284,3 +1284,53 @@ active=False  real_segment_ms=0
 i wygląda jak awaria. Poprawna kolejność to playlista → profil → pomiar.
 To samo wyjaśnia wcześniejsze „HLS nie startuje": telemetria była czytana
 przed pierwszą playlistą.
+
+## Awaria: /audio.wav wyłączał cały serwer HTTP (2026-09-29)
+
+### Pomiar
+
+14 klientów czytających `/audio.wav` po ~1.3 KB/s (pipe 64 KB się zapycha):
+
+| t | `/status.json` przy 14 klientach **audio** | przy 14 klientach `/status.json` |
+|---|---|---|
+| 3 s | TimeoutError | 200 |
+| 10-75 s | **ConnectionResetError** | 200 |
+| 90 s (po zwolnieniu) | 200 | 200 |
+
+Te same 14 połączeń do `/status.json` nie robi nic. Więc **pula HTTP nie była
+limitem — monitor był**.
+
+### Przyczyna
+
+`AudioStreamManager.captureLoop` trzymał `synchronized(activeClients)` wokół
+`c.write(...)`, czyli wokół `PipedOutputStream.write` do klienta. Pipe pełny
++ klient, który nie czyta = `write` blokuje **w trzymanym locku**. `addClient`
+blokuje na tym samym locku, a NanoHTTPD przypina kolejną odpowiedź do puli
+wątków. Po jej wyczerpaniu `AbortPolicy` odrzuca — **każdy endpoint odpowiada
+`ConnectionReset`**, nie tylko audio.
+
+### Co było nie tak w zgłoszeniu
+
+Audyt twierdził, że to wyciek slotów (`removeClient` bez wołających). **Nie
+było wycieku.** Klient upuszcza się przez `write` zwracające `false` na
+zablokowanym pipe, a `dropClient` to robi. Licznik wracał do 0 przy każdym
+pomiarze. Prawdziwa wada była inna i gorsza: nie wyciek, tylko lock przez I/O.
+
+### Naprawa
+
+`AudioFanOut` — klasa bez mikrofonu i bez importów Androida, więc kontrakt
+blokowania jest testowalny. `broadcast()` kopiuje listę klientów pod lockiem
+i **pisze po zwolnieniu**. Koszt: jedna `ArrayList` na bufor przechwycenia
+(~11 ms przy 44.1 kHz).
+
+`AudioFanOutTest` ma 11 przypadków, w tym `aBlockingClientDoesNotLockOutTheFanOut`.
+**Mutacja** — przeniesienie pętli zapisu z powrotem do `synchronized` — pada
+dokładnie tym testem. Przed naprawą nie było żadnego testu, który mógłby ją
+złapać: dojście do tej linii wymagało prawdziwego `AudioRecord`.
+
+### Czego nie dało się potwierdzić
+
+Naprawy **nie zweryfikowałem na telefonie** — ADB się rozłączyło w trakcie
+pracy (USB odłączone, port 5555 odrzucony). Pomiar powyżej jest baseline
+przed naprawą, na starym APK. Po podłączeniu: `./gradlew installDebug`, potem
+ponowić `pool2.py /audio.wav 14 80` i oczekiwać `200` w każdym punkcie.

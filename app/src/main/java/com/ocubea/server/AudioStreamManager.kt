@@ -30,7 +30,7 @@ class AudioStreamManager(private val context: Context) {
         fun getMinBufferSize(): Int = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
     }
 
-    private val activeClients = ArrayList<Client>()
+    private val activeClients = AudioFanOut()
     private val clients = AtomicInteger(0)
     private var audioRecord: AudioRecord? = null
     private val executor = Executors.newSingleThreadExecutor { r ->
@@ -38,8 +38,13 @@ class AudioStreamManager(private val context: Context) {
     }
     @Volatile private var capturing = false
 
-    /** Per-client sink. Returning false (or throwing) from [write] drops the client. */
-    class Client(val write: (ByteArray, Int) -> Boolean, val onDisconnect: () -> Unit)
+    /** Per-client sink. Returning false (or throwing) from [write] drops it. */
+    class Client(val write: (ByteArray, Int) -> Boolean, val onDisconnect: () -> Unit) {
+        // AudioFanOut owns the same shape. This alias keeps call sites in
+        // StreamServer constructing AudioStreamManager.Client, which is what
+        // the public surface of this class has always been.
+        fun asFanOutClient(): AudioFanOut.Client = AudioFanOut.Client(write, onDisconnect)
+    }
 
     fun canRecord(): Boolean =
         context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -56,17 +61,16 @@ class AudioStreamManager(private val context: Context) {
             val header = wavHeader(0xFFFFFFFFL)
             client.write(header, header.size)
         } catch (_: Exception) {}
-        synchronized(activeClients) { activeClients.add(client) }
+        activeClients.add(client.asFanOutClient())
         clients.incrementAndGet()
     }
 
     fun removeClient(client: Client) {
-        val removed = synchronized(activeClients) { activeClients.remove(client) }
-        if (removed) dropClient(client, alreadyCounted = true)
+        activeClients.remove(client.asFanOutClient())
+        decrementClients()
     }
 
-    private fun dropClient(client: Client, alreadyCounted: Boolean) {
-        if (!alreadyCounted) clients.decrementAndGet()
+    private fun decrementClients() {
         // updateAndGet is API 24. The compare-and-set loop below is the same
         // thing on API 23, and unlike decrementAndGet it cannot drive the
         // counter negative when a client is dropped twice.
@@ -75,7 +79,6 @@ class AudioStreamManager(private val context: Context) {
             val next = if (cur > 0) cur - 1 else 0
             if (clients.compareAndSet(cur, next)) break
         }
-        try { client.onDisconnect() } catch (_: Exception) {}
         if (clients.get() <= 0) stop()
     }
 
@@ -114,16 +117,28 @@ class AudioStreamManager(private val context: Context) {
             while (capturing) {
                 val read = record.read(buffer, 0, buffer.size)
                 if (read <= 0) continue
-                val dead = ArrayList<Client>()
-                synchronized(activeClients) {
-                    for (c in activeClients) {
-                        try {
-                            if (!c.write(buffer, read)) dead.add(c)
-                        } catch (_: Exception) { dead.add(c) }
+                // Snapshot the client list under the lock, then write OUTSIDE
+                // it. Holding a monitor across a blocking pipe write is what
+                // took the whole HTTP server down: measured on the phone, 14
+                // slow /audio.wav readers filled the 64 KB pipe, `write`
+                // blocked while the client list was held, and every other
+                // endpoint — /status.json included — returned
+                // ConnectionReset for 90 s, recovering only when the readers
+                // went away. The same 14 connections to /status.json cost
+                // nothing, so the HTTP pool was not the limit; the monitor was.
+                //
+                // The fan-out takes the client list under its own lock and
+                // writes with the lock released; see AudioFanOut for the
+                // measurement that forced that split. Here it is one call.
+                val dropped = activeClients.broadcast(buffer, read)
+                if (dropped > 0) {
+                    while (true) {
+                        val cur = clients.get()
+                        val next = if (cur > dropped) cur - dropped else 0
+                        if (clients.compareAndSet(cur, next)) break
                     }
-                    for (c in dead) activeClients.remove(c)
+                    if (clients.get() <= 0) stop()
                 }
-                for (c in dead) dropClient(c, alreadyCounted = true)
             }
         } catch (_: Exception) {
             // recorder died — fall through to cleanup
@@ -132,14 +147,7 @@ class AudioStreamManager(private val context: Context) {
             try { record.release() } catch (_: Exception) {}
             if (audioRecord === record) audioRecord = null
             // Disconnect everyone still waiting on the dead recorder
-            val orphans = synchronized(activeClients) {
-                val copy = ArrayList(activeClients)
-                activeClients.clear()
-                copy
-            }
-            for (c in orphans) {
-                try { c.onDisconnect() } catch (_: Exception) {}
-            }
+            activeClients.removeAll()
             clients.set(0)
             capturing = false
         }
@@ -147,14 +155,7 @@ class AudioStreamManager(private val context: Context) {
 
     fun stop() {
         capturing = false
-        val orphans = synchronized(activeClients) {
-            val copy = ArrayList(activeClients)
-            activeClients.clear()
-            copy
-        }
-        for (c in orphans) {
-            try { c.onDisconnect() } catch (_: Exception) {}
-        }
+        activeClients.removeAll()
         clients.set(0)
     }
 
