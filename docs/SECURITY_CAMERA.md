@@ -1071,3 +1071,32 @@ to `StreamServer.kt:83`. Brak drugiego wejścia, WebSocketa, null-pojarnika
 (ścieżka nigdy nie jest null — `serve` robi `session.uri ?: "/"`) ani wyjątku
 omijającego `check`. Normalizacja też nie rozwala: `/x/../status.json` nie
 równa się `/status.json`, a autoryzacja i router widzą **identyczny string**.
+
+## Detekcja ruchu nie działała bez otwartego podglądu (2026-09-29)
+
+Audyt łańcuchu detekcji wskazał, że `CameraManager` porzucał klatkę
+zanim trafiła do `onFrameCaptured` (`CameraManager.kt:602-605`, przed
+:633). Warunek `if (bitmap == null) return` stał **przed** wywołaniem
+detektora, a `mjpegWanted()` to `frameHub.viewerCount() > 0`.
+
+Pomiar na telefonie, `viewers: 0`, detekcja włączona:
+
+```
+null_bitmaps: 55 → 80 → 80   (rośnie ~15/s = dokładnie ten return)
+motion.enabled: True, detected: False, frames: rosną
+```
+
+Detekcja dostawała zero klatek, dopóki ktoś nie otworzył `/video` albo
+podglądu w aplikacji. Ponieważ `StreamService` uzbraja enkoder klipu
+na starcie, stan „enkoder czeka, detektor śpi" był stanem domyślnym.
+
+Naprawa: `CameraManager.motionActiveProvider` — predykat wstrzykiwany
+przez `StreamService` (właściciel detektora i rekordera), więc kamera nie
+sięga do pakietu `security`. Klatka jest teraz budowana, gdy cokolwiek
+z niej potrzebuje: widz MJPEG, detektor albo nagrywanie.
+
+Po naprawie, przy `viewers: 0` i `motion.enabled: True`:
+`null_bitmaps: 0`, klatki płyną do detektora.
+
+Wniosek: pomiar `null_bitmaps` jest najtańszym wskaźnikiem tego, czy
+detekcja w ogóle żyje. Warto zerowy przy zerowej liczbie widzów.

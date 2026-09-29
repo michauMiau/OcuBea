@@ -148,6 +148,21 @@ class CameraManager(
      */
     private fun mjpegWanted(): Boolean = frameHub.viewerCount() > 0
 
+    /**
+     * Whether the motion chain still needs a JPEG this frame.
+     *
+     * Motion detection is the app's main feature, so it outranks the MJPEG
+     * optimisation: while the detector or the AVI recorder is enabled, frames
+     * must keep flowing to [onFrameCaptured] even with zero viewers.
+     *
+     * Injected rather than reached for: the detector and recorder are owned by
+     * StreamService, so this is a predicate the service hands over instead of a
+     * lookup that would couple the camera to the security package.
+     */
+    @Volatile var motionActiveProvider: () -> Boolean = { false }
+
+    private fun motionNeedsJpeg(): Boolean = motionActiveProvider()
+
     /** Owner used for bindToLifecycle — set by the service, not the activity. */
     var lifecycleOwner: androidx.lifecycle.LifecycleOwner? = null
 
@@ -599,10 +614,18 @@ class CameraManager(
                 }
             }
 
-            val bitmap = if ((hlsFed || clipEnc != null) && !mjpegWanted()) null else imageProxy.toBitmap()
+            // The expensive Bitmap+JPEG path is only worth paying for when
+            // something downstream wants a JPEG: an MJPEG viewer, or the
+            // motion detector / recorder. The detector used to be missed here,
+            // which silently disabled the feature that is the main reason the
+            // app exists - with no viewer open, processJpeg() was never called
+            // even though the clip encoder was armed and waiting.
+            val clipFed = clipEnc != null
+            val jpegNeeded = !((hlsFed || clipFed) && !mjpegWanted()) || motionNeedsJpeg()
+            val bitmap = if (jpegNeeded) imageProxy.toBitmap() else null
             imageProxy.close()
             // A null here after an intentional skip is expected, not a failure.
-            if (bitmap == null) { if (hlsFed) return; nullBitmaps++; return }
+            if (bitmap == null) { if (hlsFed && !motionNeedsJpeg()) return; nullBitmaps++; return }
 
             // Saturation guard: if encoders are already behind, drop this frame
             // rather than queueing it. A queued frame is a stale frame, and the

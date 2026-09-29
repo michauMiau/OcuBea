@@ -102,6 +102,10 @@ class StreamService : LifecycleService() {
         cameraManager = CameraManager(applicationContext, config).also {
             it.lifecycleOwner = this
             it.onCameraError = { msg -> reportError(msg) }
+            // Motion detection needs frames even with zero MJPEG viewers, or
+            // the feature silently never runs. The service owns both objects,
+            // so it answers the question rather than the camera reaching in.
+            it.motionActiveProvider = { motionDetector.enabled || motionRecorder.enabled }
         }
 
         CrashLogger.installIfNeeded(applicationContext)

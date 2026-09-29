@@ -21,7 +21,7 @@ class MotionDetector(
 
     private val gridW = 32
     private val gridH = 24
-    private var previous: IntArray? = null
+    private val differ = FrameDiffer(minChangedFraction)
     @Volatile var lastMotionTime: Long = 0
         private set
     @Volatile var motionDetected: Boolean = false
@@ -64,7 +64,7 @@ class MotionDetector(
     fun processJpeg(jpeg: ByteArray): Boolean {
         if (!enabled) {
             if (motionDetected) { motionDetected = false; onMotionStop?.invoke() }
-            previous = null
+            differ.reset()
             return false
         }
         val bmp = decodeSampled(jpeg)
@@ -101,7 +101,7 @@ class MotionDetector(
     fun process(bitmap: Bitmap): Boolean {
         if (!enabled) {
             if (motionDetected) { motionDetected = false; onMotionStop?.invoke() }
-            previous = null
+            differ.reset()
             return false
         }
         val small = Bitmap.createScaledBitmap(bitmap, gridW, gridH, true)
@@ -113,15 +113,12 @@ class MotionDetector(
         }
         if (small !== bitmap) small.recycle()
 
-        val prev = previous ?: run { previous = cur; return motionDetected }
-        previous = cur
-        if (prev.size != cur.size) return motionDetected
-
-        var changed = 0
-        for (i in cur.indices) if (Math.abs(cur[i] - prev[i]) > threshold) changed++
+        // One atomic swap: exactly one thread gets the predecessor, and the
+        // frame a thread installs is never the frame another thread compares to.
+        val prev = differ.swap(cur) ?: return motionDetected
 
         val now = System.currentTimeMillis()
-        val detected = changed.toFloat() / cur.size >= minChangedFraction
+        val detected = differ.differs(cur, prev, threshold)
         return if (detected) {
             lastMotionTime = now
             if (!motionDetected) { motionDetected = true; onMotionStart?.invoke() }
