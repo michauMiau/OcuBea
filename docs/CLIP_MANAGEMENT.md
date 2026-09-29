@@ -1,7 +1,9 @@
 # Zarządzanie klipami — API, WebUI i aplikacja
 
-Status: **zaplanowane.** Powstało 2026-09-27 na żądanie: „daj do aplikacji i
+Status: **częściowo wdrożone.** Powstało 2026-09-27 na żądanie: „daj do aplikacji i
 webui jakieś zarządzanie tymi klipami, odtwarzanie, nagrywanie ondemand i itd".
+Nagłówek orzekał „zaplanowane" jeszcze po wdrożeniu pierwszych punktów —
+poniższa tabela jest stanem faktycznym, zweryfikowanym w kodzie, nie planem.
 
 ## Co już istnieje (nie pisać drugiego systemu)
 
