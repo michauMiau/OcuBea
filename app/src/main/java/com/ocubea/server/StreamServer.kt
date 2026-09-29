@@ -434,9 +434,15 @@ class StreamServer(
         // version of this reply carried only segment_ms, so the player kept
         // its built-in defaults — which assume a 2s targetduration and hold a
         // 120ms stream back by whole seconds.
+        //
+        // real_segment_ms is what the muxer actually cuts. The request is not
+        // a promise: with an IDR per frame every segment is one frame long, so
+        // reporting segment_ms alone describes a stream nobody receives.
+        val real = cameraManager.hlsSession?.lastSegmentDurationMs ?: 0L
         return okText(
             "profile set segment_ms=${profile.segmentMs} keyframe_sec=${profile.keyFrameIntervalSec} " +
-                "sync=${profile.liveSyncDurationCount} buffer=${profile.maxBufferLength}"
+                "sync=${profile.liveSyncDurationCount} buffer=${profile.maxBufferLength} " +
+                "real_segment_ms=$real"
         )
     }
 

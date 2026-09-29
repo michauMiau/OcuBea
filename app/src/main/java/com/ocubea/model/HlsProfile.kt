@@ -35,13 +35,19 @@ data class HlsProfile(
         const val CLIP_KEY_FRAME_INTERVAL_SEC = 1
 
         /**
-         * The default: ~250ms segments with an IDR every half second.
+         * The default: a 250ms segment request with an IDR on every frame.
          *
          * This is what the stream did before the profile existed, and it is a
          * reasonable middle. Note that the camera on the test device delivers
-         * ~6fps rather than the 15-30 requested, so a segment really is one
-         * frame; the declared 250ms is the *target* and the playlist reports
-         * what actually happened.
+         * ~11fps rather than the 15-30 requested, so a segment really is one
+         * frame: measured 88ms, not the declared 250ms. The declared value is
+         * the *request*; the playlist reports what actually happened, and
+         * /status.json carries `real_segment_ms` for the same reason.
+         *
+         * The comment here used to promise "an IDR every half second". It
+         * never did - the field is 0, which means every frame - and reading it
+         * as documentation is how the default was measured as a 250ms
+         * segment stream when it is really a per-frame one.
          */
         val DEFAULT = HlsProfile(
             segmentMs = 250,

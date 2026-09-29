@@ -325,6 +325,7 @@ var I18N = {
     'Encoder': 'Enkoder',
     'HLS segments': 'Segmenty HLS',
     'Segment target': 'Cel segmentu',
+    'real': 'realne',
     'GOP': 'GOP',
     'Resolution': 'Rozdzielczość',
     'Uptime': 'Czas pracy',
@@ -590,16 +591,39 @@ function startHls(){
         hls.config.maxBufferLength = parseInt(m[2], 10);
         hls.config.maxMaxBufferLength = parseInt(m[2], 10) * 2;
       }
+      /* lowLatencyMode makes hls.js fetch parts as soon as they exist rather
+       * than waiting a whole targetduration. That is the entire latency win,
+       * and it is only correct if the player is told how long the parts
+       * really are. The muxer cuts on the next IDR, so with one IDR per frame
+       * a "120ms" request yields ~89ms parts; configuring against the request
+       * left the player holding ~30ms too much buffer for its estimate to be
+       * right, and on a phone encoder that compounds across the session. */
+      var realSeg = /real_segment_ms=(\d+)/.exec(body);
+      if(hls && realSeg && parseInt(realSeg[1], 10) > 0){
+        var realSec = parseInt(realSeg[1], 10) / 1000;
+        if(hls.config.lowLatencyMode !== false){
+          hls.config.maxBufferLength = Math.max(1, Math.min(
+            hls.config.maxBufferLength, Math.ceil(realSec * 6)));
+        }
+      }
       /* The segment target belongs next to the real segment count, so it goes
        * into the existing status row rather than a second one. The count is
        * rewritten by refresh() every 3s, so the target is shown as its own
        * cell — otherwise it would be overwritten within seconds. */
       var seg = /segment_ms=(\d+)/.exec(body);
+      var real = /real_segment_ms=(\d+)/.exec(body);
       var gop = /keyframe_sec=(\d+)/.exec(body);
       if(seg){
-        $('sSegTarget').textContent =
-          (parseInt(seg[1],10) / 1000).toFixed(2) + ' s' +
+        /* The requested segment length, and - when the encoder has cut one
+         * already - what it really cut. With one IDR per frame the real value
+         * is a single frame, so the request is never reached and showing only
+         * it describes a stream nobody receives. */
+        var txt = (parseInt(seg[1],10) / 1000).toFixed(2) + ' s' +
           (gop && parseInt(gop[1],10) > 0 ? ' / ' + t('GOP') + ' ' + gop[1] + ' s' : '');
+        if(real && parseInt(real[1],10) > 0 && parseInt(real[1],10) !== parseInt(seg[1],10)){
+          txt += ' (' + (parseInt(real[1],10) / 1000).toFixed(3) + ' s ' + t('real') + ')';
+        }
+        $('sSegTarget').textContent = txt;
       }
     })
     .catch(function(){ /* keep the previous profile rather than breaking playback */ });

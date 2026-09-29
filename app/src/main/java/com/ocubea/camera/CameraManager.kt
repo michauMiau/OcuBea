@@ -735,7 +735,15 @@ class CameraManager(
                 com.ocubea.model.HlsProfile.HIGH_QUALITY -> "high"
                 else -> "default"
             },
+            // segment_ms is the profile's REQUESTED length, and in low-latency
+            // mode it is not what the client gets: the muxer cuts on the next
+            // IDR, and with one IDR per frame every segment is a single frame.
+            // Reporting only the requested value made a working stream look
+            // 25% longer than it was, which is how "HLS is broken" was
+            // concluded from a healthy encoder. real_segment_ms is measured off
+            // the segments the ring actually holds; null before the first one.
             "segment_ms" to hlsProfile.segmentMs,
+            "real_segment_ms" to (s?.lastSegmentDurationMs ?: 0L),
             "keyframe_sec" to hlsProfile.keyFrameIntervalSec,
             "last_error" to hlsLastError
         )
