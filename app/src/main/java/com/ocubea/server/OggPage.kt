@@ -130,9 +130,16 @@ object OggPage {
         page[26] = 1 // one segment table entry
         page[27] = lacing.toByte()
         payload.copyInto(page, 28)
+        // The checksum field is four bytes at offset 22, zeroed while the
+        // checksum is computed, then filled in. The Ogg spec stores it
+        // LITTLE-endian, same as every other multi-byte field in the header.
+        // An earlier version wrote it big-endian, which produced pages that
+        // still began with "OggS", passed this file's own round-trip test --
+        // because the test read the bytes back with the same wrong order --
+        // and were rejected by every real player as "CRC mismatch!".
         val crc = crc(page, 0, page.size)
         for (shift in 0..3) {
-            page[25 - shift] = ((crc shr (8 * shift)) and 0xFF).toByte()
+            page[22 + shift] = ((crc shr (8 * shift)) and 0xFF).toByte()
         }
         return page
     }

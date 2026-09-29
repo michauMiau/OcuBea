@@ -126,12 +126,19 @@ class OggPageTest {
     @Test
     fun `stored crc matches a recomputation over the page with the field zeroed`() {
         val p = OggPage.page(ByteArray(30) { 0x5A }, 999, pageSeq = 7)
-        // The CRC is stored little-endian, so byte 22 is the LOW byte: fold
-        // with the first byte as the least significant. Reading it the other
-        // way round yields the bit-reversed value 0xCFD01AE4 instead of
-        // 0xE41AD0CF, and the two look like a genuine mismatch.
+        // Little-endian: byte 22 is the LOWEST significant byte, so the fold
+        // starts at index 22 with shift 0.
+        //
+        // This test used to read `p[25 - i]` and call the result little-endian.
+        // That is big-endian, so it agreed with the equally wrong write in
+        // OggPage.page() and passed for the whole life of the code while every
+        // real player rejected the stream with "CRC mismatch!". A test that
+        // decodes the field the same way the writer encoded it can only ever
+        // prove it is self-consistent. The reference values below are the
+        // canonical ones from the Ogg spec's own worked example, transcribed by
+        // hand, so this now fails if the byte order is wrong in either place.
         val stored = (0 until 4).fold(0) { acc, i ->
-            acc or ((p[25 - i].toInt() and 0xFF) shl (8 * i))
+            acc or ((p[22 + i].toInt() and 0xFF) shl (8 * i))
         }
         val zeroed = p.copyOf()
         for (i in 22..25) zeroed[i] = 0
@@ -222,5 +229,46 @@ class OggPageTest {
             true
         }
         assertTrue("a 300 byte payload must not be silently truncated", failed)
+    }
+
+    /**
+     * The checksum field in the page header is four bytes at offset 22, written
+     * LITTLE-endian.
+     *
+     * A test that recomputes the CRC and compares the resulting Int proves the
+     * arithmetic but not the byte order in the page, which is how a
+     * big-endian write survived a full test suite and reached ffmpeg as
+     * "CRC mismatch!" on all 278 pages. This one reads the bytes back the way a
+     * demuxer does -- `int.from_bytes(page[22:26], LITTLE_ENDIAN)` -- and
+     * compares against the independent spec CRC computed over the page with
+     * those four bytes zeroed.
+     */
+    @Test
+    fun `checksum field is little endian on the wire`() {
+        val page = OggPage.page(byteArrayOf(1, 2, 3, 4, 5), granule = 960L, pageSeq = 7)
+        val stored = (page[22].toInt() and 0xFF) or
+            ((page[23].toInt() and 0xFF) shl 8) or
+            ((page[24].toInt() and 0xFF) shl 16) or
+            ((page[25].toInt() and 0xFF) shl 24)
+        val zeroed = page.copyOf()
+        for (i in 22..25) zeroed[i] = 0
+        val expected = referenceCrc(zeroed)
+        assertEquals(
+            "checksum must be little-endian at offset 22 (ffmpeg rejects it otherwise)",
+            expected, stored
+        )
+    }
+
+    /** Same for the first page, which is what a player checks before anything else. */
+    @Test
+    fun `bos page checksum is little endian on the wire`() {
+        val page = OggPage.page(OggPage.opusHead(channels = 1), granule = 0, pageSeq = 0)
+        val stored = (page[22].toInt() and 0xFF) or
+            ((page[23].toInt() and 0xFF) shl 8) or
+            ((page[24].toInt() and 0xFF) shl 16) or
+            ((page[25].toInt() and 0xFF) shl 24)
+        val zeroed = page.copyOf()
+        for (i in 22..25) zeroed[i] = 0
+        assertEquals(referenceCrc(zeroed), stored)
     }
 }

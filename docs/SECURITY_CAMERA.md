@@ -288,8 +288,11 @@ wątek, który nie nadjdzie.
 | 4 wątki, kolejka 8 (przed) | timeout 6 s | timeout 6 s | 6 | 0 |
 | 8 wątków, kolejka 1 | 27 ms | 18 ms | 15 | 6 |
 
-Ostatecznie: `DEFAULT_MAX_THREADS = 8`, `DEFAULT_MAX_QUEUED = 1`. Krótka
-kolejka jest celem — **odmówić szybciej niż czekać**. Nadmiar gniazd jest
+Pula została potem podniesiona z 8 do **12** wątków (patrz sekcja o progu
+widzów niżej), bo 8 strumieni wyciszało całą powierzchnię sterującą. Stan
+końcowy: `DEFAULT_MAX_THREADS = 12`, `DEFAULT_MAX_QUEUED = 1`. Ten pomiar
+wariantu 8-wątkowego jest historyczny i opisuje wariant, którego już nie ma.
+Krótka kolejka jest celem — **odmówić szybciej niż czekać**. Nadmiar gniazd jest
 zamykany natychmiast, a licznik pokazuje się w `status.json` jako
 `connections: {active, refused, max_threads}`, bo inaczej urządzenie zalewające
 serwer wygląda po prostu na „niewidoczny".
@@ -1469,3 +1472,55 @@ Kamera na telefonie padła przy otwarciu sensora (`Device error received, code 3
 więc przez dłuższy czas **nie było klatek do zmierzenia**. Restart to naprawił —
 `camera=True` — i od tego czasu ekran profilera ma już realne spany do
 odczytania, patrz sekcja niżej.
+
+## Kamera znowu pada — `code 3` wraca (2026-09-29)
+
+Restart „naprawił" kamerę w sekcji powyżej i faktycznie — w tej sesji
+`camera=True`. Ale błąd jest **nawracający**, nie usunięty: przy kolejnym
+otwarciu sensora znowu `Device error received, code 3`. Nie ma w tym dokumencie
+przyczyny ani obejścia, bo go nie zdiagnozowano.
+
+Praktyczna konsekwencja dla wszystkich pomiarów powyżej: każda liczba
+zmierzona „na urządzeniu" pochodzi z sesji, w której akurat kamera działała.
+Dlatego dokument trzyma je przy sobie z datą, a nie jako stałe własności
+aplikacji. Weryfikacja zdalna: `camera_active` w `/status.json` oraz
+`pipeline.last_error`; `/video`, `/hls` i `/startvideo` dają wtedy `503
+Camera not streaming`, `/shot.jpg` — `204 No frame yet`.
+
+Pułapka po drodze: ekran główny aplikacji **i tak pokazuje zielone „live"**,
+bo `applyStatus` czyta fps i liczbę widzów, a ignoruje `camera_active`
+(`MainActivity.kt:277-286`). Nie ufaj ekranowi telefonu — sprawdzaj
+`camera_active` zdalnie.
+
+## Koksyk AAC i Opus: enkoder działa, ale nie jest podpięty do strumienia
+
+`/audio.aac` i `/audio.opus` **nie wydają** dźwięku. Oba kończą się `501`
+(`StreamServer.kt:439-447`) z tekstem
+„<codec> encoding is not wired up yet; asking for /audio.wav works".
+Kiedyś zwracały bajty WAV pod nazwą, o którą prosił klient — to było
+prawdziwsze niż wygląda, bo klient proszący o Opus dostawał WAV i nie mógł
+tego wykryć. Teraz zawodzą głośno, co jest uczciwe.
+
+Co **działa**, zmierzone na telefonie:
+
+- AAC 64 kbps i Opus 32 kbps realnie kodują (`MediaCodec` wyprodukował
+  niepuste wyjście), więc to nie jest „brak kodeka na urządzeniu";
+- `/status.json` → `audio.available_list` wymienia to, co probe potwierdził;
+- wybór kodeka w WebUI zapisuje się i wraca w `/status.json` — kliknięcie
+  Opus / No audio / AAC każdy round-tripuje.
+
+Rozdźwięk jest w warstwie serwera: `AudioEncoder.kt` i `OggPage.kt` istnieją
+i są poprawne, ale nic nie wywołuje ścieżki kodującej w handlerze. Klasa
+`AudioEncoderFanOut.kt` jest w tym momencie **nieśledzona w gicie i nigdzie
+nieużywana** — audyt szukający „czy AAC działa" przez `grep AudioEncoder`
+dostanie „tak" i wyjdzie z błędnym wnioskiem. Wybór kodeka w UI jest zapisany
+i potwierdzony przez serwer, ale nie oznacza, że dźwięk popłynie.
+
+Stan ruchu: `/audio.wav` działa i jest jedyną działającą ścieżką audio.
+Zmierzony koszt: 86 868 B/s = ~695 kbps, czyli **~5,2 MB na minutę na
+klienta** — 16-bitowy PCM, 44,1 kHz (`AudioStreamManager.SAMPLE_RATE = 44100`).
+Dlatego AAC i Opus były potrzebne; dopóki nie są podpięte, budżet przepustowości
+trzeba liczyć właśnie tak.
+
+Limit 8 klientów audio przy 12 wątkach puli jest opisany wyżej i nadal
+obowiązuje.
