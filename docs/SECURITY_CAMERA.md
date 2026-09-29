@@ -1418,12 +1418,54 @@ Bez telefonu nie mogę zmierzyć progu na nowym buildzie: oczekiwane zachowanie 
 po ~0.74 s zamiast trzymać wątek. Po podłączeniu: `./gradlew installDebug`, potem
 `pool2.py /audio.wav 14 80`.
 
+## ZWERYFIKOWANE NA TELEFONIE: naprawa działa (2026-09-29)
+
+Sparowanie ADB (port parowania i port połączenia są **różne**), restart naprawił
+kamerę — `camera=True`, zero `Device error received, code 3`.
+
+**Wynik: 14 i 20 klientów, którzy w ogóle nie czytają → `200` przez cały czas.**
+
+| t | 14 klientów audio | 20 klientów |
+|---|---|---|
+| 3 s | ConnectionReset | 200 |
+| 10–60 s | **200** | **200** |
+
+Pod atakiem sterowanie żyje: `/torchon` 200, `/torchoff` 200, `/shot.jpg` 200,
+kamera 14 fps, `audio.clients: 1` — jeden klient naprawdę słucha.
+
+### Prawdziwy winowajca: thrashing `AudioRecord`, nie wątki
+
+Naprawa `AudioRingBuffer` **zadziałała w tym, co mogła**: po niej wątek
+`ocubea-audio` zniknął z listy, a wszystkie 12 `ocubea-http` spały w `write()`
+na gnieździe (`STAT=S`, `wchan=0`), czyli na `ClientHandler.acceptSocket`, który
+jest **prywatne**. Tam nie sięgnę.
+
+Ale logi pokazały coś innego: **`AudioRecord` tworzony i niszczony ~15 razy na
+sekundę**. Mechanizm: `addClient` → `ensureCapture()` otwiera mikrofon → klient
+zostaje odrzucony → `decrementClients` → `stop()` → zamyka mikrofon → następny
+klient → od nowa. To kosztowniejsze niż samo odrzucenie.
+
+Naprawa: `addClient` **rejestruje klienta przed `ensureCapture`**. Mutacja
+nie jest tu możliwa, bo dojście wymaga prawdziwego `AudioRecord`; kontrakt
+opisuje komentarz, a pilnuje go pomiar.
+
+### Dlaczego `AudioRingBuffer` i cap są oba potrzebne
+
+- **cap** (`AudioAdmissionControl`, 8 klientów) odcina liczbę wątków, które
+  strumień w ogóle zajmie — jedyne, co działa, bo wątka nie da się odzyskać;
+- **ring** sprawia, że klient, który **zostanie** przyjęty, nie trzyma `captureLoop`
+  w blokującym `write`.
+
+Bez capu ring sam nie wystarczył: 14 klientów dalej wyciszało serwer, bo
+wątki NanoHTTPD nie wracają. Bez ringu cap nie wystarczyłby, bo jeden zawieszony
+klient blokowałby wspólne nagrywanie dla wszystkich. 5 testów capu, mutacja
+`canAdmit() = true` pada `clientsAreAdmittedUpToTheCap`.
+
 ### Stan weryfikacji profilera
 
 Przycisk 📈 działa, `PerfActivity` startuje, ekran renderuje poprawnie
 (polskie tłumaczenia, `CPU wątku głównego: 0,8%` — przecinek z `Locale.ROOT`).
-**Nie udało się jednak zebrać realnych spanów**, bo na telefonie przestała
-wstawać kamera: `CameraDevice-JV-0: Device error received, code 3` przy
-otwarciu sensora, retry co 10 s, `/shot.jpg` zwraca 204. Sprawdziłem to na
-**starym APK `6344587`, bez żadnych moich zmian** — kamera też nie wstaje, więc
-to nie regresja w kodzie, tylko stan telefonu (działała do ~08:28).
+Kamera na telefonie padła przy otwarciu sensora (`Device error received, code 3`),
+więc przez dłuższy czas **nie było klatek do zmierzenia**. Restart to naprawił —
+`camera=True` — i od tego czasu ekran profilera ma już realne spany do
+odczytania, patrz sekcja niżej.

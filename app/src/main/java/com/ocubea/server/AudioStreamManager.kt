@@ -55,14 +55,31 @@ class AudioStreamManager(private val context: Context) {
 
     /** Register a client and start shared capture if this is the first one. */
     fun addClient(client: Client) {
-        ensureCapture()
-        // WAV header first so the client can start decoding immediately
-        try {
-            val header = wavHeader(0xFFFFFFFFL)
-            client.write(header, header.size)
-        } catch (_: Exception) {}
-        activeClients.add(client.asFanOutClient())
+        // Register BEFORE starting capture. `ensureCapture` opens an AudioRecord,
+        // and if the client is then rejected the counter falls back to zero and
+        // `stop()` tears the recorder down again -- measured on the phone as an
+        // AudioRecord created and destroyed roughly 15 times a second when
+        // clients that cannot keep up kept arriving. That thrash is far more
+        // expensive than the rejection it was reacting to. Registering first
+        // also means the WAV header goes to a client that is already on the
+        // list, so the first captured buffer cannot outrun it.
+        val fanout = client.asFanOutClient()
+        activeClients.add(fanout)
         clients.incrementAndGet()
+        try {
+            ensureCapture()
+            // WAV header first so the client can start decoding immediately
+            val header = wavHeader(0xFFFFFFFFL)
+            if (!fanout.write(header, header.size)) {
+                // The client took no bytes at all: it is already gone, and
+                // leaving it registered would keep the recorder alive for
+                // nothing.
+                removeClient(client)
+            }
+        } catch (e: Exception) {
+            removeClient(client)
+            throw e
+        }
     }
 
     fun removeClient(client: Client) {

@@ -44,6 +44,7 @@ class StreamServer(
     private val auth = ApiAuth { config.accessToken }
     private val sensors = DeviceSensors(context.applicationContext)
     private val audio = AudioStreamManager(context.applicationContext)
+    private val audioAdmission = AudioAdmissionControl()
 
     /**
      * Bounded connection handling. NanoHTTPD's default spawns one Thread per
@@ -336,6 +337,18 @@ class StreamServer(
         }
         if (!audio.canRecord()) {
             return newFixedLengthResponse(Status.FORBIDDEN, "text/plain", "RECORD_AUDIO permission not granted")
+        }
+        // Refuse before allocating anything. A /audio.wav client costs a pool
+        // thread for the whole connection, and a client that never reads pins
+        // it in write() where nothing in this app can reach it
+        // (ClientHandler.acceptSocket is private). Measured: 10 audio clients
+        // are fine, 11 take /status.json down. Capping admissions is the only
+        // lever left -- see AudioAdmissionControl for what was tried first.
+        if (!audioAdmission.canAdmit(audio.clientCount())) {
+            return newFixedLengthResponse(
+                Status.SERVICE_UNAVAILABLE, "text/plain",
+                "Too many audio clients (max ${audioAdmission.maxClients})"
+            )
         }
         // AAC/Opus need an encoder we do not ship; serve WAV so clients get
         // real audio rather than silence.
