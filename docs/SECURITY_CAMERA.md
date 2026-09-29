@@ -846,3 +846,54 @@ zamiast rozdzielać ją na dwie.
 
 To samo ustalenie co w poprzedniej fali, ale teraz z konkretną konsekwencją
 projektową zamiast usuniętego na ślepo kodu.
+
+## Retencja działa, ale jej limity są na sztywno (2026-09-28)
+
+Trzy mechanizmy są poprawne i potwierdzone pomiarem:
+
+- `ClipRetentionScheduler` odpala sweep przy starcie, po zamknięciu klipu
+  (20 s opóźnienia) i co 15 minut jako zabezpieczenie.
+- `ClipWriter` łapie `IOException` przy zapisie, zatrzymuje pętlę i zamyka
+  uchwyt — wyciągnięta karta SD nie powoduje wirowania w miejscu.
+- `ClipRetention` OR-uje trzy granice, a klip w trakcie zapisu jest chroniony
+  nazwą, więc nie zniknie spod skrzędeł piszącego.
+
+Zmierzone: 12 klipów po 2 MB (8 „starych", 4 nowe) → `POST /clips/prune`
+zwraca `{"removed":0,...}`, bo domyślne granice to 4096 MB / 7 dni / 500 plików.
+Mechanizm jest więc osiągalny i poprawny.
+
+**Ale granic nie da się zmienić.** Sprawdzone na urządzeniu i w kodzie:
+
+```
+POST /settings/clip_max_files      -> 404
+POST /settings/clip_max_space_mb   -> 404
+```
+
+`clipMaxSpaceMb`, `clipMaxAgeHours` i `clipMaxFiles` mają czytników
+(`StreamService.kt:268-270`, `StreamServer.kt:1159-1168`) i **zero writerów** —
+żaden kod w repo nie przypisuje tych właściwości, a `ClipActivity` ma
+przycisk „prune", lecz nie ekran ustawień. Wszystkie trzy istnieją jako
+klucze, właściwości i zakresy `coerceIn`, co wygląda na konfigurowalne.
+
+To **decyzja produktowa, nie bug** — domyślne wartości są rozsądne, a telefon
+miał 18 GB wolnego miejsca przy limicie 4 GB. Ale nikt nie może tego
+dostosować, więc jeśli limit 4 GB okaże się za mały albo za duży, jedyną
+drogą jest ponowna kompilacja. Zapisane jako otwarte, nie naprawiane po cichu.
+
+## Uszkodzony klip wygląda jak dobry
+
+`ClipStorage.list()` filtruje wyłącznie po nazwie
+(`startsWith("klip_") && endsWith(".mp4")`) — nie sprawdza zawartości ani
+kompletności pliku. Zmierzone: plik ucięty w połowie (1238 B z 2477 B) oraz
+plik będący 5000 bajtami losowych danych trafiły na listę jako zwykłe
+nagrania, a `GET /clips/<nazwa>` zwracał dla obu HTTP 200 z pełną zawartością.
+
+Odtwarzac ich nie da, a interfejs nie pokazuje czasu trwania ani żadnego
+znacznika, więc użytkownik widzi trzy pozycje, z których dwie są śmieciem.
+`ClipWriter` wspomina o tym w komentarzu („read duration 0 as incomplete file
+and show a…") — ale ta wskazówka nigdzie nie została użyta.
+
+Nie naprawiam tego automatycznie: usunięcie pliku po cichu gorsze od
+pokazania go z ostrzeżeniem, a decyzja „co pokazać" należy do użytkownika.
+Możliwe rozwiązania to osobny licznik `suspect` w `/clips` i znacznik w UI,
+albo walidacja `moov` przy skanowaniu. Do wyboru.
