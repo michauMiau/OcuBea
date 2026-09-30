@@ -34,7 +34,7 @@ const STAYS_ENGLISH = new Set([
   // so a Polish label for them would not match what /audio/codec answers and
   // what the phone's own status card prints. "Monochrome" likewise: the phone
   // spells the effect that way.
-  'Opus', 'AAC', 'AMR-NB', 'FLAC', 'WAV', 'AMR', 's'
+  'Opus', 'AAC', 'AMR-NB', 'FLAC', 'WAV', 'AMR', 's', 'Monochrome'
 ]);
 
 /* A resolution, a count, a duration, a zoom value, an en dash placeholder.
