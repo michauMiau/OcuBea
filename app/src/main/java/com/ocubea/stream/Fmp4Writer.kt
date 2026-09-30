@@ -766,7 +766,12 @@ class Fmp4Writer(
         avc1.write(byteArrayOf(0, 1))                        // frame_count = 1
         avc1.write(ByteArray(32))                          // compressorname: 32 bytes
         avc1.write(byteArrayOf(0x00, 0x18))                // depth 0x0018
-        avc1.write(byteArrayOf(0xFF.toByte(), 0xFF.toByte()))  // pre_defined = -1
+        // pre_defined must be 0. Writing 0xFFFF -- the value seen in some
+        // reference writers -- makes Chrome reject the whole init segment with
+        // a bare MediaError: every NAL in the file is valid, the level in avcC
+        // is right, and the box sizes tile exactly, so ffmpeg reads the file
+        // without complaint while no browser will play it.
+        avc1.write(byteArrayOf(0, 0))                      // pre_defined = 0
         avc1.putAll(box("avcC", avcConfig))
         val stsd = java.io.ByteArrayOutputStream()
         stsd.write(int(0))                                   // version + flags
