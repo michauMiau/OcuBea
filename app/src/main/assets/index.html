@@ -101,10 +101,13 @@
   /* The HLS quality readout sits in the big-button row as a read-only box: it
      gets the same height and the same 44% track as the buttons, so the row has
      one rhythm, and it may give width back. */
+  /* padding 0 6px and no nowrap: at 360px the track is 92px and "Jakość HLS: –"
+     needs 96px at 13px, so it was being clipped. The label wraps to two lines
+     inside a 44px box instead, which is why the box is 44px tall. */
   .row > .badge{flex:1 1 30%;min-width:0;height:44px;display:inline-flex;
-                align-items:center;justify-content:center;padding:0 10px;
-                font-size:13px;white-space:nowrap;overflow:hidden;
-                text-overflow:ellipsis;border:1px solid var(--line);
+                align-items:center;justify-content:center;padding:0 6px;
+                font-size:13px;line-height:1.2;text-align:center;
+                white-space:normal;border:1px solid var(--line);
                 border-radius:8px;background:var(--panel);color:var(--dim)}
   /* Definition lists carry the read-only values. A dimmer, smaller term and a
      value on the same line give the numbers a column to align in, instead of
