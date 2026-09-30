@@ -90,6 +90,18 @@ class CameraManager(
     @Volatile var currentTargetWidth = config.resolution.width
     @Volatile var currentTargetHeight = config.resolution.height
     @Volatile var targetFps = config.frameRate
+
+    /**
+     * What the camera device actually granted, not what was asked for.
+     *
+     * 0 means "not known yet", which is different from 0 fps and is reported as
+     * null rather than a number. Reporting [targetFps] as if it were a
+     * measurement is how a 10 fps setting came to be displayed next to a
+     * 6 fps phone with no hint that the two disagreed.
+     */
+    @Volatile var measuredFps: Int? = null
+        private set
+
     @Volatile var jpegQualityOverride = config.jpegQuality
 
     var onFrameCaptured: ((ByteArray, Long) -> Unit)? = null
@@ -108,6 +120,82 @@ class CameraManager(
     private var frameCounter = 0L
     private var lastFrameNanos = 0L
     private var dropDecisions = 0
+
+    /**
+     * Rolling one-second frame counter, and the measurement it produces.
+     *
+     * [measuredFps] used to be declared and never written: every read returned
+     * null and /status.json fell through to the *requested* rate, so the page
+     * showed the setting rather than the device. The window is measured on the
+     * analyzer thread, after the FPS limiter, so it counts what the camera
+     * actually delivered rather than what the limiter let past.
+     */
+    private val fpsWindowStartMs = AtomicLong(0L)
+    private val fpsWindowFrames = AtomicLong(0L)
+
+    /** Resets the window so a rebind cannot be read as a stall. */
+    private fun resetFpsWindow() {
+        fpsWindowStartMs.set(0L)
+        fpsWindowFrames.set(0L)
+    }
+
+    /**
+     * Folds one frame into the window; returns true when a window just closed.
+     *
+     * The return value is what keeps the governor off the per-frame path: the
+     * resolution decision is made at most once a second, from a settled
+     * measurement, instead of on every frame from a number that is still
+     * counting up.
+     */
+    private fun rollFpsWindow(nowMs: Long): Boolean {
+        val frames = fpsWindowFrames.incrementAndGet()
+        val start = fpsWindowStartMs.get()
+        if (start == 0L) {
+            fpsWindowStartMs.compareAndSet(0L, nowMs)
+            return false
+        }
+        val elapsed = nowMs - start
+        if (elapsed < FPS_WINDOW_MS) return false
+        // Losing this race just means another frame's window already rolled
+        // over; the next frame starts a new one either way.
+        if (!fpsWindowStartMs.compareAndSet(start, nowMs)) return false
+        fpsWindowFrames.set(0L)
+        // Never publish zero: a zero is indistinguishable from "not measured",
+        // and measuredFps already uses null for that.
+        if (frames <= 0L) return true
+        val fps = frames * 1000.0 / elapsed
+        if (fps.isFinite() && fps >= 1.0) {
+            measuredFps = fps.roundToInt().coerceIn(1, 240)
+        }
+        return true
+    }
+
+    /**
+     * The quality ladder, anchored to whatever the user asked for.
+     *
+     * Held outside [applyConfigToFields] on purpose: that runs on every
+     * start() and every watchdog reopen, and re-anchoring there would throw
+     * away the downgrade the moment the camera reopened -- which is exactly
+     * when it must not be thrown away.
+     */
+    private val adaptive = AdaptiveResolutionGovernor { msg ->
+        android.util.Log.i("OcuBeaCam", msg)
+    }
+
+    /** The resolution the camera is bound at, which may be below the setting. */
+    private val effectiveWidth: Int get() = adaptive.rung().width
+    private val effectiveHeight: Int get() = adaptive.rung().height
+
+    /**
+     * The hardware encoders are configured for one size for their whole life.
+     *
+     * HLS bakes width/height into the muxer and the codec config, and a clip
+     * bakes them into ftyp/moov when the file is opened. Re-binding the camera
+     * at a new size while either is running hands them frames whose geometry
+     * contradicts their own headers, so the ladder stands down instead.
+     */
+    private fun adaptiveBlockedByEncoder(): Boolean =
+        (hlsSession?.isEncoding == true) || (clipEncoder != null)
 
     /**
      * Reusable JPEG encode buffers.
@@ -375,6 +463,16 @@ class CameraManager(
         owner: androidx.lifecycle.LifecycleOwner,
         generation: Int
     ): androidx.camera.core.Camera {
+        // The frame rate is a property of the camera device, not of the
+        // consumer. Without this the camera keeps whatever rate it booted with
+        // and the requested fps only ever reaches the status page -- measured on
+        // a Sony F3311: /status.json reported 10 fps while the phone delivered
+        // 6, and the hardware was capable of 24. Nothing in the app read the
+        // setting back, so the number on the screen was fiction.
+        //
+        // Applied before bindToLifecycle because that is where the control
+        // range is fixed; setting it afterwards is documented to have no effect.
+
         // Remove the observer BEFORE unbindAll(). Closing the old device
         // publishes CLOSED, and a live observer would read a deliberate rebind
         // as a device failure and queue a reopen that fights the bind happening
@@ -388,6 +486,7 @@ class CameraManager(
             .build()
             .also { it.setAnalyzer(analysisExecutor, ::analyzeFrame) }
         val camera = provider.bindToLifecycle(owner, cameraSelector, imageAnalysis!!)
+        applyFrameRate(camera)
         val observer = CameraStateObserver(generation)
         stateObserver = observer
         camera.cameraInfo.getCameraState().observeForever(observer)
@@ -1024,9 +1123,75 @@ class CameraManager(
         rebind(lifecycleOwner ?: return)
     }
 
+    /**
+     * Asks the camera for [targetFps] and records what it granted.
+     *
+     * The frame rate belongs to the camera, not to the thing consuming its
+     * frames. `setFrameRate()` only wrote to config, so nothing ever told the
+     * camera: /status.json reported 10 fps while the phone delivered 6, and the
+     * hardware would have done 24. The number on the status page was the
+     * request, printed as though it were a measurement.
+     *
+     * CameraX 1.3.0 has no frame-rate control of its own -- `CameraControl`
+     * exposes torch, focus, zoom and exposure and nothing else -- so this goes
+     * through the camera2 interop and sets CONTROL_AE_TARGET_FPS_RANGE
+     * directly. That key is a *range*, which is why the value is a fixed
+     * [want, want] pair rather than a number: a range reads as "do exactly this
+     * rate", and the camera clamps it to whatever it supports.
+     *
+     * Nothing here throws. A device that will not honour the request simply
+     * keeps the rate it chose, which is a normal outcome and not a failure.
+     */
+    private fun applyFrameRate(camera: androidx.camera.core.Camera) {
+        val want = targetFps.coerceIn(5, 30)
+        try {
+            val options = androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(
+                    android.hardware.camera2.CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                    android.util.Range(want, want)
+                )
+                .build()
+            camera.cameraControl
+                .let { androidx.camera.camera2.interop.Camera2CameraControl.from(it) }
+                .setCaptureRequestOptions(options)
+        } catch (_: Exception) {
+            // UnsupportedOperationException on builds without the interop, or
+            // IllegalArgumentException from a vendor camera that rejects the
+            // key. Either way the camera runs at its own rate and works.
+        }
+    }
+
+    /**
+     * Sets the requested capture rate and re-binds so the camera is told.
+     *
+     * The re-bind is the part that was missing. `CONTROL_AE_TARGET_FPS_RANGE`
+     * has to be in the request options when the use case is bound, so writing
+     * the field alone left the camera running at whatever it booted with --
+     * measured on a Sony F3311, where a change from 10 to 15 did nothing until
+     * the rebind. Consumers of the old camera are told first so nothing reads a
+     * half-closed device.
+     */
     fun setFrameRate(fps: Int) {
         config.frameRate = fps
         targetFps = fps.coerceIn(1, 60)
+        rebindIfPossible()
+    }
+
+    /** Re-binds the camera if there is a live one to re-bind. */
+    private fun rebindIfPossible() {
+        val provider = cameraProvider ?: return
+        val owner = lifecycleOwner ?: return
+        // The current generation, not a new one: this is the same camera
+        // reopening, and bumping the counter would make every pending state
+        // observer believe it is looking at a stale device.
+        val generation = openGeneration.get()
+        try {
+            bindAnalysis(provider, owner, generation)
+        } catch (_: Exception) {
+            // The rebind is best effort: a rate change that fails to take is
+            // not worth tearing the stream down for, and the previous camera
+            // keeps working.
+        }
     }
 
     fun setJpegQuality(q: Int) {

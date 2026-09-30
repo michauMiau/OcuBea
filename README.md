@@ -49,8 +49,26 @@ still shows a green "live" line in this state — it reads fps and viewer counts
 not `camera_active` — so check `camera_active` remotely rather than trusting
 the phone's screen.
 
-Verified live on the test phone with the camera open: **12–15 fps**, and
-`/shot.jpg` returns HTTP 200 with a real JPEG of about **63 KB**.
+Measured, not assumed. Frame rate depends on the phone, so both test devices
+are listed rather than one flattering number:
+
+| Device | Resolution | Real fps |
+| --- | --- | --- |
+| Redmi Note 10 Pro, Android 11 | 1280x720 | 12–15 |
+| Sony F3311, Android 6, MediaTek | 1280x720 | ~10 |
+
+`/shot.jpg` returns HTTP 200 with a real JPEG of about **63 KB** on the Redmi
+and **57 KB** on the Sony.
+
+The Sony number is a consequence of hardware, not a setting. Its camera reports
+`feature-max-fps: 24`, so 24 is available; the 10 is what the pipeline
+sustains at 720p. Dropping to 640x480 gives ~8. The `mono` colour effect costs
+about 2 fps because it is applied per frame on the CPU.
+
+Note that `/status.json` reports the frame rate the camera actually granted,
+not the one that was requested. The two can differ, and a camera that quietly
+ignores the request will otherwise show the requested number while delivering
+something else.
 
 ### HTTP surface
 
