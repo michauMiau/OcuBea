@@ -59,10 +59,34 @@ export const qualityKey = (res) => {
   return map[String(res || '').toLowerCase()] || '0';
 };
 
-const AUDIO_CODECS = [
-  ['none', 'noAudio', ''], ['opus', 'audioOpus', ''],
-  ['aac', 'audioAac', ''], ['amrnb', 'audioAmr', ''],
+// Built from what the phone actually reports, not a fixed list. Measured on
+// two phones: one answers
+//   available: aac=true opus=false amrnb=false flac=true default=aac
+// so offering opus there gets {"error":"this device cannot encode opus"}. The
+// list is a presentation default; AudioCodecs() below overrides it from
+// status.json's "available" string on every poll.
+const ALL_CODECS = [
+  ['none', 'noAudio'], ['aac', 'audioAac'], ['opus', 'audioOpus'],
+  ['amrnb', 'audioAmr'], ['flac', 'audioFlac'], ['wav', 'audioWav'],
 ];
+
+// "aac=true opus=false amrnb=false flac=true default=aac" -> ids the phone
+// said yes to. Unknown ids are kept: a phone that reports a codec this build
+// has no label for still gets it offered under its raw name rather than
+// silently losing it.
+const AudioCodecs = (available) => {
+  if (!available) return ALL_CODECS;
+  const yes = new Set(
+    String(available).split(/\s+/).map((p) => p.split('='))
+      .filter((kv) => kv[1] === 'true').map((kv) => kv[0])
+  );
+  if (!yes.size) return ALL_CODECS;
+  const listed = ALL_CODECS.filter(([id]) => id === 'none' || yes.has(id));
+  for (const id of yes) {
+    if (!listed.some(([k]) => k === id)) listed.push([id, id]);
+  }
+  return listed;
+};
 
 // These two are not in status.json, so the slider shows what was last set.
 // They are written on every input event, so a reload always starts from the
@@ -513,7 +537,7 @@ function App() {
         <${Row} label=${t('audioCodec')}>
           <select class="ctl" value=${audio.codec || 'none'} aria-label=${t('audioCodec')}
             onChange=${(e) => act(setAudioCodec, e.target.value, poll)}>
-            ${AUDIO_CODECS.map(([id, key, hint]) => html`
+            ${AudioCodecs(audio.available).map(([id, key]) => html`
               <option value=${id} selected=${(audio.codec || 'none') === id}>${t(key)}</option>`)}
           </select>
         <//>
