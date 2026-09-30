@@ -9,6 +9,7 @@ import htm from 'htm';
 import Hls from 'hls.js';
 
 import { api, bytes, get, setSetting, ptz, deleteRecording, setToken, getToken, t, uptime, LANG as T_LANG } from './state.js';
+import { hlsMessage } from './hlsmsg.js';
 
 // A visible, on-page log. Silent failures are how a black rectangle survives a
 // reload, so anything worth knowing lands here as well as in the console.
@@ -72,6 +73,15 @@ function Stream({ mode, running, lowLatency }) {
     const vid = vidRef.current;
     if (!img || !vid) return;
 
+    // An async IIFE, not an async callback: the warm-up below has to be awaited
+    // *between* creating the Hls instance and handing it the source, and a
+    // useEffect callback cannot be async (it would return a Promise where a
+    // cleanup function is expected). `cancelled` is how the cleanup below stops
+    // an in-flight warm-up from attaching a source to a destroyed instance.
+    let cancelled = false;
+    let fallbackTimer = null;
+
+    const run = async () => {
     // MJPEG: a plain <img> fed by a multipart endpoint. Stop it by dropping src.
     // The cache-buster matters: reconnecting to the same URL lets the browser
     // reuse a remembered response and the viewer gets a frozen first frame.
@@ -85,6 +95,7 @@ function Stream({ mode, running, lowLatency }) {
     img.src = '';
 
     if (mode !== 'hls' || !running) return;
+
 
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
     setHlsError(null);
@@ -103,6 +114,7 @@ function Stream({ mode, running, lowLatency }) {
       return;
     }
 
+
     const hls = new Hls({ lowLatencyMode: lowLatency, enableWorker: true });
     hlsRef.current = hls;
     hls.on(Hls.Events.ERROR, (_e, d) => {
@@ -110,7 +122,11 @@ function Stream({ mode, running, lowLatency }) {
       // are recoverable and hls.js retries them itself. Only a fatal error needs
       // action, and the documented recovery is to rebuild the MediaSource.
       if (!d.fatal) return;
-      if (d.details === Hls.ErrorDetails.MEDIA_SOURCE_RESET ||
+      // MEDIA_SOURCE_REQUIRES_RESET, not MEDIA_SOURCE_RESET: the shorter name
+      // does not exist on ErrorDetails, so the comparison was always false and
+      // this branch never ran. The value the event carries is the
+      // "mediaSourceRequiresReset" string either way.
+      if (d.details === Hls.ErrorDetails.MEDIA_SOURCE_REQUIRES_RESET ||
           d.details === Hls.ErrorDetails.OTHER_MEDIA_ERROR) {
         log('HLS: recreating MediaSource after ' + d.details);
         setHlsError(null);
@@ -119,14 +135,49 @@ function Stream({ mode, running, lowLatency }) {
       }
       setHlsError(d.details || 'hls_error');
     });
+    // The phone starts the H.264 encoder lazily, on the first playlist request,
+    // and answers 503 "Encoder warming up — first keyframe not encoded yet"
+    // until the first keyframe lands.
+    //
+    // That 503 has to be absorbed here. hls.js treats it as a fatal manifest
+    // error, gives up on the source, and stops requesting -- so a client-side
+    // retry loop never sees the 200 that follows a second later. Waiting for the
+    // playlist to become available *before* handing the URL to hls.js is the
+    // only order in which the stream can start at all on a cold encoder.
+    if (!hlsRef.current) setHlsError('hls_warming');
+    const ready = await new Promise((resolve) => {
+      const deadline = Date.now() + 20000;
+      const poll = setInterval(async () => {
+        if (cancelled || hlsRef.current !== hls || Date.now() > deadline) {
+          clearInterval(poll);
+          resolve(false);
+          return;
+        }
+        try {
+          const r = await fetch('/hls.m3u8');
+          // 200 means an init segment exists. Anything else is still warming.
+          if (r.ok) { clearInterval(poll); resolve(true); }
+        } catch { /* not up yet */ }
+      }, 700);
+    });
+
+    if (cancelled || hlsRef.current !== hls) return;
+    if (!ready) {
+      log('HLS: encoder never produced a keyframe');
+      hls.destroy();
+      hlsRef.current = null;
+      setHlsError('hls_unplayable_mjpeg');
+      return;
+    }
+
     hls.loadSource('/hls.m3u8');
     hls.attachMedia(vid);
 
-    // Firefox refuses our fMP4 init segment in MP4Demuxer::Init() on bytes
+    // Firefox rejects our fMP4 init segment in MP4Demuxer::Init() on bytes
     // ffmpeg decodes without complaint, and nothing on the phone side can fix
     // that. Switch to the stream that is known to work everywhere rather than
     // leaving the user to discover the workaround.
-    const fallbackTimer = setTimeout(() => {
+    fallbackTimer = setTimeout(() => {
       if (hlsRef.current !== hls) return;
       if (vid.readyState > 2 || vid.currentTime > 0) return;
       log('HLS: no frames after 8s, falling back to MJPEG');
@@ -138,7 +189,18 @@ function Stream({ mode, running, lowLatency }) {
     // Autoplay can be refused; a muted+playsinline video is allowed far more often.
     vid.muted = true;
     vid.play().catch(() => {});
-    return () => { clearTimeout(fallbackTimer); hls.destroy(); hlsRef.current = null; };
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+    };
   }, [mode, running, lowLatency, fellBack]);
 
   return html`
@@ -148,7 +210,9 @@ function Stream({ mode, running, lowLatency }) {
         style=${mode === 'hls' && !fellBack ? '' : 'display:none'}></video>
       ${!running && html`<div class="off">${t('streamOffline')}</div>`}
       ${fellBack && html`<div class="badge">HLS unsupported here — MJPEG</div>`}
-      ${hlsError && !fellBack && running && html`<div class="off">${t('hlsError')}</div>`}
+      ${hlsError === 'hls_warming' && html`<div class="off">${t('hlsWarming')}</div>`}
+      ${hlsError && !fellBack && hlsError !== 'hls_warming' && running &&
+        html`<div class="off">${hlsMessage(hlsError)}</div>`}
     </div>
   `;
 }
