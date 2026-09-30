@@ -89,6 +89,14 @@
         justify-content:center;background:#21262d;border:1px solid var(--line);
         border-radius:8px;color:var(--txt);text-decoration:none;font-size:14px}
   a.ctl:hover{background:#30363d}
+  /* The HLS quality readout sits in the big-button row as a read-only box: it
+     gets the same height and the same 44% track as the buttons, so the row has
+     one rhythm, and it may give width back. */
+  .row > .badge{flex:1 1 30%;min-width:0;height:44px;display:inline-flex;
+                align-items:center;justify-content:center;padding:0 10px;
+                font-size:13px;white-space:nowrap;overflow:hidden;
+                text-overflow:ellipsis;border:1px solid var(--line);
+                border-radius:8px;background:var(--panel);color:var(--dim)}
   /* Definition lists carry the read-only values. A dimmer, smaller term and a
      value on the same line give the numbers a column to align in, instead of
      every pair starting at the left edge with nothing holding it together. */
@@ -97,7 +105,26 @@
   dd{text-align:right;font-family:ui-monospace,monospace;font-size:13px;min-width:0;
      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   button.on{background:#238636;border-color:#2ea043;color:#fff}
+  /* ── the big action buttons ──────────────────────────────────────────────
+     They sat as bare <button class="big"> children of <section>, so the
+     section's display:block stacked them one per line with the flex `gap`
+     doing nothing. The complaint was that elements look flattened and overlap
+     the grid: the real cause was no row, so no gap and no wrapping control.
+     A row with a gap, and buttons that grow to share the line evenly. */
+  button.big{flex:1 1 30%;min-width:0;height:44px;font-size:14px;font-weight:500;
+             display:inline-flex;align-items:center;justify-content:center;
+             padding:0 8px;text-align:center;line-height:1.2;
+             white-space:normal;overflow:hidden}
+  /* Secondary actions in the same bar read lighter than start/stop but keep
+     the same box, so the bar has one rhythm. */
+  button.big.secondary{background:transparent;color:var(--dim)}
+  button.big.secondary:hover{background:#21262d;color:var(--txt)}
+  /* start and stop keep their distinct colours but the same width as every
+     other button in the bar, so the row reads as one grid rather than two fat
+     buttons above four small ones. */
+  button.big.primary-weight{flex:1 1 30%}
   .row{display:flex;gap:8px;flex-wrap:wrap}
+  .row.tight{gap:6px}
   /* Every child flexes and can shrink below its content width. Without
      min-width:0 a flex child refuses to shrink at all, so the slider and its
      readout pushed the row past the viewport on a 360px screen; the label

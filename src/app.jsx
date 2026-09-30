@@ -143,14 +143,14 @@ const HlsQuality = () => {
       .catch(() => {});
     return () => { dead = true; };
   }, []);
-  const label = t('hlsQuality');
+  // Not a <Row>: inside the big-button row a Row nests a second .row, which
+  // made the outer row 841px wide inside an 798px parent -- the layout check
+  // caught it as an overflow. As a direct flex item it shares the button grid.
   return html`
-    <${Row} label=${label}>
-      <span class="val" id="bHQ" title=${'segment_ms=' + (p && p.segment_ms) +
-        ' keyframe_sec=' + (p && p.keyframe_sec)}>
-        ${p ? p.profile : '–'}
-      </span>
-    <//>`;
+    <span class="badge" id="bHQ"
+      title=${'segment_ms=' + (p && p.segment_ms) + ' keyframe_sec=' + (p && p.keyframe_sec)}>
+      ${t('hlsQuality')}: ${p ? p.profile : '–'}
+    </span>`;
 };
 
 const Toggle = ({ on, onChange, label, id }) => html`
@@ -414,30 +414,35 @@ function App() {
       ${flash && html`<div class="flash">${flash}</div>`}
 
       <section>
-        <button id="bStream" class="big" onClick=${() => act(setSetting, 'force_stop', '1')}>
-          ${t('stop')}
-        </button>
-        <button id="bStart" class="big" onClick=${() => act(setSetting, 'force_start', '1')}>
-          ${t('start')}
-        </button>
-        <button class="big" id="bMode" onClick=${() => setModeBoth(mode === 'mjpeg' ? 'hls' : 'mjpeg')}>
-          ${t('mode')}: ${mode === 'mjpeg' ? 'MJPEG' : 'HLS'}
-        </button>
-        <button id="bLL" class=${'big' + (lowLatency ? ' on' : '')}
-          onClick=${() => {
-            const v = !lowLatency;
-            setLowLatency(v);
-            localStorage.setItem('ocubea_ll', v ? '1' : '0');
-          }}>
-          ${t('lowLatency')}: ${lowLatency ? t('on') : t('off')}
-        </button>
-        <${HlsQuality} />
-        <button id="bShot" class="big" onClick=${() => {
-          const a = document.createElement('a');
-          a.href = '/shot.jpg?t=' + Date.now();
-          a.download = 'ocubea-' + Date.now() + '.jpg';
-          a.click();
-        }}>${t('snapshot')}</button>
+        <div class="row">
+          <button id="bStream" class="big danger primary-weight"
+            onClick=${() => act(setSetting, 'force_stop', '1')}>
+            ${t('stop')}
+          </button>
+          <button id="bStart" class="big primary primary-weight"
+            onClick=${() => act(setSetting, 'force_start', '1')}>
+            ${t('start')}
+          </button>
+          <button class="big secondary" id="bMode"
+            onClick=${() => setModeBoth(mode === 'mjpeg' ? 'hls' : 'mjpeg')}>
+            ${t('mode')}: ${mode === 'mjpeg' ? 'MJPEG' : 'HLS'}
+          </button>
+          <button id="bLL" class=${'big secondary' + (lowLatency ? ' on' : '')}
+            onClick=${() => {
+              const v = !lowLatency;
+              setLowLatency(v);
+              localStorage.setItem('ocubea_ll', v ? '1' : '0');
+            }}>
+            ${t('lowLatency')}: ${lowLatency ? t('on') : t('off')}
+          </button>
+          <${HlsQuality} />
+          <button id="bShot" class="big secondary" onClick=${() => {
+            const a = document.createElement('a');
+            a.href = '/shot.jpg?t=' + Date.now();
+            a.download = 'ocubea-' + Date.now() + '.jpg';
+            a.click();
+          }}>${t('snapshot')}</button>
+        </div>
       </section>
 
       <section>
