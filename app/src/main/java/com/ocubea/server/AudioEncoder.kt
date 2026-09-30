@@ -90,6 +90,18 @@ class AudioEncoder private constructor(
 
         fun isEncodable(codecId: String): Boolean = mimeFor(codecId) != null
 
+        /**
+         * Every codec id the encoder knows, in menu order.
+         *
+         * Exists so that a list of ids cannot be written down twice. The
+         * routing table in StreamServer was a literal of three names beside a
+         * four-name encoder, and the fourth one answered 404 on a device that
+         * advertised it in the WebUI. Deriving the routes from here means the
+         * next codec added to the `when` gets a URL for free.
+         */
+        val IDS: List<String> = listOf("opus", "aac", "amrnb", "flac")
+            .filter { mimeFor(it) != null }
+
         fun forId(codecId: String): AudioEncoder? =
             mimeFor(codecId)?.let { AudioEncoder(codecId, it) }
     }
@@ -202,6 +214,12 @@ class AudioEncoder private constructor(
             "expected $FRAME_SAMPLES samples, got ${pcm.size}"
         }
         val info = MediaCodec.BufferInfo()
+        // Scratch for the next output frame. A fixed 8 KB buffer silently
+        // truncated FLAC frames, because a lossless 20 ms block of 48 kHz mono
+        // overflows it, and the cut landed mid-frame -- ffmpeg reported
+        // "invalid residual" on a stream that was 99% intact. copyPayload()
+        // grows its target rather than truncating, so a frame that does not fit
+        // is never damaged.
         val out = ByteArray(8_192)
 
         // Queue the input. `dequeueInputBuffer` returning -1 is normal right
@@ -315,18 +333,47 @@ class AudioEncoder private constructor(
             buf.position(buf.position() + start)
             val n = minOf(info.size, buf.remaining())
             if (n <= 0) return ByteArray(0)
-            buf.get(into, 0, n)
-            return into.copyOf(n)
+            // Grow rather than truncate. `into` is a scratch buffer, so handing
+            // back a correctly sized array costs one allocation per frame and
+            // keeps the frame intact; returning a prefix of it produces a file
+            // that looks fine until a decoder hits the seam.
+            val target = if (n > into.size) ByteArray(n) else into
+            buf.get(target, 0, n)
+            return if (n == into.size) into else target.copyOf(n)
         }
         return ByteArray(0)
     }
 
     /**
      * The first bytes a client needs: for Opus, page 0 carrying OpusHead, which
-     * every player requires before it will decode anything. AAC, AMR and FLAC
-     * are self-describing from byte one, so they get nothing here.
+     * every player requires before it will decode anything, and for FLAC the
+     * `fLaC` signature and STREAMINFO block.
+     *
+     * AAC and AMR are genuinely self-describing from byte one -- an ADTS header
+     * states everything a decoder needs, so they get nothing here.
+     *
+     * FLAC is NOT self-describing, which is the correction this endpoint needed.
+     * MediaCodec's FLAC encoder emits bare frames with no signature and no
+     * metadata, so a body without this header is a headerless bitstream rather
+     * than a FLAC file: ffmpeg warns "Format flac detected only with low score
+     * of 13, misdetection possible!", the decoder has to guess the stream
+     * parameters, and it locates frames by searching for the two-byte `0xFFF8`
+     * sync -- which occurs by chance inside frame payloads (51 times in a
+     * 600 KB capture here, 306 in 1.1 MB). Landing on one mid-subframe produces
+     * exactly the reported symptom, `invalid residual` plus `decode_frame()
+     * failed`, intermittently because it depends on the audio content.
+     *
+     * MediaMuxer would write this header, but it cannot express "a stream that
+     * ends when the HTTP client disconnects", which is the entire point of this
+     * endpoint -- so the header is written by hand, the same way the Ogg pages
+     * in [OggPage] are. See [FlacStreamHeader] for the bit layout.
      */
     fun streamHeader(): ByteArray = when (codecId) {
+        "flac" -> FlacStreamHeader.header(
+            sampleRate = AudioStreamManager.SAMPLE_RATE,
+            channels = channels,
+            bitsPerSample = FlacStreamHeader.BITS_PER_SAMPLE
+        )
         // BOS is page 0 and MUST consume sequence number 0, so the encoder's
         // own counter has to be advanced with it. Emitting the header as page 0
         // while the first audio page also claimed 0 produced a duplicate
