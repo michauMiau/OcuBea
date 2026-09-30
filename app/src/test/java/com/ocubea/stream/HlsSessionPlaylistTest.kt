@@ -128,7 +128,7 @@ class HlsSessionPlaylistTest {
         val entries = entries(session.playlist())
 
         assertEquals("every segment in the ring must be advertised", 3, entries.size)
-        val expected = mapOf("seg7.m4s" to 183L, "seg8.m4s" to 1250L, "seg9.m4s" to 1L)
+        val expected = mapOf("/hls/seg7.m4s" to 183L, "/hls/seg8.m4s" to 1250L, "/hls/seg9.m4s" to 1L)
         for (e in entries) {
             assertTrue(
                 "playlist advertises an unknown segment ${e.uri}",
@@ -153,7 +153,7 @@ class HlsSessionPlaylistTest {
         val session = session().withSegments(1 to 240L, 2 to 260L, 3 to 219L)
         val playlist = session.playlist()
         val lines = playlist.split('\n')
-        val uriIndices = lines.withIndex().filter { (_, l) -> l.startsWith("seg") && l.endsWith(".m4s") }
+        val uriIndices = lines.withIndex().filter { (_, l) -> l.endsWith(".m4s") && !l.startsWith("#") }
         assertEquals("all three URIs must be present", 3, uriIndices.size)
         for ((i, _) in uriIndices) {
             val previous = lines[i - 1]
@@ -161,6 +161,38 @@ class HlsSessionPlaylistTest {
                 "line $i is ${lines[i]} but is not preceded by an #EXTINF line " +
                     "— a duration belonging to another segment desyncs the player",
                 previous.startsWith("#EXTINF:"),
+            )
+        }
+    }
+
+    // ── URI resolution ─────────────────────────────────────────
+    //
+    // The playlist is served at BOTH /hls.m3u8 and /hls/index.m3u8, but the
+    // segments only exist under /hls/. A relative URI is resolved against the
+    // playlist's own directory, so a client that loaded /hls.m3u8 asked for
+    // /segNNN.m4s and got a 404 for every single fragment — the playlist
+    // loaded fine, so it looked healthy while nothing could play. Measured
+    // 2026-09-30: 200 on /hls.m3u8, 404 on every /segNNN.m4s.
+
+    @Test
+    fun `segment and init URIs are absolute so both playlist paths resolve`() {
+        val playlist = session().withSegments(7 to 240L, 8 to 260L).playlist()
+
+        assertTrue(
+            "#EXT-X-MAP must be an absolute URI; a relative one resolves to " +
+                "/init.mp4 when the playlist was loaded from /hls.m3u8, which is " +
+                "not a path the server serves",
+            playlist.contains("""#EXT-X-MAP:URI="/hls/init.mp4""""),
+        )
+
+        val uris = playlist.lines()
+            .filter { it.endsWith(".m4s") && !it.startsWith("#") }
+        assertEquals("both segments must be advertised", 2, uris.size)
+        for (u in uris) {
+            assertTrue(
+                "segment URI $u is relative; a client that loaded the playlist " +
+                    "from /hls.m3u8 will request it one directory up and get 404",
+                u.startsWith("/hls/"),
             )
         }
     }
@@ -242,7 +274,7 @@ class HlsSessionPlaylistTest {
         )
         assertEquals(
             "the first advertised URI must be the one MEDIA-SEQUENCE names",
-            "seg41.m4s", entries(playlist).first().uri,
+            "/hls/seg41.m4s", entries(playlist).first().uri,
         )
     }
 
@@ -251,7 +283,10 @@ class HlsSessionPlaylistTest {
     fun `segments are advertised in ascending sequence order`() {
         val session = session().withSegments(5 to 250L, 6 to 250L, 7 to 250L, 8 to 250L)
         val uris = entries(session.playlist()).map { it.uri }
-        assertEquals(listOf("seg5.m4s", "seg6.m4s", "seg7.m4s", "seg8.m4s"), uris)
+        assertEquals(
+            listOf("/hls/seg5.m4s", "/hls/seg6.m4s", "/hls/seg7.m4s", "/hls/seg8.m4s"),
+            uris,
+        )
     }
 
     // ── EXT-X-MAP and the rest of the header ───────────────────
@@ -420,7 +455,7 @@ class HlsSessionPlaylistTest {
         val session = session().withSegments(11 to 250L, 12 to 250L)
         val advertised = entries(session.playlist()).map { it.uri }
         for (uri in advertised) {
-            val seq = uri.removePrefix("seg").removeSuffix(".m4s").toInt()
+            val seq = uri.removePrefix("/hls/seg").removeSuffix(".m4s").toInt()
             assertNotNull(
                 "the playlist advertises $uri but segment($seq) returns null, " +
                     "so the client that just read it gets a 404",
