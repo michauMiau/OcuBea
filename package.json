@@ -1,0 +1,21 @@
+{
+  "name": "ocubea-webui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OcuBea WebUI — Preact + htm, bundled into the Android assets",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "hls.js": "^1.5.17",
+    "htm": "^3.1.1",
+    "preact": "^10.24.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  },
+  "allowScripts": {
+    "esbuild@0.24.2": true
+  }
+}
