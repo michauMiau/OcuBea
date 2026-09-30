@@ -29,7 +29,12 @@ const PAGE = path.join(__dirname, '..', 'app/src/main/assets/index.html');
 const STAYS_ENGLISH = new Set([
   'Ocu', 'Bea', 'OcuBea', 'MJPEG', 'FPS', 'RAM', 'Android', 'API', 'ONVIF SOAP',
   'Sepia', 'Status', 'Model', 'Web UI', 'ONVIF', 'QVGA', 'VGA', 'HD',
-  'FullHD', 'Webcam', 'HLS', 'HTTP', 'GET', 'POST', 'SOAP', 'Zoom'
+  'FullHD', 'Webcam', 'HLS', 'HTTP', 'GET', 'POST', 'SOAP', 'Zoom',
+  // Codec names and units. These are the names the encoders register under,
+  // so a Polish label for them would not match what /audio/codec answers and
+  // what the phone's own status card prints. "Monochrome" likewise: the phone
+  // spells the effect that way.
+  'Opus', 'AAC', 'AMR-NB', 'FLAC', 'WAV', 'AMR', 's'
 ]);
 
 /* A resolution, a count, a duration, a zoom value, an en dash placeholder.
