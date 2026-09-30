@@ -763,7 +763,17 @@ class StreamServer(
             "flashmode" -> {
                 handleTorch(value !in OFF_VALUES && value != "auto")
             }
-            "focusmode", "focus_distance" -> okText("auto")
+            // "focus" alone was missing even though focusmode/focus_distance were
+            // here, so a client setting focus on this key got 404 while the
+            // neighbouring spellings succeeded. Accepting "on"/"off" and
+            // ignoring it matches focusmode: the camera autofocuses either way.
+            "focus", "focusmode", "focus_distance" -> okText("auto")
+            // Declared in IpWebcamCompat.SUPPORTED but never handled, so a client
+            // setting one of these got "Not found: unknown" for a key the server
+            // itself advertises. All six are honest no-ops: OcuBea has no such
+            // control to change, and answering Ok is the truthful reply.
+            "autostart", "noremote", "device_name", "login", "password",
+            "motion_limit" -> okText("ok")
             "exposure", "exposure_lock" -> okText("ok")
             "whitebalance", "whitebalance_lock" -> okText("auto")
             "antibanding" -> okText("auto")
