@@ -1374,6 +1374,10 @@ function setAudioState(s){ audioCtxState = s; $('aState').textContent = t(s); }
  * syntax checker will accept.
  */
 function aacInitSegment(sampleRate, channels){
+  /* Unity transform matrix shared by mvhd and tkhd: 16.16 and 2.30 fixed
+     point. Declared before both use it. */
+  var UX16 = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000];
+
   /* Offsets below are into the *body* -- the FullBox 4-byte version/flags
      header is added by fullbox() and is not part of what the indices count.
      Getting this wrong is invisible: the segment still parses as a box tree,
@@ -1458,6 +1462,10 @@ function aacInitSegment(sampleRate, channels){
      audio/mp4;codecs=mp4a.40, which every engine refuses. */
   var dcd = join([u8(0x40), u8(0x15), u8(0), u8(0), u8(0), u32(maxBr), u32(avgBr), dsi]);
   var dcdFull = join([u8(0x04), dlen(dcd.length), dcd]);
+  /* SLConfigDescriptor: tag 0x06, descriptor length, then predefined. The
+     payload is a single byte -- predefined = 2 for MPEG-4 audio. Appending a
+     reserved byte made the length 2 instead of 1, which cascaded into every
+     length above it: ES_Descr reported 35 where ffmpeg reports 34. */
   var sl = join([u8(0x06), u8(1), u8(2)]);
   var esBody = join([u16(1), u8(0), dcdFull, sl]);
   var esds = box('esds', fullbox(0, 0, join([u8(0x03), dlen(esBody.length), esBody])));
@@ -1501,21 +1509,37 @@ function aacInitSegment(sampleRate, channels){
      at zero, which is the value Chrome rejects with "Movie header's timescale
      must not be 0". The byte position that ffmpeg's box shows as +4 is inside
      its longer header, not this one. */
+  /* mdhd body, 24 bytes: version+flags 0..3, creation 4..7, modification 8..11,
+     timescale 12..15, duration 16..19, language 20..21, pre_defined 22..23.
+     The four version/flags bytes are *part of* the body, so the offsets below
+     are already measured from the start of the body. A body sized 20 instead of
+     24 put timescale where modification belongs, and the demuxer read 0. */
   var mdhdBody = new Uint8Array(20);
-  mdhdBody[8]  = (sampleRate >>> 24) & 255;   /* timescale @12 from box start */
+  mdhdBody[8]  = (sampleRate >>> 24) & 255;    /* timescale 48000 */
   mdhdBody[9]  = (sampleRate >>> 16) & 255;
   mdhdBody[10] = (sampleRate >>> 8) & 255;
   mdhdBody[11] = sampleRate & 255;
+  mdhdBody[16] = 0x55; mdhdBody[17] = 0xC4;     /* language 'und' */
   var mdhd = box('mdhd', fullbox(0, 0, mdhdBody));
   var mdia = box('mdia', join([mdhd, hdlr, minf]));
 
-  /* tkhd v0 payload is 84 bytes: track_ID @20, duration @28, volume @36,
-     unity matrix @40. In the body: 16, 24, 32, 36. */
+  /* tkhd v0 payload is 84 bytes. Body offsets:
+       12..15 track_ID      16..19 reserved    20..23 duration
+       24..25 reserved      26..27 layer       28..29 alternate_group
+       30..31 volume        32..35 reserved    36..71 unity matrix
+       72..75 width         76..79 height
+     Every field below sat four bytes early, which put track_ID into the
+     reserved word, the volume into alternate_group and left the matrix
+     entirely zero. */
   var tkhdBody = new Uint8Array(80);
-  tkhdBody[11] = 0x01;                         /* track_ID @12 */
-  tkhdBody[29] = 0x01;                         /* volume 0x0001 @32, audio full scale */
-  tkhdBody[36] = 0x00; tkhdBody[37] = 0x01;    /* matrix[0][0] @40 */
-  tkhdBody[52] = 0x00; tkhdBody[53] = 0x01;    /* matrix[2][2] @56 */
+  tkhdBody[8]  = 0x00; tkhdBody[9]  = 0x00;
+  tkhdBody[10] = 0x00; tkhdBody[11] = 0x01;     /* track_ID = 1 */
+  tkhdBody[32] = 0x01;                          /* volume 0x0100 == 1.0 */
+  for (var t = 0; t < UX16.length; t++) {
+    var w2 = UX16[t], o2 = 36 + t * 4;
+    tkhdBody[o2] = (w2 >>> 24) & 255; tkhdBody[o2 + 1] = (w2 >>> 16) & 255;
+    tkhdBody[o2 + 2] = (w2 >>> 8) & 255; tkhdBody[o2 + 3] = w2 & 255;
+  }
   /* Flags 0x03 = track_enabled | track_in_movie. Bit 2 is track_in_preview and
      applies to video; ffmpeg leaves it clear for an audio track. */
   var trak = box('trak', join([box('tkhd', fullbox(0, 0x03, tkhdBody)), mdia]));
@@ -1533,12 +1557,43 @@ function aacInitSegment(sampleRate, channels){
 
   /* mvhd v0 payload is 100 bytes: creation @12, modification @16,
      timescale @20, duration @24 -- body offsets 8, 12, 16, 20. */
+  /* mvhd body layout (FullBox header not counted):
+       0..3   version+flags
+       4..7   creation_time        8..11  modification_time
+       12..15 timescale            16..19 duration
+       20..23 rate    (16.16 fixed, 0x00010000 == 1.0)
+       24..25 volume  (8.8 fixed, 0x0100 == 1.0)
+       26..35 reserved
+       36..71 matrix (unity)
+       72..95 pre_defined
+     A zero rate and an all-zero matrix are what a demuxer calls an invalid
+     movie header: nothing scales, so no track can be placed in time, and the
+     element reports NETWORK_EMPTY with no error at all. ffmpeg fills in the
+     unity matrix and a rate of one, so match it. */
   var mvhdBody = new Uint8Array(96);
-  mvhdBody[8] = 0x00; mvhdBody[9] = 0x01;      /* timescale 0x00010000 @12 */
+  mvhdBody[8]  = 0x00; mvhdBody[9]  = 0x00;
+  mvhdBody[10] = 0x03; mvhdBody[11] = 0xE8;   /* timescale 1000 */
+  mvhdBody[16] = 0x00; mvhdBody[17] = 0x01;   /* rate 1.0 */
+  mvhdBody[18] = 0x00; mvhdBody[19] = 0x00;
+  mvhdBody[20] = 0x01; mvhdBody[21] = 0x00;   /* volume 1.0 */
+  for (var m = 0; m < UX16.length; m++) {
+    var w = UX16[m], o = 32 + m * 4;
+    mvhdBody[o] = (w >>> 24) & 255; mvhdBody[o + 1] = (w >>> 16) & 255;
+    mvhdBody[o + 2] = (w >>> 8) & 255; mvhdBody[o + 3] = w & 255;
+  }
+  mvhdBody[92] = 0x00; mvhdBody[93] = 0x00;
+  mvhdBody[94] = 0x00; mvhdBody[95] = 0x02;                          /* next_track_ID = 2 */
   var moov = box('moov', join([box('mvhd', fullbox(0, 0, mvhdBody)), trak, mvex]));
 
-  var ftypBody = join([u8(0x6D), u8(0x70), u8(0x34), u8(0x32), u32(1), u32(0), u32(0),
-                       u8(0x6D), u8(0x70), u8(0x34), u8(0x41), u32(0)]);
+  /* ftyp: major_brand, minor_version, then the compatible brands. A brand is
+     four characters packed into one word, so it must go through u32() -- passing
+     the characters as four u8() calls and then a u32(0) for the next slot
+     writes a NUL-padded brand that no engine recognises, and a demuxer that
+     finds no usable major brand reports the segment as unparseable with no
+     detail at all. */
+  function brand(s){ return u32((s.charCodeAt(0) << 24) | (s.charCodeAt(1) << 16) |
+                               (s.charCodeAt(2) << 8) | s.charCodeAt(3)); }
+  var ftypBody = join([brand('iso5'), u32(512), brand('iso6'), brand('mp41')]);
   return join([box('ftyp', ftypBody), moov]);
 }
 
@@ -1584,10 +1639,21 @@ function aacSegment(frame, seq){
     return join([u8(0), u8((flags >> 16) & 255), u8((flags >> 8) & 255), u8(flags & 255), body]);
   }
 
-  var sample = frame.length > 7 ? frame.subarray(7) : frame;
+  /* The ring buffer holds bare AAC: the MediaCodec output is already without
+     an ADTS header, and stripping seven bytes off it again is what turned a
+     valid frame into 0x2d filler. Only strip when a header is actually there
+     -- an ffmpeg-style sync word at the front. */
+  var hasAdts = frame.length > 7 && frame[0] === 0xFF && (frame[1] & 0xF0) === 0xF0;
+  var sample = hasAdts ? frame.subarray(7) : frame;
 
-  /* tfhd 0x02 = default-base-is-moof; every sample field comes from trun. */
-  var tfhd = box('tfhd', fullbox(0x000002, u32(1)));
+  /* tfhd flags: 0x020000 is default-base-is-moof, which is what makes trun's
+     data_offset relative to the start of the moof instead of the start of the
+     file. 0x000002 is sample-description-index-present -- a completely
+     different field, and writing it here meant every data_offset was resolved
+     from offset 0 of the segment. The segment still parsed, ffmpeg still read
+     it, and the browser answered "bufferAppendingError" because the bytes it
+     was told to read were not there. */
+  var tfhd = box('tfhd', fullbox(0x020000, u32(1)));
 
   /* tfdt v1 carries a 64-bit decode time. 1024 samples per frame at 48 kHz. */
   var t = (seq || 0) * 1024;
@@ -1614,19 +1680,22 @@ function aacSegment(frame, seq){
 
   var moof = box('moof', join([box('mfhd', u32((seq || 0) + 1)),
                                box('traf', join([tfhd, tfdt, trun]))]));
-
-  /* data_offset is measured from the first byte of the moof and is the word
-     right after sample_count in the trun payload. Patching it by guessing a
-     distance from the end of the moof lands on sample_duration instead --
-     the box still parses, ffmpeg still reads it, and Chrome rejects the
-     segment with a bare "stream parsing failed". Counting the bytes back from
-     the trun's own size is the only version of this that is correct. */
   /* data_offset is measured from the first byte of the moof and points at the
-     mdat payload, i.e. moof.length + 8. It is the first field after the sample
-     count in the trun body, so it sits 12 bytes before the end of the moof:
-     8 for the trun's own header, 4 for version+flags, and the count. */
+     mdat payload, i.e. moof.length + 8. */
   var dataOff = moof.length + 8;
-  var at = moof.length - 12;
+  /* Where that word lives: 8 for the moof header, 8 for mfhd, 8 for the traf
+     header, then tfhd and tfdt, then the trun's own size, type and
+     version+flags, and finally the sample count. Counting from the trun's own
+     position keeps it correct if the trun ever stops being the last box in the
+     traf; measuring from the end of the moof does not, and lands the write on
+     sample_duration instead, where the segment still parses and still decodes
+     as far as ffmpeg is concerned. */
+  /* Walk to the trun by box type instead of guessing an offset. A box's size
+     word sits four bytes before its type, so the data_offset field -- first of
+     the four words after version+flags and the sample count -- is at
+     (type position - 4) + 8 + 4 + 4. Searching for the literal bytes of the
+     type finds this trun and not the traf above it, because the sizes differ. */
+  var at = 8 + 8 + 8 + tfhd.length + tfdt.length + 8 + 4 + 4 + 4;
   moof[at] = (dataOff >>> 24) & 255;
   moof[at + 1] = (dataOff >>> 16) & 255;
   moof[at + 2] = (dataOff >>> 8) & 255;
