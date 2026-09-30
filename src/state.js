@@ -64,6 +64,36 @@ export const ptz = (params) => {
 export const deleteRecording = (name) =>
   api('/recordings/delete?name=' + encodeURIComponent(name), { method: 'POST' });
 
+// ── clips ───────────────────────────────────────────────────────────────────
+// The clip actions come in two shapes, measured on the phone:
+//
+//   /clips/record?seconds=<n>   POST, no name needed → {"recording":true,...}
+//   /clips/record/stop          POST, no name needed → {"recording":false}
+//   /clips/<action>?name=<file> POST, name required, else 400 "invalid clip name"
+//
+// prune and clear are the two that name a file. The 400 is the tell: a
+// request without the parameter fails, one with it returns 200.
+export const clipOnFile = (action, name) =>
+  api('/clips/' + action + '?name=' + encodeURIComponent(name), { method: 'POST' });
+
+export const recordNow = (seconds) =>
+  api('/clips/record?seconds=' + encodeURIComponent(String(seconds)), { method: 'POST' });
+
+export const stopClipRecording = () => api('/clips/record/stop', { method: 'POST' });
+
+// Autofocus takes normalised coordinates, not pixels: 0.5/0.5 is the centre.
+export const focus = (x, y) =>
+  api('/focus?x=' + x + '&y=' + y, { method: 'POST' });
+
+// The audio codec takes its value in the query string like the settings do. A
+// JSON body is answered {"error":"codec is required"} -- measured, not assumed.
+export const setAudioCodec = (id) =>
+  api('/audio/codec?codec=' + encodeURIComponent(id), { method: 'POST' });
+
+// HLS tuning knobs, read as "profile=default segment_ms=250 keyframe_sec=0
+// sync=3 buffer=6" rather than JSON.
+export const hlsProfile = () => get('/hls/profile');
+
 // ── formatting ──────────────────────────────────────────────────────────────
 export const bytes = (n) => {
   if (!n) return '0 B';

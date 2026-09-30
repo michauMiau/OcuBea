@@ -144,6 +144,11 @@ class StreamServer(
         return when {
         // ── Web UI ──
         uri == "/" || uri == "/index.html" || uri == "/mobile" || uri == "/login" -> serveWebpage()
+        // Browsers ask for this unprompted on every page load. Without a route
+        // it is a 404 in the console on each open, and the tab keeps the
+        // generic globe. /favicon.ico serves a PNG: the icon format is decided
+        // by the image bytes, and every browser that asks for .ico accepts it.
+        uri == "/favicon.ico" -> serveAsset("favicon.png", "image/png")
         // hls.js used to be served as a separate file here. It is now bundled
         // into index.html by build.mjs, so there is no second asset to fetch:
         // a separate <script src> only works if the browser executes document
@@ -1036,10 +1041,33 @@ class StreamServer(
         val hls = cameraManager.hlsSession
             ?: return newFixedLengthResponse(Status.SERVICE_UNAVAILABLE, "text/plain", "HLS not started")
         if (hls.initSegment() == null) {
-            return newFixedLengthResponse(
-                Status.SERVICE_UNAVAILABLE, "text/plain",
-                "Encoder warming up — first keyframe not encoded yet"
-            )
+            // Wait for the first keyframe here rather than answering 503. hls.js
+            // does NOT retry this: it treats a 503 on the manifest as a fatal
+            // manifest load error, tears the whole instance down and never asks
+            // again -- so a client that gets a 503 in the first second after the
+            // stream starts stays broken until the user toggles the mode, and
+            // every other client (VLC, ffmpeg, the old WebUI) sees the same.
+            //
+            // The wait is bounded and short: the encoder is already running at
+            // this point, so the only thing missing is the keyframe in flight.
+            // Measured cold: 9s to the first keyframe on the Sony F3311, so the
+            // ceiling is well above what that needs.
+            val deadline = System.nanoTime() + WARMUP_TIMEOUT_NANOS
+            while (hls.initSegment() == null && System.nanoTime() < deadline) {
+                if (!cameraManager.isStreaming) break
+                try {
+                    Thread.sleep(WARMUP_POLL_MILLIS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+            if (hls.initSegment() == null) {
+                return newFixedLengthResponse(
+                    Status.SERVICE_UNAVAILABLE, "text/plain",
+                    "Encoder warming up — no first keyframe after ${WARMUP_TIMEOUT_NANOS / 1_000_000_000}s"
+                )
+            }
         }
         // No client accounting here on purpose. A playlist poll is not a
         // viewer: hls.js re-requests the playlist roughly twice a second for
@@ -1581,6 +1609,18 @@ class StreamServer(
 
     companion object {
         const val DEFAULT_PORT = 8080
+
+        /** How long a playlist request waits for the encoder's first keyframe.
+         *
+         * Long enough for a cold hardware encoder (measured 9s on a Sony
+         * F3311 from an idle camera to a playable playlist), short enough that
+         * a client asking a device that will never encode does not hang: the
+         * 503 that comes back after this says how long it waited, so a slow
+         * encoder is visibly slow rather than silently stuck. */
+        const val WARMUP_TIMEOUT_NANOS = 20_000_000_000L
+
+        /** Poll interval while waiting for that keyframe. */
+        const val WARMUP_POLL_MILLIS = 100L
 
         /**
          * Codecs that get a `/audio.<id>` route.

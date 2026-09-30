@@ -16,17 +16,23 @@ const { chromium } = require(path.join(__dirname, '..', 'node_modules', 'playwri
 
 const PAGE = path.join(__dirname, '..', 'app', 'src', 'main', 'assets', 'index.html');
 
-/* Buttons that only relabel themselves. Clicking the stream or snapshot
- * buttons would start a camera that is not there under file://, so they are
- * left out — the point here is the label, not the device.
+/* Buttons that only relabel themselves, plus the state toggles. Clicking the
+ * stream or snapshot buttons would start a camera that is not there under
+ * file://, so they are left out — the point here is the label, not the device.
  *
- * The Preact rewrite has no night-vision or motion controls, so bNight and
- * bMotion are gone; bRec and bTorch are the toggles it does have. */
-const TOGGLES = ['bMode', 'bLL', 'bTorch', 'bRec'];
+ * Every id here exists in the Preact build: bNight, bMotion and bHQ were
+ * missing when this check was written, which is why they had been dropped from
+ * the list, and are back now that the UI has them again. */
+const TOGGLES = ['bMode', 'bLL', 'bHQ', 'bNight', 'bMotion', 'bFlip', 'bTorch', 'bRec'];
 
-/* bTorch and bRec toggle a class rather than their own text — the state shows
- * on the Status card instead. Clicking one and seeing the same label is
- * correct for them, so it is not reported. */
+/* bNight, bMotion, bRec and bFlip toggle a class rather than their own text —
+ * the state shows on the Status card instead. Clicking one and seeing the same
+ * label is correct for them, so it is not reported.
+ *
+ * bHQ is not a button at all: it is a read-only span showing the HLS profile
+ * name from /hls.profile. Under file:// there is no phone, so it stays on "–"
+ * and a click can change nothing. It is kept in the list so the check proves it
+ * exists, but a missing label change is expected rather than a failure. */
 const RELABELS = new Set(['bMode', 'bLL']);
 
 /* A label is in the wrong language when it still contains English words. The
