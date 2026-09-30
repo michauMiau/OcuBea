@@ -38,13 +38,65 @@
      widened the whole column instead of clipping. */
   section{background:var(--panel);border:1px solid var(--line);border-radius:12px;
           padding:14px;margin-bottom:12px;min-width:0}
+  /* A section that exists only to list files gets its own identity: the file
+     lists are the tallest thing on the page, and at full height they pushed
+     every control below the fold. Capped and scrolled, with the cap removed
+     once a preview is open. */
+  section.files{max-height:320px;overflow-y:auto;overscroll-behavior:contain}
+  section.files:has(.preview-open){max-height:none}
   h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:12px;font-weight:600}
+  /* A hairline under the heading separates it from the rows without adding
+     another box: the section already has a border, and a second one reads as
+     a nested card. */
+  h2{padding-bottom:8px;border-bottom:1px solid var(--line);margin-bottom:10px}
+  /* ── file rows ──────────────────────────────────────────────────────────
+     A grid, not a flex row. With flex the size, the download link and the
+     delete button all got their own flex basis, so their left edges moved
+     with the length of the filename and the columns visibly jumped from row
+     to row. Fixed tracks keep every column on one vertical line; only the
+     name is allowed to give width back. */
+  .row.file{display:grid;grid-template-columns:1fr auto auto auto;
+            gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #21262d}
+  .row.file:last-child{border-bottom:0}
+  .row.file .name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* A clip name opens the preview, so it needs the affordance of something
+     clickable. Underline on hover only: an always-underlined column of
+     filenames reads as a wall of links. */
+  .row.file .name[onclick]{cursor:pointer}
+  .row.file .name[onclick]:hover{color:#58a6ff;text-decoration:underline}
+  .row.file .size{font-size:12px;color:var(--dim);font-family:ui-monospace,monospace;
+                  text-align:right;min-width:64px}
+  /* Icon-width buttons with a real border: the bare "↓" and "✕" read as
+     decoration rather than as controls, and sat too close to the name. */
+  .row.file .ctl{flex:none;width:32px;height:32px;display:inline-flex;
+                 align-items:center;justify-content:center;padding:0;font-size:14px}
   button{background:#21262d;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:10px 12px;
          font-size:13px;cursor:pointer;transition:.15s;font-family:inherit}
   button:hover{background:#30363d}
-  button.on{background:#238636;border-color:#2ea043;color:#fff}
+  /* One button language. Every button gets the same height and the same
+     neutral surface, so a "danger" one is the only thing that reads as
+     different -- before, the red fill was one of five looks on the page and
+     carried no meaning. */
+  button.ctl{height:36px;display:inline-flex;align-items:center;justify-content:center;
+            padding:0 12px;white-space:nowrap}
   button.primary{background:#238636;border-color:#2ea043;color:#fff}
-  button.danger{background:#3d1d1d;border-color:#6e2b2b;color:#ff8a80}
+  button.primary:hover{background:#2ea043}
+  button.danger{background:transparent;border-color:#6e2b2b;color:#ff8a80}
+  button.danger:hover{background:#3d1d1d}
+  /* The download link is a control, not text: same box as the buttons beside
+     it, arrow centred. */
+  a.ctl{height:36px;min-width:32px;padding:0 8px;display:inline-flex;align-items:center;
+        justify-content:center;background:#21262d;border:1px solid var(--line);
+        border-radius:8px;color:var(--txt);text-decoration:none;font-size:14px}
+  a.ctl:hover{background:#30363d}
+  /* Definition lists carry the read-only values. A dimmer, smaller term and a
+     value on the same line give the numbers a column to align in, instead of
+     every pair starting at the left edge with nothing holding it together. */
+  dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;align-items:baseline}
+  dt{color:var(--dim);font-size:12px}
+  dd{text-align:right;font-family:ui-monospace,monospace;font-size:13px;min-width:0;
+     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  button.on{background:#238636;border-color:#2ea043;color:#fff}
   .row{display:flex;gap:8px;flex-wrap:wrap}
   /* Every child flexes and can shrink below its content width. Without
      min-width:0 a flex child refuses to shrink at all, so the slider and its
