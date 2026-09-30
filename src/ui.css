@@ -46,7 +46,19 @@
   button.primary{background:#238636;border-color:#2ea043;color:#fff}
   button.danger{background:#3d1d1d;border-color:#6e2b2b;color:#ff8a80}
   .row{display:flex;gap:8px;flex-wrap:wrap}
-  .row>*{flex:1;min-width:80px}
+  /* Every child flexes and can shrink below its content width. Without
+     min-width:0 a flex child refuses to shrink at all, so the slider and its
+     readout pushed the row past the viewport on a 360px screen; the label
+     needs a smaller floor than the controls so it wraps first. */
+  .row>*{flex:1;min-width:0}
+  .row>span:first-child{flex:0 1 auto;min-width:70px;max-width:45%}
+  /* A .ctl holding a slider and its readout is two items, not one: the
+     input at width:100% consumed the whole track and the readout next to it
+     was laid out at clientWidth 0, which layout_verify reports as an
+     overflowing span. */
+  .row .ctl{flex:1 1 120px;min-width:0;display:flex;align-items:center;gap:8px}
+  .row input[type=range]{flex:1 1 auto;min-width:0}
+  .row .val{flex:0 0 auto}
   /* Dłuższe polskie etykiety nie mieszczą się w wąskim przycisku obok
      "Nagrywaj po ruchu", a "overflow:hidden" ucinałby tekst w połowie słowa.
      Wolno zawijać niż obciąć. */

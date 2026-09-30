@@ -27,9 +27,9 @@ const PAGE = path.join(__dirname, '..', 'app/src/main/assets/index.html');
  * The numeric ones are found by shape, not enumerated, because they change with
  * whatever the camera is currently doing. */
 const STAYS_ENGLISH = new Set([
-  'Ocu', 'Bea', 'MJPEG', 'FPS', 'RAM', 'Android', 'API', 'ONVIF SOAP',
+  'Ocu', 'Bea', 'OcuBea', 'MJPEG', 'FPS', 'RAM', 'Android', 'API', 'ONVIF SOAP',
   'Sepia', 'Status', 'Model', 'Web UI', 'ONVIF', 'QVGA', 'VGA', 'HD',
-  'FullHD', 'Webcam', 'HLS', 'HTTP', 'GET', 'POST', 'SOAP'
+  'FullHD', 'Webcam', 'HLS', 'HTTP', 'GET', 'POST', 'SOAP', 'Zoom'
 ]);
 
 /* A resolution, a count, a duration, a zoom value, an en dash placeholder.

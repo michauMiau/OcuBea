@@ -42,8 +42,8 @@ const Slider = ({ value, min = 0, max = 100, step = 1, onInput, label }) => html
     aria-label=${label} onInput=${(e) => onInput(+e.target.value)} />
 `;
 
-const Toggle = ({ on, onChange, label }) => html`
-  <button class=${'tgl' + (on ? ' on' : '')} onClick=${() => onChange(!on)}
+const Toggle = ({ on, onChange, label, id }) => html`
+  <button id=${id} class=${'tgl' + (on ? ' on' : '')} onClick=${() => onChange(!on)}
     aria-label=${label} aria-pressed=${on}></button>
 `;
 
@@ -229,7 +229,7 @@ function App() {
   const [flash, setFlash] = useState('');
   const [token, setTokenState] = useState(() => getToken());
   // i18n.js owns the choice; the header just reflects it and flips it.
-  const [lang] = useState(T_LANG);
+  const [lang] = useState(T_LANG); // 'pl' | 'en'
 
   const poll = useCallback(async () => {
     try {
@@ -303,6 +303,8 @@ function App() {
       ${!online && html`<span class="pill off">${t('phoneOffline')}</span>`}
       <button class="lang" title=${t('language')}
         onClick=${() => {
+          // lang, not T: T is the resolved translation table, so comparing it
+          // to 'pl' was always false and the button always offered EN.
           localStorage.setItem('ocubea_lang', lang === 'pl' ? 'en' : 'pl');
           location.reload();
         }}>${lang.toUpperCase()}</button>
@@ -320,10 +322,10 @@ function App() {
         <button class="big" onClick=${() => act(setSetting, 'force_start', '1', poll)}>
           ${t('start')}
         </button>
-        <button class="big" onClick=${() => setModeBoth(mode === 'mjpeg' ? 'hls' : 'mjpeg')}>
+        <button class="big" id="bMode" onClick=${() => setModeBoth(mode === 'mjpeg' ? 'hls' : 'mjpeg')}>
           ${t('mode')}: ${mode === 'mjpeg' ? 'MJPEG' : 'HLS'}
         </button>
-        <button class=${'big' + (lowLatency ? ' on' : '')}
+        <button id="bLL" class=${'big' + (lowLatency ? ' on' : '')}
           onClick=${() => {
             const v = !lowLatency;
             setLowLatency(v);
@@ -367,7 +369,7 @@ function App() {
           <span class="val">${zoomLevel.toFixed(1)}×</span>
         <//>
         <${Row} label=${t('torch')}>
-          <${Toggle} on=${!!s.torch} label=${t('torch')}
+          <${Toggle} id="bTorch" on=${!!s.torch} label=${t('torch')}
             onChange=${(v) => act(setSetting, 'torch', v ? 'on' : 'off', poll)} />
         <//>
         <${Row} label=${t('flip')}>
@@ -382,7 +384,7 @@ function App() {
       <section>
         <h2>${t('recordings')}</h2>
         <${Row} label=${t('recording')}>
-          <${Toggle} on=${!!recording.enabled} label=${t('recording')}
+          <${Toggle} id="bRec" on=${!!recording.enabled} label=${t('recording')}
             onChange=${(v) => act(setSetting, 'recording', v ? 'on' : 'off',
               async () => { await poll(); await loadLists(); })} />
         <//>

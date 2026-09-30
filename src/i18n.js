@@ -58,22 +58,20 @@ export const STR = {
 
 // ?lang= wins, then the stored choice, then the browser's own preference.
 //
-// The parentheses around the third operand are load-bearing: a bare
-// `q || saved || own.startsWith('pl') ? 'pl' : 'en'` parses as
-// `(q || saved || own.startsWith('pl')) ? 'pl' : 'en'`, so ?lang=en would
-// still select Polish.
+// This returns the *code*, not the table. Returning STR[q] and then looking the
+// code up again in STR cannot work: STR[STR.pl] is undefined, so LANG fell back
+// to 'en' for every language and ?lang=pl was ignored. The code is what callers
+// need anyway -- LANG is exported so the UI's language switch reflects the text
+// on screen rather than keeping a second opinion.
 const pick = () => {
   const q = new URLSearchParams(location.search).get('lang');
   const saved = localStorage.getItem('ocubea_lang');
   const guess = (navigator.language || '').toLowerCase().startsWith('pl') ? 'pl' : 'en';
-  return STR[q] || STR[saved] || STR[guess] || STR.en;
+  return STR[q] ? q : STR[saved] ? saved : STR[guess] ? guess : 'en';
 };
 
-// The resolved language code, exported so the UI's switch reflects the text
-// that is actually on screen instead of keeping a second opinion. pick() is
-// called once: a second call would re-read localStorage for no reason.
-const chosen = pick();
-
-export const LANG = STR[chosen] ? chosen : 'en';
+// Called once: a second call would re-read localStorage for no reason, and the
+// code has to be stable for the lifetime of the page.
+export const LANG = pick();
 export const T = STR[LANG];
 export const t = (key) => T[key] ?? STR.en[key] ?? key;
