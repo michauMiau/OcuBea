@@ -117,8 +117,8 @@ const Row = ({ label, children }) => html`
   <div class="row"><span>${label}</span><div class="ctl">${children}</div></div>
 `;
 
-const Slider = ({ value, min = 0, max = 100, step = 1, onInput, label }) => html`
-  <input type="range" min=${min} max=${max} step=${step} value=${value}
+const Slider = ({ value, min = 0, max = 100, step = 1, onInput, label, id }) => html`
+  <input id=${id} type="range" min=${min} max=${max} step=${step} value=${value}
     aria-label=${label} onInput=${(e) => onInput(+e.target.value)} />
 `;
 
@@ -194,13 +194,18 @@ function Stream({ mode, running, lowLatency }) {
 
     const run = async () => {
     // MJPEG: a plain <img> fed by a multipart endpoint. Stop it by dropping src.
-    // The cache-buster matters: reconnecting to the same URL lets the browser
-    // reuse a remembered response and the viewer gets a frozen first frame.
+    //
+    // The cache-buster goes on ONCE, when there is no stream yet. Setting a
+    // fresh /video?nocache=<timestamp> for every frame makes each one a
+    // separate resource: the browser then has to open, tear down and re-open
+    // the connection instead of holding one multipart stream, which is what
+    // put a second of lag on MJPEG no matter what the low-latency switch said.
+    // The old UI guarded this with `if (live.naturalWidth === 0)`.
     //
     // useMjpeg, not mode === 'mjpeg': it is also true once the HLS fallback has
     // fired, and this branch is what puts a picture up in that case.
     if (useMjpeg && running) {
-      img.src = '/video?nocache=' + Date.now();
+      if (!img.naturalWidth) img.src = '/video?nocache=' + Date.now();
       return () => { img.src = ''; };
     }
     img.src = '';
@@ -309,6 +314,8 @@ function App() {
   const [mode, setMode] = useState(() => localStorage.getItem('ocubea_mode') || 'mjpeg');
   const [lowLatency, setLowLatency] = useState(() => localStorage.getItem('ocubea_ll') === '1');
   const [clips, setClips] = useState([]);
+  // which clip the <video> preview is showing, if any
+  const [clipPreview, setClipPreview] = useState(null);
   const [recordings, setRecordings] = useState([]);
   const [flash, setFlash] = useState('');
   const [token, setTokenState] = useState(() => getToken());
@@ -407,10 +414,10 @@ function App() {
       ${flash && html`<div class="flash">${flash}</div>`}
 
       <section>
-        <button class="big" onClick=${() => act(setSetting, 'force_stop', '1', poll)}>
+        <button id="bStream" class="big" onClick=${() => act(setSetting, 'force_stop', '1')}>
           ${t('stop')}
         </button>
-        <button class="big" onClick=${() => act(setSetting, 'force_start', '1', poll)}>
+        <button id="bStart" class="big" onClick=${() => act(setSetting, 'force_start', '1')}>
           ${t('start')}
         </button>
         <button class="big" id="bMode" onClick=${() => setModeBoth(mode === 'mjpeg' ? 'hls' : 'mjpeg')}>
@@ -425,7 +432,7 @@ function App() {
           ${t('lowLatency')}: ${lowLatency ? t('on') : t('off')}
         </button>
         <${HlsQuality} />
-        <button class="big" onClick=${() => {
+        <button id="bShot" class="big" onClick=${() => {
           const a = document.createElement('a');
           a.href = '/shot.jpg?t=' + Date.now();
           a.download = 'ocubea-' + Date.now() + '.jpg';
@@ -449,6 +456,7 @@ function App() {
         <h2>${t('optics')}</h2>
         <${Row} label=${t('zoom')}>
           <${Slider} value=${Math.round((zoomLevel - 1) * 100)} max=${Math.round((zoomMax - 1) * 100)} step=${1}
+            id="zoom"
             label=${t('zoom')}
             onInput=${(v) => {
               // The phone reads any value <= 1 as a *step* rather than a level
@@ -474,14 +482,14 @@ function App() {
             onChange=${() => act(setSetting, 'ffc', 'toggle', poll)} />
         <//>
         <${Row} label=${t('effect')}>
-          <select class="ctl" value=${s.effect || 'none'} aria-label=${t('effect')}
+          <select id="effect" class="ctl" value=${s.effect || 'none'} aria-label=${t('effect')}
             onChange=${(e) => act(setSetting, 'effect', e.target.value, poll)}>
             ${EFFECTS.map(([id, key]) =>
               html`<option value=${id} selected=${(s.effect || 'none') === id}>${t(key)}</option>`)}
           </select>
         <//>
         <${Row} label=${t('quality')}>
-          <select class="ctl" value=${qualityKey(s.resolution)} aria-label=${t('quality')}
+          <select id="quality" class="ctl" value=${qualityKey(s.resolution)} aria-label=${t('quality')}
             onChange=${(e) => act(setSetting, 'quality', e.target.value, poll)}>
             ${QUALITIES.map(([id, label]) =>
               html`<option value=${id} selected=${qualityKey(s.resolution) === id}>${label}</option>`)}
@@ -514,18 +522,21 @@ function App() {
         <//>
         <${Row} label=${t('sensitivity')}>
           <${Slider} value=${motion.sensitivity != null ? motion.sensitivity : 5} min=${1} max=${10} step=${1}
+            id="sens"
             label=${t('sensitivity')}
             onInput=${(v) => act(setSetting, 'motion_sensitivity', v, poll)} />
           <span class="val">${motion.sensitivity != null ? motion.sensitivity : '–'}</span>
         <//>
         <${Row} label=${t('preRecord')}>
           <${Slider} value=${preRecord} min=${0} max=${10} step=${1}
+            id="pre"
             label=${t('preRecord')}
             onInput=${(v) => { setPreRecord(v); act(setSetting, 'pre_record_seconds', v, poll); }} />
           <span class="val">${preRecord}${t('sec')}</span>
         <//>
         <${Row} label=${t('maxClip')}>
           <${Slider} value=${maxClip} min=${10} max=${600} step=${10}
+            id="clip"
             label=${t('maxClip')}
             onInput=${(v) => { setMaxClip(v); act(setSetting, 'max_clip_seconds', v, poll); }} />
           <span class="val">${maxClip}${t('sec')}</span>
@@ -534,13 +545,13 @@ function App() {
 
       <section>
         <h2>${t('audio')}</h2>
-        <${Row} label=${t('audioCodec')}>
-          <select class="ctl" value=${audio.codec || 'none'} aria-label=${t('audioCodec')}
-            onChange=${(e) => act(setAudioCodec, e.target.value, poll)}>
-            ${AudioCodecs(audio.available).map(([id, key]) => html`
-              <option value=${id} selected=${(audio.codec || 'none') === id}>${t(key)}</option>`)}
-          </select>
-        <//>
+        ${AudioCodecs(audio.available).map(([id, key]) => html`
+          <${Row} label=${t(key)}>
+            <input id=${'ac_' + id} type="radio" name="acodec" value=${id}
+              aria-label=${t(key)} checked=${(audio.codec || 'none') === id}
+              onChange=${() => act(setAudioCodec, id, poll)} />
+            <span class="dim">${t('audioNote_' + id)}</span>
+          <//>`)}
         <p class="dim">${t('audioNote')}</p>
         <dl>
           <dt>${t('audioCodec')}</dt><dd>${audio.enabled ? audio.codec : t('off')}</dd>
@@ -548,8 +559,8 @@ function App() {
         </dl>
       </section>
 
-      <section>
-        <h2>${t('recordings')}</h2>
+      <section class="files">
+        <h2>${t('recordings')} ${recordings.length}</h2>
         <${Row} label=${t('recording')}>
           <${Toggle} id="bRec" on=${!!recording.enabled} label=${t('recording')}
             onChange=${(v) => act(setSetting, 'recording', v ? 'on' : 'off',
@@ -564,15 +575,17 @@ function App() {
         ${recordings.length === 0
           ? html`<p class="dim">${t('noRecordings')}</p>`
           : recordings.map((r) => html`
-              <div class="row">
-                <span class="name">${r.name}</span>
-                <span class="dim">${bytes(r.size)}</span>
-                <a class="ctl" href=${'/recordings/' + encodeURIComponent(r.name)}>↓</a>
-                <button class="ctl" onClick=${() => act(deleteRecording, r.name, loadLists)}>✕</button>
+              <div class="row file">
+                <span class="name" title=${r.name}>${r.name}</span>
+                <span class="size">${bytes(r.size)}</span>
+                <a class="ctl" href=${'/recordings/' + encodeURIComponent(r.name)}
+                  download title=${t('download')}>↓</a>
+                <button class="ctl" onClick=${() => act(deleteRecording, r.name, loadLists)}
+                  title=${t('deleteClip')}>✕</button>
               </div>`)}
       </section>
 
-      <section>
+      <section class="files">
         <h2>${t('clips')} ${clips.length}</h2>
         <div class="row">
           <button id="bRecNow" class="ctl primary" onClick=${() => act(recordNow, 30, loadLists)}
@@ -588,12 +601,15 @@ function App() {
         ${clips.length === 0
           ? html`<p class="dim">${t('noClips')}</p>`
           : clips.map((c) => html`
-              <div class="row">
-                <span class="name">${c.name}</span>
-                <span class="dim">${bytes(c.size)}</span>
-                <a class="ctl" href=${'/clips/' + encodeURIComponent(c.name)}>↓</a>
-                <button class="ctl" onClick=${() => act(clipOnFile, 'delete', c.name, loadLists)}
-                  >✕</button>
+              <div class="row file">
+                <span class="name" title=${c.name}
+                  onClick=${() => setClipPreview(c.name)}>${c.name}</span>
+                <span class="size">${bytes(c.size)}</span>
+                <a class="ctl" href=${'/clips/' + encodeURIComponent(c.name)}
+                  download title=${t('download')}>↓</a>
+                <button id="clipDelete" class="ctl"
+                  onClick=${() => act(clipOnFile, 'delete', c.name, loadLists)}
+                  title=${t('deleteClip')}>✕</button>
               </div>`)}
       </section>
 
@@ -610,6 +626,19 @@ function App() {
           <dd>${sensors && sensors.storage ? bytes(sensors.storage.free_mb * 1048576) : '–'}</dd>
         </dl>
       </section>
+
+      ${clipPreview && html`
+        <section class="preview">
+          <h2>${t('clipPreview')}</h2>
+          <video src=${'/clips/' + encodeURIComponent(clipPreview)} controls autoplay
+            playsinline style="width:100%;max-height:60vh;background:#000"></video>
+          <div class="row">
+            <a class="ctl" href=${'/clips/' + encodeURIComponent(clipPreview)} download
+              >${t('download')}</a>
+            <button id="clipCloseBtn" class="ctl danger"
+              onClick=${() => setClipPreview(null)}>${t('close')}</button>
+          </div>
+        </section>`}
 
       <section>
         <h2>${t('api')}</h2>
