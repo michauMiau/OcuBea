@@ -24,6 +24,7 @@ const shell = (css, js) => `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0d1117">
 <title>OcuBea</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
 <style>
 ${css}
 </style>
