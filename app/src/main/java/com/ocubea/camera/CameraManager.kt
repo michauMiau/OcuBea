@@ -936,7 +936,12 @@ class CameraManager(
             // app exists - with no viewer open, processJpeg() was never called
             // even though the clip encoder was armed and waiting.
             val clipFed = clipEnc != null
-            val jpegNeeded = !((hlsFed || clipFed) && !mjpegWanted()) || motionNeedsJpeg()
+            /* Every consumer, listed positively. Negating the group here read
+               "no HLS and no viewers" as "JPEG needed", so with nothing
+               connected the phone still ran toBitmap() and a full JPEG compress
+               on every frame -- 3 pending encodes and a growing
+               dropped_saturated at viewers=0, motion off, HLS off. */
+            val jpegNeeded = mjpegWanted() || motionNeedsJpeg() || hlsFed || clipFed
             val bitmap = if (jpegNeeded) imageProxy.toBitmap() else null
             imageProxy.close()
             // A null here after an intentional skip is expected, not a failure.
