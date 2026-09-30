@@ -213,7 +213,13 @@ class HlsSession(
         sb.append("#EXT-X-MEDIA-SEQUENCE:").append(first).append('\n')
         sb.append("#EXT-X-PLAYLIST-TYPE:EVENT\n")
         sb.append("#EXT-X-INDEPENDENT-SEGMENTS\n")
-        sb.append("#EXT-X-MAP:URI=\"init.mp4\"\n")
+        // The playlist is served at BOTH /hls.m3u8 and /hls/index.m3u8, but
+        // segments exist only under /hls/. A relative URI in the playlist is
+        // resolved against the playlist's own directory, so a client that loaded
+        // /hls.m3u8 asked for /seg106.m4s and got a 404 for every fragment
+        // (measured 2026-09-30: 200 on the playlist, 404 on every segment).
+        // Absolute URIs make the playlist correct under both paths.
+        sb.append("#EXT-X-MAP:URI=\"/hls/init.mp4\"\n")
         for (seg in entries) {
             // "." not a locale separator. String.format follows the default
             // locale, and a comma here is invalid HLS: ffmpeg reports
@@ -223,7 +229,7 @@ class HlsSession(
             sb.append("#EXTINF:")
                 .append(formatExtInf(seg.durationMs))
                 .append(",\n")
-            sb.append("seg").append(seg.sequence).append(".m4s\n")
+            sb.append("/hls/seg").append(seg.sequence).append(".m4s\n")
         }
         return sb.toString()
     }

@@ -1,3 +1,5 @@
+@file:OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+
 package com.ocubea.camera
 
 import android.content.Context
@@ -1203,7 +1205,15 @@ class CameraManager(
      *
      * Nothing here throws. A device that will not honour the request simply
      * keeps the rate it chose, which is a normal outcome and not a failure.
+     *
+     * The @Suppress is for UnsafeOptInUsageError, not the @file:OptIn above:
+     * only Camera2CameraControl carries the ExperimentalCamera2Interop marker,
+     * and lint attributes the requirement to every statement in the expression
+     * that reaches it rather than to the one call that needs it. The interop is
+     * the documented way to set CONTROL_AE_TARGET_FPS_RANGE at all, and the
+     * alternative is not setting it.
      */
+    @Suppress("UnsafeOptInUsageError")
     private fun applyFrameRate(camera: androidx.camera.core.Camera) {
         // targetFps is the user's setting; effectiveFps() is that plus whatever
         // the governor has added on the way down the ladder. The ceiling is

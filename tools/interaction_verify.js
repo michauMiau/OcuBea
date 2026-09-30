@@ -18,13 +18,16 @@ const PAGE = path.join(__dirname, '..', 'app', 'src', 'main', 'assets', 'index.h
 
 /* Buttons that only relabel themselves. Clicking the stream or snapshot
  * buttons would start a camera that is not there under file://, so they are
- * left out — the point here is the label, not the device. */
-const TOGGLES = ['bMode', 'bLL', 'bHQ', 'bNight', 'bMotion', 'bRec'];
+ * left out — the point here is the label, not the device.
+ *
+ * The Preact rewrite has no night-vision or motion controls, so bNight and
+ * bMotion are gone; bRec and bTorch are the toggles it does have. */
+const TOGGLES = ['bMode', 'bLL', 'bTorch', 'bRec'];
 
-/* bNight, bMotion and bRec toggle a class rather than their own text — the
- * state shows on the Status card instead. Clicking one and seeing the same
- * label is correct for them, so it is not reported. */
-const RELABELS = new Set(['bMode', 'bLL', 'bHQ']);
+/* bTorch and bRec toggle a class rather than their own text — the state shows
+ * on the Status card instead. Clicking one and seeing the same label is
+ * correct for them, so it is not reported. */
+const RELABELS = new Set(['bMode', 'bLL']);
 
 /* A label is in the wrong language when it still contains English words. The
  * Polish translations all contain a diacritic or a word that is not English,

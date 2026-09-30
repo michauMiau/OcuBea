@@ -144,7 +144,10 @@ class StreamServer(
         return when {
         // ── Web UI ──
         uri == "/" || uri == "/index.html" || uri == "/mobile" || uri == "/login" -> serveWebpage()
-        uri == "/hls.min.js" -> serveAsset("hls.min.js", "application/javascript")
+        // hls.js used to be served as a separate file here. It is now bundled
+        // into index.html by build.mjs, so there is no second asset to fetch:
+        // a separate <script src> only works if the browser executes document
+        // scripts, and not every engine does.
 
         // ── Streaming ──
         uri == "/video" || uri == "/videofeed" || uri == "/mjpeg" || uri.startsWith("/stream") -> handleMjpeg()
