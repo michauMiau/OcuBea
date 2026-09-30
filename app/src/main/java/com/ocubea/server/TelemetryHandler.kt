@@ -101,7 +101,14 @@ class TelemetryHandler(
     } catch (_: Exception) { -1 }
     // ── Telemetry ──────────────────────────────────────────────
 
-    fun handleStatusJson(): Response {
+    /**
+     * `?show_avail=1` is IP Webcam's own gate for the settings dictionaries.
+     *
+     * Defaulted rather than required so every existing caller keeps working:
+     * the WebUI polls this endpoint without the flag and must not start
+     * receiving a second copy of every setting.
+     */
+    fun handleStatusJson(showAvail: Boolean = false): Response {
         val cfg = cameraManager.getConfiguration()
         val json = buildString {
             append("{")
@@ -183,11 +190,116 @@ class TelemetryHandler(
             // /proc/self/status because Debug.getMemoryInfo reports the whole
             // process, which is the same thing but slower and less precise.
             append("\"rss_mb\":${residentMb()},")
-            append("\"battery_level\":${batteryLevel()}")
+            // Written last, so it can decide whether it needs a trailing
+            // comma. Doing it the other way round leaves a `,}` on the default
+            // response, which is not JSON, and every client of this endpoint --
+            // the WebUI poll, pydroid, anything reading /status.json -- fails to
+            // parse it. That is exactly what happened: the whole status block
+            // read as broken on a phone that was otherwise working.
+            if (showAvail) {
+                append("\"battery_level\":${batteryLevel()},")
+                append(ipWebcamSettingsBlock(cfg))
+            } else {
+                append("\"battery_level\":${batteryLevel()}")
+            }
             append("}")
         }
         return NanoHTTPD.newFixedLengthResponse(Status.OK, "application/json", json)
     }
+
+    /**
+     * `curvals` and `avail`, in the shape pydroid parses.
+     *
+     * Values are strings on both sides, deliberately: pydroid coerces numbers
+     * with float() and booleans by comparing to "on"/"off", and a JSON true or
+     * a bare number makes `float(True)` work by accident on one path and fail
+     * on another. Strings keep every setter on the same path.
+     */
+    /**
+     * Appends `curvals` and `avail` to the status JSON.
+     *
+     * Takes no StringBuilder because it is always called from inside a
+     * `buildString` block, where the receiver already is the buffer.
+     */
+    private fun ipWebcamSettingsBlock(cfg: Map<String, Any>): String {
+        val res = cfg["resolution"]?.toString() ?: "1280x720"
+        val resList = listOf("640x480", "800x600", "1280x720", "1920x1080", "640x360", "960x540")
+        val onOff = listOf("on", "off")
+        val current = linkedMapOf(
+            "resolution" to res,
+            "quality" to "${cameraManager.jpegQualityOverride}",
+            // Measured, not requested. Reporting the configured value is how a 10 fps
+            // setting came to sit next to a 6 fps phone with nothing indicating
+            // that the two disagreed.
+            "fps" to "${cameraManager.measuredFps ?: cfg["fps"] ?: 15}",
+            "focus" to "auto",
+            "exposure" to "auto",
+            "whitebalance" to "auto",
+            "night_vision" to boolStr(cameraManager.nightVisionEnabled),
+            "overlay" to "on",
+            "ffc" to boolStr(cameraManager.isUsingFrontCamera()),
+            "gps_active" to "off",
+            "motion_detect" to boolStr(motionDetector.enabled),
+            "scenemode" to "auto",
+            "orientation" to "landscape",
+            "led_torch" to "auto",
+            "norecord" to "off",
+            "audio" to boolStr(config.audioEnabled),
+            // The chosen codec, under the name pydroid looks for. Without it in
+            // curvals a client restoring settings has nothing to read the codec
+            // back from, falls back to its own default, and then asks a camera
+            // set to AAC for Opus -- and gets a 501.
+            "audio_codec" to config.audioCodecOrDefault(audioCodecs.defaultId()),
+            "coloreffect" to cameraManager.effect
+        )
+        val available = linkedMapOf(
+            "resolution" to resList,
+            "quality" to listOf("25", "50", "75", "100"),
+            "fps" to listOf("1", "5", "10", "15", "20", "30"),
+            "focus" to listOf("auto", "auto,continuous", "macro"),
+            "exposure" to listOf("auto", "normal", "long", "short"),
+            "whitebalance" to listOf("auto", "incandescent", "fluorescent", "daylight", "cloudy"),
+            "night_vision" to onOff,
+            "overlay" to onOff,
+            "ffc" to onOff,
+            "gps_active" to onOff,
+            "motion_detect" to onOff,
+            // Only codecs this device actually has, so a client is never offered
+            // a choice that answers 501. Built from the same probe that hides
+            // Opus on Android 6.
+            "audio_codec" to audioCodecs.options().map { it.id },
+            "scenemode" to StreamServer.SCENE_MODES,
+            "orientation" to StreamServer.ORIENTATIONS,
+            "led_torch" to listOf("auto", "on", "off", "flash"),
+            "norecord" to onOff,
+            "audio" to onOff,
+            "coloreffect" to StreamServer.EFFECTS
+        )
+        // Hand-rolled rather than joined from a map: `curvals` and `avail` are
+        // one level of nesting each and every value is a string, so the loop
+        // below is shorter than the formatter that would replace it.
+        val block = buildString {
+            append("\"curvals\":{")
+            current.entries.forEachIndexed { i, (k, v) ->
+                if (i > 0) append(",")
+                append("\"").append(k).append("\":\"").append(v).append('"')
+            }
+            append("},\"avail\":{")
+            available.entries.forEachIndexed { i, (k, v) ->
+                if (i > 0) append(",")
+                append('"').append(k).append("\":[")
+                v.forEachIndexed { j, item ->
+                    if (j > 0) append(",")
+                    append('"').append(item).append('"')
+                }
+                append(']')
+            }
+            append("}")
+        }
+        return block
+    }
+
+    private fun boolStr(on: Boolean) = if (on) "on" else "off"
 
     /**
      * GET /sensors.json                 — full nested telemetry (OcuBea extra)
