@@ -213,6 +213,13 @@
     <div id="audioChoices" class="row" style="flex-direction:column;align-items:stretch;gap:8px">
       <p class="hint" id="audioProbe">Reading what this phone can encode&hellip;</p>
     </div>
+    <div class="row" style="margin-top:12px;gap:8px;align-items:center">
+      <button id="bAudioPlay">Listen</button>
+      <input type="range" id="aVol" min="0" max="100" step="1" value="80"
+             style="flex:1;min-width:0" aria-label="volume">
+      <span id="aState" class="hint" style="margin:0">idle</span>
+    </div>
+    <audio id="aEl" preload="none"></audio>
     <p class="hint" id="audioNote" style="margin-top:10px"></p>
   </section>
 
@@ -364,6 +371,25 @@ var I18N = {
     'Audio clients': 'Klienci audio',
     'Audio codec': 'Kodek audio',
     'Audio stream': 'Strumień audio',
+    'Listen': 'Słuchaj',
+    'Stop': 'Zatrzymaj',
+    'idle': 'bezczynny',
+    'loading': 'ładowanie',
+    'streaming': 'strumień',
+    'playing': 'odtwarza',
+    'error': 'błąd',
+    'volume': 'głośność',
+    'This browser has no Media Source support.': 'Ta przeglądarka nie ma obsługi Media Source.',
+    'This browser cannot decode ': 'Ta przeglądarka nie zdekoduje ',
+    'Press Listen again to start audio.': 'Naciśnij Słuchaj ponownie, aby włączyć dźwięk.',
+    'Browser rejected the ': 'Przeglądarka odrzuciła strumień ',
+    ' stream.': '.',
+    'Init rejected: ': 'Nagłówek odrzucony: ',
+    'Stream rejected: ': 'Strumień odrzucony: ',
+    'Stream failed: ': 'Strumień zawiódł: ',
+    'Could not play: ': 'Nie udało się odtworzyć: ',
+    'Could not read: ': 'Nie udało się odczytać: ',
+    'Could not save: ': 'Nie udało się zapisać: ',
     'off': 'wyłączony',
     // Kept as one text node on purpose: an earlier version wrapped
     // /status.json in <code> and split the sentence, which left the fragment
@@ -1321,6 +1347,428 @@ function saveAudioCodec(id, btn){
     btn.disabled = false;
   });
 }
+
+/* ── Audio playback ──────────────────────────────────────────────────────
+ *
+ * The phone serves raw elementary streams: /audio.aac is ADTS, /audio.wav is
+ * a bare RIFF header over endless PCM. A browser can play neither as a plain
+ * src, and a plain <audio src> cannot play an endless response at all -- it
+ * waits for Content-Length, so it either sits silent or errors with
+ * ERR_INCOMPLETE_CHUNKED_ENCODING.
+ *
+ * So the stream is fed to Media Source Extensions chunk by chunk. The browser
+ * has to be told the codec, which means building a minimal MP4 header for the
+ * raw stream and handing it over first. WAV is the exception: the browser
+ * decodes it natively, so it is appended as an elementary stream and the
+ * server is asked to stamp a content type it can demux.
+ */
+var audioCtxState = 'idle', audioStop = false, audioChain = null;
+
+function setAudioState(s){ audioCtxState = s; $('aState').textContent = t(s); }
+
+/* MP4 init segment describing a raw AAC stream, for Media Source Extensions.
+ *
+ * Written with a flat sequence of named parts rather than nested inline
+ * IIFEs: box('x', (function(){...})()) inside box('y', ...) is where the
+ * parenthesis count goes wrong, and the result is a file no browser and no
+ * syntax checker will accept.
+ */
+function aacInitSegment(sampleRate, channels){
+  /* Offsets below are into the *body* -- the FullBox 4-byte version/flags
+     header is added by fullbox() and is not part of what the indices count.
+     Getting this wrong is invisible: the segment still parses as a box tree,
+     the fields just land one slot early, and Chrome reports
+     "Movie header's timescale must not be 0" while naming a value, not a
+     position. Sizes are v0: mvhd payload 100, tkhd 84, mdhd 24. */
+  function box(type, payload){
+    var b = new Uint8Array(8 + payload.length);
+    var v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    v.setUint32(0, b.length);
+    for (var i = 0; i < 4; i++) b[4 + i] = type.charCodeAt(i);
+    b.set(payload, 8);
+    return b;
+  }
+  function u8(x){ return new Uint8Array([x & 255]); }
+  function u16(x){ return new Uint8Array([(x >> 8) & 255, x & 255]); }
+  function u32(x){
+    return new Uint8Array([(x >>> 24) & 255, (x >>> 16) & 255,
+                           (x >>> 8) & 255, x & 255]);
+  }
+  function join(list){
+    var n = 0, i;
+    for (i = 0; i < list.length; i++) n += list[i].length;
+    var out = new Uint8Array(n), off = 0;
+    for (i = 0; i < list.length; i++){ out.set(list[i], off); off += list[i].length; }
+    return out;
+  }
+  function fullbox(ver, flags, body){
+    return join([u8(ver), u8((flags >> 16) & 255), u8((flags >> 8) & 255), u8(flags & 255), body]);
+  }
+
+  /* AudioSpecificConfig: object type 2 (AAC-LC) plus the sample rate index. */
+  var RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+               16000, 12000, 11025, 8000, 7350];
+  var idx = RATES.indexOf(sampleRate);
+  if (idx < 0) idx = 3;
+  /* AudioSpecificConfig is 13 bits packed into exactly 2 bytes:
+     objectType(5)=2, samplingFrequencyIndex(4), channelConfiguration(4).
+     Spreading it over 3 bytes leaves a stray padding bit that the decoder
+     reads as a different rate -- ffmpeg then reports the stream as 44.1 kHz
+     stereo when the phone is sending 48 kHz mono. */
+  var packed = (2 << 11) | (idx << 7) | (channels << 3);
+  var asc = new Uint8Array([(packed >> 8) & 255, packed & 255]);
+
+  /* esds: ES_Descriptor(0x03) { ES_ID, flags, DecoderConfig(0x04) {
+       objectTypeIndication 0x40, streamType 0x15, bufferSize, maxBitrate,
+       avgBitrate, DecoderSpecificInfo(0x05), SLConfig(0x06) } } */
+  var dsi = join([u8(0x05), u8(asc.length), asc]);
+  var dcd = join([u8(0x40), u8(0x15), u8(0), u8(0), u8(0), u32(0), u32(0), dsi]);
+  var dcdFull = join([u8(0x04), u8(dcd.length), dcd]);
+  var sl = join([u8(0x06), u8(1), u8(2)]);
+  var esBody = join([u16(1), u8(0), dcdFull, sl]);
+  var esds = box('esds', fullbox(0, 0, join([u8(0x03), u8(esBody.length), esBody])));
+
+  /* AudioSampleEntry: 6 reserved, 2 dataRefIndex, 8 reserved, 2 channels,
+     2 sampleSize, 2 pre_defined, 2 reserved, 4 sampleRate (16.16). */
+  var mp4aHead = new Uint8Array(28);
+  mp4aHead[7] = 1;                                    /* data_reference_index */
+  mp4aHead[16] = (channels >> 8) & 255;               /* channelcount  @16 */
+  mp4aHead[17] = channels & 255;
+  mp4aHead[18] = 0; mp4aHead[19] = 16;                /* samplesize = 16 bit */
+  mp4aHead[20] = 0; mp4aHead[21] = 0;                 /* pre_defined = 0 */
+  mp4aHead[24] = (sampleRate >>> 8) & 255;            /* samplerate 16.16 @24 */
+  mp4aHead[25] = sampleRate & 255;
+  var mp4a = box('mp4a', join([mp4aHead, esds]));
+
+  /* stsd is a FullBox with an entry count, so it needs the 4-byte header
+     before the entry. Omitting it makes the sample entry read as garbage. */
+  var stsd = box('stsd', fullbox(0, 0, join([u32(1), mp4a])));
+  var stts = box('stts', fullbox(0, 0, join([u32(0)])));
+  var stsc = box('stsc', fullbox(0, 0, join([u32(0)])));
+  var stsz = box('stsz', fullbox(0, 0, join([u32(0), u32(0)])));
+  var stco = box('stco', fullbox(0, 0, join([u32(0)])));
+  var stbl = box('stbl', join([stsd, stts, stsc, stsz, stco]));
+
+  var smhd = box('smhd', fullbox(0, 0, u32(0)));
+  var dinf = box('dinf', box('dref', fullbox(0, 0, join([u32(1), box('url ', fullbox(1, 0, u8(0)))]))));
+  var hdlrBody = join([u32(0), u8(0x73), u8(0x6F), u8(0x75), u8(0x6E), u32(0), u32(0), u32(0), u8(0)]);
+  var hdlr = box('hdlr', fullbox(0, 0, hdlrBody));
+  var minf = box('minf', join([smhd, dinf, hdlr, stbl]));
+
+  /* mdhd v0 payload is 24 bytes. creation @12, modification @16,
+     timescale @20, duration @24 -- so in the body those are 8, 12, 16, 20. */
+  var mdhdBody = new Uint8Array(20);
+  mdhdBody[8]  = (sampleRate >>> 24) & 255;   /* timescale @12 */
+  mdhdBody[9]  = (sampleRate >>> 16) & 255;
+  mdhdBody[10] = (sampleRate >>> 8) & 255;
+  mdhdBody[11] = sampleRate & 255;
+  var mdhd = box('mdhd', fullbox(0, 0, mdhdBody));
+  var mdia = box('mdia', join([mdhd, hdlr, minf]));
+
+  /* tkhd v0 payload is 84 bytes: track_ID @20, duration @28, volume @36,
+     unity matrix @40. In the body: 16, 24, 32, 36. */
+  var tkhdBody = new Uint8Array(80);
+  tkhdBody[11] = 0x01;                         /* track_ID @12 */
+  tkhdBody[29] = 0x01;                         /* volume 0x0001 @32, audio full scale */
+  tkhdBody[36] = 0x00; tkhdBody[37] = 0x01;    /* matrix[0][0] @40 */
+  tkhdBody[52] = 0x00; tkhdBody[53] = 0x01;    /* matrix[2][2] @56 */
+  var trak = box('trak', join([box('tkhd', fullbox(0, 7, tkhdBody)), mdia]));
+
+  /* trex v0: track_ID @4, default_sample_description_index @8. */
+  var trexBody = new Uint8Array(20);
+  trexBody[3] = 0x01;                          /* track_ID @4 */
+  var mvex = box('mvex', box('trex', fullbox(0, 0, trexBody)));
+
+  /* mvhd v0 payload is 100 bytes: creation @12, modification @16,
+     timescale @20, duration @24 -- body offsets 8, 12, 16, 20. */
+  var mvhdBody = new Uint8Array(96);
+  mvhdBody[8] = 0x00; mvhdBody[9] = 0x01;      /* timescale 0x00010000 @12 */
+  var moov = box('moov', join([box('mvhd', fullbox(0, 0, mvhdBody)), trak, mvex]));
+
+  var ftypBody = join([u8(0x6D), u8(0x70), u8(0x34), u8(0x32), u32(1), u32(0), u32(0),
+                       u8(0x6D), u8(0x70), u8(0x34), u8(0x41), u32(0)]);
+  return join([box('ftyp', ftypBody), moov]);
+}
+
+/* Decode time in mdhd units; 1024 per AAC frame at 48 kHz. */
+var aacSeq = 0;
+
+function aacSegment(frame, seq){
+  /* One moof + one mdat per AAC frame.
+   *
+   * Two things here are invisible to ffmpeg and fatal to Chrome, which is why
+   * this was verified against a real browser rather than a parser:
+   *   - the sample in mdat is the bare AAC payload. The 7-byte ADTS header is
+   *     stripped, because esds already carries the AudioSpecificConfig and a
+   *     second header makes the decoder read sync bytes as data.
+   *   - tfdt carries a real decode time that advances by 1024 per frame. With
+   *     it pinned at zero every segment restarts the timeline, and the demuxer
+   *     fails with "stream parsing failed" while the container itself is
+   *     perfectly well formed. */
+  function box(type, payload){
+    var b = new Uint8Array(8 + payload.length);
+    var v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    v.setUint32(0, b.length);
+    for (var i = 0; i < 4; i++) b[4 + i] = type.charCodeAt(i);
+    b.set(payload, 8);
+    return b;
+  }
+  function u8(x){ return new Uint8Array([x & 255]); }
+  function u32(x){
+    return new Uint8Array([(x >>> 24) & 255, (x >>> 16) & 255,
+                           (x >>> 8) & 255, x & 255]);
+  }
+  function u64(hi, lo){
+    return join([u32(hi >>> 0), u32(lo >>> 0)]);
+  }
+  function join(list){
+    var n = 0, i;
+    for (i = 0; i < list.length; i++) n += list[i].length;
+    var out = new Uint8Array(n), off = 0;
+    for (i = 0; i < list.length; i++){ out.set(list[i], off); off += list[i].length; }
+    return out;
+  }
+  function fullbox(flags, body){
+    return join([u8(0), u8((flags >> 16) & 255), u8((flags >> 8) & 255), u8(flags & 255), body]);
+  }
+
+  var sample = frame.length > 7 ? frame.subarray(7) : frame;
+
+  /* tfhd 0x02 = default-base-is-moof; every sample field comes from trun. */
+  var tfhd = box('tfhd', fullbox(0x000002, u32(1)));
+
+  /* tfdt v1 carries a 64-bit decode time. 1024 samples per frame at 48 kHz. */
+  var t = (seq || 0) * 1024;
+  var tfdt = box('tfdt', fullbox(0, u64(0, t)));
+
+  /* trun: 0x000301 = data-offset-present | sample-duration-present |
+     sample-size-present. Without sample_duration the demuxer falls back to
+     the trex default, which is zero, and the track has no timing at all. */
+  var trunBody = new Uint8Array(20);
+  trunBody[3] = 0x01;                                   /* sample_count */
+  trunBody[12] = 0x00; trunBody[13] = 0x04;             /* sample_duration 1024 */
+  trunBody[14] = 0x00; trunBody[15] = 0x00;
+  trunBody[16] = (sample.length >>> 24) & 255;          /* sample_size */
+  trunBody[17] = (sample.length >>> 16) & 255;
+  trunBody[18] = (sample.length >>> 8) & 255;
+  trunBody[19] = sample.length & 255;
+  var trun = box('trun', fullbox(0x000301, trunBody));
+
+  var moof = box('moof', join([box('mfhd', u32((seq || 0) + 1)),
+                               box('traf', join([tfhd, tfdt, trun]))]));
+
+  /* data_offset is measured from the first byte of the moof and is the word
+     right after sample_count in the trun payload. Patching it by guessing a
+     distance from the end of the moof lands on sample_duration instead --
+     the box still parses, ffmpeg still reads it, and Chrome rejects the
+     segment with a bare "stream parsing failed". Counting the bytes back from
+     the trun's own size is the only version of this that is correct. */
+  var dataOff = moof.length + 8;                 /* mdat header is 8 bytes */
+  /* Bytes from data_offset to the end of the moof: the rest of the trun
+     payload after the field (trun payload minus its 8 header and 12 already
+     consumed), plus the 4 bytes of the trun's own size/type header. */
+  var at = moof.length - (trun.length - 8 - 12) - 4;
+  moof[at] = (dataOff >>> 24) & 255;
+  moof[at + 1] = (dataOff >>> 16) & 255;
+  moof[at + 2] = (dataOff >>> 8) & 255;
+  moof[at + 3] = dataOff & 255;
+
+  return join([moof, box('mdat', sample)]);
+}
+
+function stopAudio(){
+  audioStop = true;
+  if (audioChain){
+    try { audioChain.abort(); } catch(e){}
+    audioChain = null;
+  }
+  $('bAudioPlay').textContent = t('Listen');
+  setAudioState('idle');
+}
+
+function startAudio(){
+  var codec = (status && status.audio && status.audio.codec) || 'aac';
+  if (codec === 'wav') return startWav();
+  return startEncoded(codec);
+}
+
+/* Raw WAV decodes natively, but only from a complete file. The endpoint is
+   endless, so the first Content-Length bytes are read and handed over as a
+   blob; the browser then has the whole RIFF header it needs. */
+function startWav(){
+  setAudioState('loading');
+  var el = $('aEl');
+  el.src = '/audio.wav';
+  el.loop = true;
+  el.volume = Number($('aVol').value) / 100;
+  var done = function(ok, why){
+    if (!ok){ setAudioState('error'); $('audioNote').textContent = why; return; }
+    setAudioState('playing');
+    $('bAudioPlay').textContent = t('Stop');
+    el.play().then(function(){
+      setAudioState('playing');
+    }).catch(function(e){
+      setAudioState('error');
+      $('audioNote').textContent = t('Could not play: ') + e.message;
+    });
+  };
+  /* Probe the header first so a wrong content type is reported here and not
+     as an unexplained silent element. */
+  fetch('/audio.wav', { headers: { 'Range': 'bytes=0-1023' } })
+    .then(function(r){
+      if (!r.ok && r.status !== 206) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    })
+    .then(function(buf){
+      if (buf.byteLength < 44) throw new Error('too short to be a WAV');
+      done(true);
+    })
+    .catch(function(e){ done(false, t('Could not read: ') + e.message); });
+}
+
+function startEncoded(codec){
+  if (typeof MediaSource === 'undefined'){
+    setAudioState('error');
+    $('audioNote').textContent = t('This browser has no Media Source support.');
+    return;
+  }
+  var mime = codec === 'opus' ? 'audio/mp4; codecs="opus"'
+                                : 'audio/mp4; codecs="mp4a.40.2"';
+  if (!MediaSource.isTypeSupported(mime)){
+    setAudioState('error');
+    $('audioNote').textContent = t('This browser cannot decode ') + codec.toUpperCase();
+    return;
+  }
+  setAudioState('loading');
+  var ms = new MediaSource();
+  var el = $('aEl');
+  el.src = URL.createObjectURL(ms);
+  audioStop = false;
+  aacSeq = 0;   // rosnacy decode time dla tfdt, reset przy kazdym starcie
+  $('bAudioPlay').textContent = t('Stop');
+
+  ms.addEventListener('sourceopen', function(){
+    var sb;
+    try { sb = ms.addSourceBuffer(mime); } catch(e){
+      setAudioState('error');
+      $('audioNote').textContent = e.message;
+      return;
+    }
+    sb.mode = 'segments';
+    var queue = [];
+    var appending = false;
+    var first = true;
+    var startAt = 0;
+
+    function pump(){
+      if (appending || !queue.length) return;
+      if (first && codec !== 'opus'){
+        var init = aacInitSegment(48000, 1);
+        first = false; appending = true;
+        sb.addEventListener('updateend', function(){ appending = false; pump(); }, { once: true });
+        try { sb.appendBuffer(init); }
+        catch(e){ setAudioState('error'); $('audioNote').textContent = t('Init rejected: ') + e.message; }
+        return;
+      }
+      first = false;
+      var chunk = queue.shift();
+      appending = true;
+      sb.addEventListener('updateend', function(){ appending = false; pump(); }, { once: true });
+      sb.addEventListener('error', function(){
+        setAudioState('error');
+        $('audioNote').textContent = t('Browser rejected the ') + codec.toUpperCase() + t(' stream.');
+      }, { once: true });
+      try { sb.appendBuffer(chunk); }
+      catch(e){
+        setAudioState('error');
+        $('audioNote').textContent = t('Stream rejected: ') + e.message;
+      }
+    }
+
+    if (!startAt){
+      el.play().then(function(){
+        setAudioState('playing');
+      }).catch(function(e){
+        setAudioState('playing');
+        $('audioNote').textContent = t('Press Listen again to start audio.');
+      });
+    }
+
+    var ctl = new AbortController();
+    audioChain = ctl;
+    fetch('/audio.' + codec, { signal: ctl.signal })
+      .then(function(r){
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        setAudioState('streaming');
+        return r.body.getReader();
+      })
+      .then(function(rd){
+        var carry = new Uint8Array(0);
+        var usPerFrame = codec === 'opus' ? 20000 : 204006;
+        return (function pumpStream(){
+          return rd.read().then(function(res){
+            if (res.done) return;
+            if (audioStop) return;
+            var buf = new Uint8Array(res.value);
+            var all = new Uint8Array(carry.length + buf.length);
+            all.set(carry, 0); all.set(buf, carry.length);
+            /* ADTS frames are 7 bytes of header + a 13-bit length. Split on
+               frame boundaries so each segment holds whole frames; splitting
+               mid-frame is what makes a decoder give up on a valid stream. */
+            var off = 0, frames = [];
+            while (off + 7 <= all.length){
+              if (all[off] !== 0xFF || (all[off+1] & 0xF0) !== 0xF0){ off++; continue; }
+              /* frame_length is 13 bits spanning bytes 3-5, counting the
+                 header itself. The first frame the phone emits is often 9
+                 bytes -- header plus one byte of payload -- and appending that
+                 as a media segment makes the demuxer fail on a well-formed
+                 stream, so an empty frame is dropped rather than wrapped. */
+              var len = ((all[off+3] & 0x03) << 11) | (all[off+4] << 3) |
+                        ((all[off+5] & 0xE0) >> 5);
+              if (len < 7 || off + len > all.length) break;
+              /* The first frame the encoder emits is a 9-byte warm-up -- the
+                 7-byte header plus two payload bytes. ffmpeg reads a stream
+                 containing it without complaint; Chrome rejects the segment
+                 outright, so frames below a real 1024-sample payload are
+                 skipped and the timeline starts with the first frame that
+                 actually carries audio. */
+              if (len - 7 >= 16) frames.push(all.slice(off, off + len));
+              off += len;
+            }
+            carry = all.slice(off);
+            for (var i = 0; i < frames.length; i++){
+              if (codec === 'opus') queue.push(frames[i]);
+              else queue.push(aacSegment(frames[i], aacSeq++));
+            }
+            if (queue.length > 240) queue.splice(0, queue.length - 240);
+            pump();
+            return pumpStream();
+          });
+        })();
+      })
+      .catch(function(e){
+        if (audioStop) return;
+        if (e.name === 'AbortError') return;
+        setAudioState('error');
+        $('audioNote').textContent = t('Stream failed: ') + e.message;
+      });
+  });
+
+  el.addEventListener('ended', function(){ setAudioState('idle'); });
+  $('aVol').addEventListener('input', function(){ el.volume = Number(this.value) / 100; });
+}
+
+if($('bAudioPlay')) $('bAudioPlay').addEventListener('click', function(){
+  if (audioCtxState === 'streaming' || audioCtxState === 'playing' || audioCtxState === 'loading'){
+    stopAudio();
+    try { $('aEl').pause(); } catch(e){}
+  } else {
+    startAudio();
+  }
+});
+if($('aVol')) $('aEl').addEventListener('pause', function(){
+  if (audioCtxState === 'playing') setAudioState('idle');
+});
 
 translatePage();
 refresh(); refreshSensors(); refreshRec();

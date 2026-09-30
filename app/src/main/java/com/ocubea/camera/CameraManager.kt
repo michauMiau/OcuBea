@@ -20,7 +20,9 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import com.ocubea.perf.Metrics
+import kotlin.math.roundToInt
 
 /**
  * Headless camera manager for background streaming.
@@ -183,6 +185,9 @@ class CameraManager(
     }
 
     /** The resolution the camera is bound at, which may be below the setting. */
+    /** Public so telemetry can show the rung in use next to the one requested. */
+    val effectiveVideoWidth: Int get() = effectiveWidth
+    val effectiveVideoHeight: Int get() = effectiveHeight
     private val effectiveWidth: Int get() = adaptive.rung().width
     private val effectiveHeight: Int get() = adaptive.rung().height
 
@@ -448,6 +453,12 @@ class CameraManager(
 
     private fun applyConfigToFields() {
         val res = config.resolution
+        // Anchor BEFORE the fields are read: currentTargetWidth/Height are the
+        // user's setting and stay that way, so /status.json keeps showing what
+        // was asked for, while the governor decides what the camera is bound
+        // at. anchor() is a no-op when the setting has not moved, which is what
+        // keeps a watchdog reopen from cancelling a pending downgrade.
+        adaptive.anchor(res.width, res.height)
         currentTargetWidth = res.width
         currentTargetHeight = res.height
         targetFps = config.frameRate
@@ -486,6 +497,12 @@ class CameraManager(
             .build()
             .also { it.setAnalyzer(analysisExecutor, ::analyzeFrame) }
         val camera = provider.bindToLifecycle(owner, cameraSelector, imageAnalysis!!)
+        // The rebind this just performed IS the settle event, whether it was
+        // asked for by the user or triggered by the governor. Without this, the
+        // first measurement window after any rebind spans the gap in which the
+        // camera was closed.
+        adaptive.onRebind(System.currentTimeMillis())
+        resetFpsWindow()
         applyFrameRate(camera)
         val observer = CameraStateObserver(generation)
         stateObserver = observer
@@ -504,7 +521,11 @@ class CameraManager(
      * capped the stream at 5fps. An explicit ResolutionStrategy is honoured.
      */
     private fun resolutionSelector(): androidx.camera.core.resolutionselector.ResolutionSelector {
-        val target = android.util.Size(currentTargetWidth, currentTargetHeight)
+        // The governor's rung, not the setting. currentTargetWidth/Height stay
+        // equal to what the user asked for, so that the status page keeps
+        // reporting the request while the camera is bound at whatever the
+        // device can actually deliver.
+        val target = android.util.Size(effectiveWidth, effectiveHeight)
         val fallback = androidx.camera.core.resolutionselector.ResolutionStrategy
             .FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
         val strategy = androidx.camera.core.resolutionselector.ResolutionStrategy(target, fallback)
@@ -583,6 +604,11 @@ class CameraManager(
         runCatching { hlsSession?.stop() }
         hlsSession = null
         frameHub.reset()
+        // The measurement window is dead with the camera; leaving it would let
+        // the first window after the next start() span the gap in which nothing
+        // was streaming, and report about 1 fps.
+        resetFpsWindow()
+        measuredFps = null
     }
 
     /**
@@ -851,6 +877,22 @@ class CameraManager(
             // dropped for having no consumer at all.
             onFrameHeartbeat?.invoke()
 
+            // Counted here, after the FPS limiter and before any consumer work,
+            // so the number is what the camera delivered rather than what
+            // downstream happened to want. Once per closed window, and the
+            // decision that follows is the only thing here that can rebind.
+            if (rollFpsWindow(now / 1_000_000)) {
+                val m = measuredFps
+                if (m != null) {
+                    val decision = adaptive.observe(
+                        System.currentTimeMillis(), m.toDouble(), targetFps
+                    )
+                    if (decision.action != AdaptiveResolutionGovernor.Decision.Action.NONE) {
+                        applyAdaptiveDecision(decision)
+                    }
+                }
+            }
+
             val srcW = imageProxy.width
             val srcH = imageProxy.height
             lastSrcW = srcW
@@ -975,8 +1017,18 @@ class CameraManager(
         "encode_threads" to analysisExecutorSize,
         "src_w" to lastSrcW,
         "src_h" to lastSrcH,
-        "src_format" to lastSrcFormat
-    )
+        "src_format" to lastSrcFormat,
+        // Measured, not requested. A status page that could not tell the two
+        // apart is how a 10 fps setting came to sit next to a 6 fps phone with
+        // nothing indicating that they disagreed. Null until the first window
+        // closes, which is the same "not known yet" the field has always used.
+        "measured_fps" to (measuredFps ?: -1),
+        // The ladder's current rung next to the user's own setting, so a
+        // downgraded stream is visible as such rather than looking like the
+        // camera quietly ignoring the resolution menu.
+        "target_w" to currentTargetWidth,
+        "target_h" to currentTargetHeight,
+    ) + adaptive.telemetry()
 
     /** HLS / hardware-encoder state, for /status.json and the WebUI. */
     fun hlsStatus(): Map<String, Any> {
@@ -1120,6 +1172,11 @@ class CameraManager(
         config.resolution = resolution
         currentTargetWidth = resolution.width
         currentTargetHeight = resolution.height
+        // The user has just stated a resolution, so the ladder is re-anchored
+        // there immediately rather than after the next watchdog reopen. Without
+        // this, a pick of 640x480 would not take effect until the camera happened
+        // to restart.
+        adaptive.anchor(resolution.width, resolution.height)
         rebind(lifecycleOwner ?: return)
     }
 
@@ -1143,7 +1200,10 @@ class CameraManager(
      * keeps the rate it chose, which is a normal outcome and not a failure.
      */
     private fun applyFrameRate(camera: androidx.camera.core.Camera) {
-        val want = targetFps.coerceIn(5, 30)
+        // targetFps is the user's setting; effectiveFps() is that plus whatever
+        // the governor has added on the way down the ladder. The ceiling is
+        // unchanged, so a user who asked for 30 still gets 30.
+        val want = adaptive.effectiveFps(targetFps).coerceIn(5, 30)
         try {
             val options = androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
                 .setCaptureRequestOption(
@@ -1162,6 +1222,61 @@ class CameraManager(
     }
 
     /**
+     * Applies one decision from [AdaptiveResolutionGovernor].
+     *
+     * The split between the two actions is the whole reason the class has two
+     * of them. A resolution change has to close and reopen the camera, which
+     * costs the viewer a second of black and is exactly what must not happen
+     * often. An fps change does not: it goes into the next capture request on
+     * the camera that is already open, so the relief below the floor is free.
+     *
+     * Posted to the main thread because both paths touch the CameraX use case:
+     * bindToLifecycle is not safe to call from the analyzer thread, which is
+     * where this is invoked from.
+     */
+    private fun applyAdaptiveDecision(decision: AdaptiveResolutionGovernor.Decision) {
+        when (decision.action) {
+            AdaptiveResolutionGovernor.Decision.Action.NONE -> Unit
+
+            AdaptiveResolutionGovernor.Decision.Action.FPS_RELIEF -> {
+                // No rebind. Push the new rate straight into the open camera.
+                android.util.Log.i(
+                    "OcuBeaCam",
+                    "adaptive: fps request now ${decision.fps} at ${effectiveWidth}x$effectiveHeight"
+                )
+                runCatching { cameraRef?.let { applyFrameRate(it) } }
+            }
+
+            AdaptiveResolutionGovernor.Decision.Action.RESOLUTION_DOWN,
+            AdaptiveResolutionGovernor.Decision.Action.RESOLUTION_UP -> {
+                if (adaptiveBlockedByEncoder()) {
+                    // A hardware encoder is live and its muxer and codec config
+                    // carry the old geometry. Re-binding now would feed it
+                    // frames that disagree with its own headers.
+                    android.util.Log.i(
+                        "OcuBeaCam",
+                        "adaptive: ${decision.rung} deferred, encoder running"
+                    )
+                    return
+                }
+                mainHandler.post {
+                    // A stop() may have landed between the decision and this
+                    // post, and a rebind against no camera is a no-op anyway.
+                    if (!wantStreaming) return@post
+                    if (adaptive.rung().width != effectiveWidth ||
+                        adaptive.rung().height != effectiveHeight
+                    ) {
+                        // Another decision already moved the ladder; this one is
+                        // stale and acting on it would undo that.
+                        return@post
+                    }
+                    rebindIfPossible()
+                }
+            }
+        }
+    }
+
+    /**
      * Sets the requested capture rate and re-binds so the camera is told.
      *
      * The re-bind is the part that was missing. `CONTROL_AE_TARGET_FPS_RANGE`
@@ -1174,6 +1289,10 @@ class CameraManager(
     fun setFrameRate(fps: Int) {
         config.frameRate = fps
         targetFps = fps.coerceIn(1, 60)
+        // An explicit rate is a decision, not a complaint about the hardware, so
+        // the relief the governor added is handed straight back. Leaving it in
+        // place would have the app quietly raise the number the user just set.
+        adaptive.clearRelief()
         rebindIfPossible()
     }
 
@@ -1280,8 +1399,17 @@ class CameraManager(
 
     fun getConfiguration(): Map<String, Any> = mapOf(
         "resolution" to "${currentTargetWidth}x$currentTargetHeight",
+        // What the camera is actually bound at, which after a downgrade is not
+        // the resolution above. Reporting only the setting would leave the page
+        // claiming 720p while 360p was being encoded.
+        "effective_resolution" to "${effectiveWidth}x$effectiveHeight",
         "fps" to frameHub.fps,
         "target_fps" to targetFps,
+        "effective_fps" to adaptive.effectiveFps(targetFps),
+        // -1 until the first window closes, matching pipelineTiming(). A status
+        // page must be able to say "not measured" rather than print the
+        // requested number as though the device had confirmed it.
+        "measured_fps" to (measuredFps ?: -1),
         "effect" to effect,
         "night_vision" to nightVisionEnabled,
         "viewers" to frameHub.viewerCount(),
@@ -1309,8 +1437,420 @@ class CameraManager(
          */
         private const val MAX_PENDING_ENCODES = 3
 
+        /**
+         * Width of the frame-counting window behind [measuredFps].
+         *
+         * One second, so the number on the status page is the frame rate a
+         * person would count, and so the governor gets a decision at most once
+         * a second. Longer would make the response sluggish; shorter would let
+         * a single stalled frame read as a collapse.
+         */
+        private const val FPS_WINDOW_MS = 1_000L
+
         /** Why a clip is being recorded: the user asked, or motion did. */
         const val REASON_ON_DEMAND = "ondemand"
         const val REASON_MOTION = "motion"
+    }
+}
+
+/**
+ * Steps the capture resolution down when the device cannot keep up, and back
+ * up when it can.
+ *
+ * The premise is that a person is watching video, not counting frames. A
+ * 1280x720 stream arriving at 7 fps on a five-year-old MediaTek phone is worse
+ * to watch than 640x360 arriving at 14, and the only setting that separates
+ * the two is the one nobody opens: the resolution.
+ *
+ * Deliberately free of Android types and of a clock. Every decision is a
+ * function of a timestamp and a measurement passed in, so the whole policy --
+ * including the transitions that are near-impossible to provoke on real
+ * hardware -- is exercisable as a JVM unit test.
+ *
+ * Five rules, and each exists because the obvious version is worse:
+ *
+ * 1. **Two thresholds, not one.** Downgrade below [downRatio] of the request,
+ *    upgrade above [upRatio]. A single threshold is a comparator, and a
+ *    comparator oscillates: the device sits one frame either side of the line
+ *    and the camera is rebound forever.
+ * 2. **Asymmetric dwell.** A shortfall must persist for [downHoldMs], a surplus
+ *    for [upHoldMs]. Acting on good news as fast as bad news is what makes one
+ *    lucky first second tear down a working 720p stream.
+ * 3. **A dead band.** Between the two ratios nothing accumulates, so a device
+ *    running at 80% of the request is left strictly alone. That is the normal
+ *    state for a phone asked for 24 fps and delivering 20, and it is fine.
+ * 4. **A cooldown and a settle window.** At most one rebind per [cooldownMs],
+ *    and every measurement for [settleMs] afterwards is discarded, because the
+ *    frames arriving right after a rebind belong to a camera that is still
+ *    opening and say nothing about the one being measured.
+ * 5. **A floor, then fps.** The ladder stops at
+ *    [AdaptiveResolutionGovernor.FLOOR_INDEX] and the remaining relief is asked
+ *    for in frames. 720p -> 480p was measured at 6.9 -> 8.0 fps on a Sony
+ *    F3311, so dropping all the way to 320x180 to reach a target is trading a
+ *    real quality loss for a frame rate the hardware still may not deliver.
+ *    Asking the camera for more is the cheaper next move.
+ *
+ * On top of that, [stickyAfterOscillations] makes a downgrade sticky: a device
+ * that proves it wants to go back up and cannot hold it stops being offered the
+ * way up. Being permanently one rung lower is a smaller harm than being
+ * permanently rebinding.
+ *
+ * Not thread-safe by itself. It is touched only from the analyzer thread (via
+ * [observe], which is called at most once per measurement window) and from the
+ * main thread at rebind time, and every field it reads for a decision is
+ * re-anchored by [anchor] on the same paths that rebind, so the two cannot
+ * disagree for longer than one rebind.
+ */
+internal class AdaptiveResolutionGovernor(
+    /** Every state change is reported here, so logcat can prove what happened. */
+    private val log: (String) -> Unit = {},
+) {
+
+    /** A capture size. Deliberately not [com.ocubea.model.CameraConfig.Resolution]. */
+    data class Rung(val width: Int, val height: Int) {
+        val pixels: Long get() = width.toLong() * height.toLong()
+        override fun toString(): String = "${width}x$height"
+    }
+
+    /**
+     * What the governor wants done, or that it wants nothing.
+     *
+     * [isRebind] is the part callers branch on: a decision either means a camera
+     * is about to close and reopen, or it means the frame path is untouched.
+     * That distinction is why FPS_RELIEF is not a rebind -- it can be applied to
+     * the live camera without one.
+     */
+    data class Decision(
+        val action: Action,
+        val rung: Rung? = null,
+        val fps: Int = 0,
+        val measured: Int = 0,
+        val requested: Int = 0,
+    ) {
+        enum class Action {
+            /** Nothing to do; the frame path is untouched. */
+            NONE,
+
+            /** Close and reopen the camera at a smaller size. */
+            RESOLUTION_DOWN,
+
+            /** Close and reopen the camera at a larger size. */
+            RESOLUTION_UP,
+
+            /**
+             * Ask the camera for more frames, or hand back the ones it added.
+             * No rebind: the rate goes into the next capture request.
+             */
+            FPS_RELIEF,
+        }
+
+        val isRebind: Boolean
+            get() = action == Action.RESOLUTION_DOWN || action == Action.RESOLUTION_UP
+
+        companion object {
+            val NONE = Decision(Action.NONE)
+        }
+    }
+
+    // ── Policy constants ─────────────────────────────────────────
+    //
+    // Named rather than inlined: every one of these is a guess about hardware,
+    // and a guess that cannot be pointed at cannot be argued with. They are
+    // vars, not vals, so a test can drive the transitions a real phone will not
+    // reproduce on demand.
+
+    /** Below this fraction of the request, the device is judged too slow. */
+    var downRatio: Double = 0.60
+
+    /** Above this fraction, it is judged to have headroom to spare. */
+    var upRatio: Double = 0.90
+
+    /** How long a shortfall must hold before anything changes. */
+    var downHoldMs: Long = 3_000L
+
+    /** How long a surplus must hold before anything changes. Deliberately slower. */
+    var upHoldMs: Long = 10_000L
+
+    /** Minimum gap between two rebinds. */
+    var cooldownMs: Long = 10_000L
+
+    /** Measurements ignored after a change, while the camera is still opening. */
+    var settleMs: Long = 3_000L
+
+    /** How many down-after-up reversals it takes to stop offering the way up. */
+    var stickyAfterOscillations: Int = 2
+
+    // ── Ladder ──────────────────────────────────────────────────
+    //
+    // Sizes the camera can be asked for, widest first. Three of these are not
+    // CameraConfig.Resolution members -- 960x540, 854x480 and 640x360 are not --
+    // and they are exactly the rungs that matter, because they sit between 720p
+    // and nothing. Encoding the ladder here rather than reusing the settings
+    // enum is what makes it a ladder instead of a pair of endpoints.
+
+    private val ladder = listOf(
+        Rung(1920, 1080),   // 0
+        Rung(1280, 720),    // 1
+        Rung(960, 540),     // 2
+        Rung(854, 480),     // 3
+        Rung(640, 360),     // 4
+        Rung(480, 270),     // 5  floor: the last rung the ladder will use
+        Rung(320, 180),     // 6  reachable only if the user set it themselves
+    )
+
+    /** Where the user's own setting sits. The ladder never climbs above it. */
+    private var anchorIndex = 2
+    private var index = 2
+
+    /** Frames-per-second the governor has added on top of the user's ask. */
+    private var reliefSteps = 0
+
+    private var badSinceMs = 0L
+    private var goodSinceMs = 0L
+    private var lastChangeMs = Long.MIN_VALUE
+    private var settleUntilMs = 0L
+    private var reversals = 0
+    private var lastWasDown = false
+
+    // ── State ───────────────────────────────────────────────────
+
+    /** The size the camera should be bound at right now. */
+    fun rung(): Rung = ladder[index]
+
+    /** True while measurements are being ignored because the camera is settling. */
+    fun isSettling(nowMs: Long): Boolean = nowMs < settleUntilMs
+
+    /** The effective request after relief. This is what the camera is told. */
+    fun effectiveFps(requestedFps: Int): Int =
+        (requestedFps + reliefSteps * fpsReliefStep).coerceIn(1, MAX_EFFECTIVE_FPS)
+
+    /** Frames the governor has added to the request, for /status.json. */
+    fun reliefSteps(): Int = reliefSteps
+
+    /**
+     * Re-anchors to a new user setting.
+     *
+     * A genuine change of intent resets the whole machine: a user who picks
+     * 480p is not a device that failed at 720p, and carrying the old
+     * oscillation history into the new setting would strand it at the bottom
+     * rung for a reason that no longer applies. Called from every
+     * applyConfigToFields, so it must be a no-op when the size has not moved --
+     * otherwise a watchdog reopen would silently cancel a pending downgrade.
+     */
+    fun anchor(width: Int, height: Int) {
+        val target = width.toLong() * height.toLong()
+        // The LARGEST rung at or below the request, found with indexOfFirst on
+        // "at most this many pixels". A size that is not on the ladder (640x480,
+        // 800x600) therefore anchors just under itself rather than snapping to
+        // the top of the list -- binding above what was asked for would make the
+        // problem this class exists to solve worse.
+        //
+        // indexOfLast here was a one-word bug that anchored every setting to
+        // 320x180: the list is ordered widest-first, so the last entry always
+        // satisfies "at most" and every rung was found to be too small.
+        val found = ladder.indexOfFirst { it.pixels <= target }
+        val newAnchor = if (found >= 0) found else 0
+        if (newAnchor == anchorIndex) return
+        anchorIndex = newAnchor
+        index = newAnchor
+        reliefSteps = 0
+        badSinceMs = 0L
+        goodSinceMs = 0L
+        reversals = 0
+        lastWasDown = false
+        log("adaptive: anchored at ${ladder[newAnchor]} (user asked ${width}x$height)")
+    }
+
+    /**
+     * Drops the fps relief, because the user has stated a rate.
+     *
+     * An explicit 10 fps is a decision, not a complaint about the hardware, and
+     * quietly raising it to 14 would be the app overruling the one thing the
+     * user just asked for.
+     */
+    fun clearRelief() {
+        if (reliefSteps == 0) return
+        reliefSteps = 0
+        log("adaptive: fps relief cleared by explicit request")
+    }
+
+    /**
+     * Starts the settle window after a rebind.
+     *
+     * Without it, the first window after a downgrade is measured across the gap
+     * in which the camera was closed, reports about 2 fps, and immediately
+     * downgrades again -- the cascade this class exists to prevent.
+     */
+    fun onRebind(nowMs: Long) {
+        badSinceMs = 0L
+        goodSinceMs = 0L
+        lastChangeMs = nowMs
+        settleUntilMs = nowMs + settleMs
+    }
+
+    /**
+     * Folds one settled measurement in and returns what should happen.
+     *
+     * Called at most once per measurement window, never per frame: the dwell
+     * timers need a decision made on a *closed* window, and a window that is
+     * still filling has no opinion.
+     */
+    fun observe(nowMs: Long, measuredFps: Double, requestedFps: Int): Decision {
+        val want = requestedFps.coerceAtLeast(1)
+        // A sub-1 fps reading is a device that is not streaming, not a device
+        // that is slow. Degrading a broken camera makes it slower, not faster.
+        if (measuredFps < 1.0 || !measuredFps.isFinite()) return Decision.NONE
+        if (isSettling(nowMs)) return Decision.NONE
+
+        val measured = measuredFps.roundToInt()
+        val ratio = measuredFps / want
+
+        if (ratio < downRatio) {
+            goodSinceMs = 0L
+            if (badSinceMs == 0L) {
+                badSinceMs = nowMs
+                return Decision.NONE
+            }
+            if (nowMs - badSinceMs < downHoldMs) return Decision.NONE
+        } else if (ratio > upRatio) {
+            badSinceMs = 0L
+            if (goodSinceMs == 0L) {
+                goodSinceMs = nowMs
+                return Decision.NONE
+            }
+            if (nowMs - goodSinceMs < upHoldMs) return Decision.NONE
+        } else {
+            // Dead band: neither credit nor blame. Clearing both timers is the
+            // point -- otherwise a device alternating across the band banks an
+            // unbounded surplus and then upgrades on the strength of a history
+            // it no longer has.
+            badSinceMs = 0L
+            goodSinceMs = 0L
+            return Decision.NONE
+        }
+
+        // lastChangeMs starts at Long.MIN_VALUE, and nowMs - MIN_VALUE
+        // overflows to a negative number, which would compare as "less than the
+        // cooldown" and block the very first decision forever. The explicit
+        // sentinel test is the guard against that.
+        if (lastChangeMs != Long.MIN_VALUE && nowMs - lastChangeMs < cooldownMs) {
+            return Decision.NONE
+        }
+
+        val decision = decide(measured, want)
+        if (decision.action != Decision.Action.NONE) commit(decision, nowMs)
+        return decision
+    }
+
+    /** Picks the cheapest step that moves the number. Called with a settled verdict. */
+    private fun decide(measured: Int, want: Int): Decision {
+        if (badSinceMs != 0L) {
+            // Shortfall: the ladder first, and only down to the floor.
+            if (index < FLOOR_INDEX) {
+                return Decision(
+                    Decision.Action.RESOLUTION_DOWN, ladder[index + 1], 0, measured, want,
+                )
+            }
+            // At the floor, the remaining lever is to ask the camera for more
+            // frames, which costs nothing in image quality.
+            if (reliefSteps < maxReliefSteps) {
+                reliefSteps++
+                return Decision(
+                    Decision.Action.FPS_RELIEF, ladder[index],
+                    effectiveFps(want), measured, want,
+                )
+            }
+            return Decision.NONE
+        }
+
+        // Surplus. Climb back only if the last move was not a downgrade, or the
+        // climb has already failed stickyAfterOscillations times.
+        val stuck = lastWasDown && reversals >= stickyAfterOscillations
+        if (index > anchorIndex && !stuck) {
+            return Decision(Decision.Action.RESOLUTION_UP, ladder[index - 1], 0, measured, want)
+        }
+        // Nothing to climb to, or climbing is not allowed: hand back the fps
+        // the governor took, which needs no rebind at all.
+        if (reliefSteps > 0) {
+            reliefSteps--
+            return Decision(
+                Decision.Action.FPS_RELIEF, ladder[index],
+                effectiveFps(want), measured, want,
+            )
+        }
+        return Decision.NONE
+    }
+
+    private fun commit(decision: Decision, nowMs: Long) {
+        badSinceMs = 0L
+        goodSinceMs = 0L
+        lastChangeMs = nowMs
+        settleUntilMs = nowMs + settleMs
+        when (decision.action) {
+            Decision.Action.RESOLUTION_DOWN -> {
+                val from = ladder[index]
+                index = ladder.indexOf(decision.rung!!)
+                log(
+                    "adaptive: DOWN $from -> ${ladder[index]} " +
+                        "(${decision.measured} fps vs ${decision.requested} requested)"
+                )
+            }
+            Decision.Action.RESOLUTION_UP -> {
+                // A climb straight after a fall is the oscillation this class
+                // exists to stop, so it is counted, and the fall becomes sticky
+                // once the count passes the limit.
+                if (lastWasDown) reversals++ else reversals = 0
+                lastWasDown = false
+                val from = ladder[index]
+                index = ladder.indexOf(decision.rung!!)
+                log(
+                    "adaptive: UP $from -> ${ladder[index]} " +
+                        "(${decision.measured} fps vs ${decision.requested} requested)" +
+                        if (reversals >= stickyAfterOscillations) " [sticky]" else ""
+                )
+            }
+            Decision.Action.FPS_RELIEF -> {
+                lastWasDown = true
+                log(
+                    "adaptive: fps ${decision.requested} -> ${decision.fps} at ${ladder[index]} " +
+                        "(${decision.measured} fps measured)"
+                )
+            }
+            Decision.Action.NONE -> Unit
+        }
+    }
+
+    /** Read-only view for /status.json, so the ladder is visible from outside. */
+    fun telemetry(): Map<String, Any> = mapOf(
+        "rung" to ladder[index].toString(),
+        "user_rung" to ladder[anchorIndex].toString(),
+        "fps_relief_steps" to reliefSteps,
+        // 0 rather than the relief itself when there is none: a status page
+        // showing a number the camera is not running at is the same class of
+        // lie as reporting the requested fps as the measured one.
+        "fps_effective" to if (reliefSteps > 0) effectiveFps(0) else 0,
+        "oscillations" to reversals,
+        "sticky" to (lastWasDown && reversals >= stickyAfterOscillations),
+    )
+
+    companion object {
+        /** Frames added to the request per relief step. */
+        const val fpsReliefStep = 4
+
+        /** Relief stops here: a phone asked for 30 fps is not a slow phone. */
+        const val maxReliefSteps = 4
+
+        /** Ceiling matching the camera's own clamp in applyFrameRate. */
+        const val MAX_EFFECTIVE_FPS = 30
+
+        /**
+         * The lowest rung the ladder will choose on its own.
+         *
+         * 480x270 is the point past which a person watching the stream stops
+         * being able to read anything on the screen, so below it the governor
+         * switches to asking for more frames instead. It is still reachable by
+         * the user setting it, which is what [anchor] is for.
+         */
+        const val FLOOR_INDEX = 5
     }
 }

@@ -117,8 +117,14 @@ class TelemetryHandler(
             append("\"version\":\"${versionName()}\",")
             append("\"uptime_s\":${uptimeSeconds()},")
             append("\"camera_active\":${cameraManager.isStreaming},")
+            // Requested vs. delivered, named as such. The adaptive governor
+            // quietly drops the camera to a smaller rung when it cannot hold the
+            // requested rate, and a top-level "resolution" and "fps" that echo
+            // the menu selection let a 480x270 13 fps stream read as 720p 24.
             append("\"resolution\":\"${cfg["resolution"]}\",")
-            append("\"fps\":${cfg["fps"]},")
+            append("\"resolution_effective\":\"${cameraManager.effectiveVideoWidth}x${cameraManager.effectiveVideoHeight}\",")
+            append("\"fps\":${cameraManager.measuredFps ?: cfg["fps"]},")
+            append("\"fps_requested\":${cfg["fps"]},")
             append("\"target_fps\":${cfg["target_fps"]},")
             append("\"frames\":${cfg["frames"]},")
             append("\"dropped\":${cfg["dropped"]},")
