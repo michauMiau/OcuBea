@@ -1655,9 +1655,14 @@ function aacSegment(frame, seq){
      was told to read were not there. */
   var tfhd = box('tfhd', fullbox(0x020000, u32(1)));
 
-  /* tfdt v1 carries a 64-bit decode time. 1024 samples per frame at 48 kHz. */
+  /* tfdt version 1, so the decode time really is 64 bits. The local fullbox()
+   * helper only ever writes version 0, so build the header by hand: declaring
+   * version 0 while handing over eight bytes makes the parser read four of them
+   * and see zero, and every segment then claims to start at t=0. With all
+   * fragments claiming the same start the demuxer lays them on top of each
+   * other and reads a single sample where there are hundreds. */
   var t = (seq || 0) * 1024;
-  var tfdt = box('tfdt', fullbox(0, u64(0, t)));
+  var tfdt = box('tfdt', join([u8(1), u8(0), u8(0), u8(0), u64(0, t)]));
 
   /* trun body, which is the payload after fullbox() adds version+flags:
        [0..3]  sample_count
