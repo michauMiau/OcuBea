@@ -22,7 +22,11 @@
   .grid{display:grid;gap:12px}
   .g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
   .g4{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
-  section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  /* min-width:0: this is a grid item, and a grid/flex child refuses to shrink
+     below its content width without it -- a section holding a long value
+     widened the whole column instead of clipping. */
+  section{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+          padding:14px;margin-bottom:12px;min-width:0}
   h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:12px;font-weight:600}
   button{background:#21262d;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:10px 12px;
          font-size:13px;cursor:pointer;transition:.15s;font-family:inherit}
@@ -44,9 +48,16 @@
   th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}
   th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase}
   td.num{text-align:right;font-family:ui-monospace,monospace}
-  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12px}
-  .kv dt{color:var(--dim)}
-  .kv dd{font-family:ui-monospace,monospace;text-align:right}
+  /* Overflow, in two places. minmax(0,…) keeps a long value from widening the
+     track past the card (a bare 1fr floor is min-content, i.e. the whole
+     string), and overflow-wrap:anywhere gives a Wi-Fi name, a storage path or
+     an error message somewhere to break. Values are right-aligned, so
+     word-break:break-word keeps a single long token from spilling left out of
+     the cell as well as down past it. */
+  .kv{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr);gap:6px 14px;font-size:12px}
+  .kv dt{color:var(--dim);min-width:0;overflow-wrap:anywhere}
+  .kv dd{font-family:ui-monospace,monospace;text-align:right;min-width:0;
+         overflow-wrap:anywhere;word-break:break-word}
   code{font-family:ui-monospace,monospace;font-size:11px;background:#0d1117;padding:1px 5px;border-radius:4px;color:#79c0ff}
   .hint{font-size:11px;color:var(--dim);margin-top:6px}
   .rec{color:var(--warn);font-weight:600}
@@ -138,13 +149,19 @@
         <option value="sepia">Sepia</option>
         <option value="nightvision">Night vision</option>
       </select>
-      <label>Quality</label>
+      <label>Resolution</label>
       <select id="quality">
         <option value="320">320×240 (QVGA)</option>
         <option value="480">640×480 (VGA)</option>
         <option value="720" selected>1280×720 (HD)</option>
         <option value="1080">1920×1080 (FullHD)</option>
       </select>
+      <!-- 40-100, not 0-100: the server clamps with coerceIn(40, 100), so a
+           slider that offered 0-39 would display a value the phone never
+           applied and quietly snap the display back after the next poll. -->
+      <label>JPEG quality <span id="jqVal" style="float:right;color:var(--txt)">–</span></label>
+      <input type="range" id="jq" min="40" max="100" step="1" value="82">
+      <p class="hint" id="jqNote">Lower means smaller files over Wi-Fi; higher means a cleaner picture.</p>
       <label>Night vision</label>
       <div class="row">
         <button id="bNight">Toggle</button>
@@ -412,6 +429,7 @@ var I18N = {
     /* klucze kv() i wartości */
     'Model': 'Model',
     'Android': 'Android',
+    'API': 'API',
     'Temp': 'Temperatura',
     'Health': 'Stan baterii',
     'Storage': 'Pamięć',
@@ -419,6 +437,14 @@ var I18N = {
     'Thermal': 'Przegrzanie',
     'Network': 'Sieć',
     'Cameras': 'Kamery',
+    'Resolution': 'Rozdzielczość',
+    'JPEG quality': 'Jakość JPEG',
+    'Lower means smaller files over Wi-Fi; higher means a cleaner picture.':
+      'Niższa oznacza mniejsze pliki po Wi-Fi, wyższa czystszy obraz.',
+    'Saving…': 'Zapisuję…',
+    'yes': 'tak',
+    'no': 'nie',
+    'Wi-Fi': 'Wi-Fi',
     'mobile': 'dane mobilne',
     ' metered': ', płatny transfer',
     'torch yes': 'latarka tak',
@@ -514,6 +540,11 @@ function later(fn, ms){
   clearTimeout(debounce);
   debounce = setTimeout(fn, ms);
 }
+
+/* True between a drag on the JPEG-quality slider and the write completing.
+   refresh() polls every 3 s and would otherwise reset the thumb under the
+   user's finger, or hide a value the server refused. */
+var jqDirty = false;
 
 /* ── Live stream with auto-reconnect ─────────────────────────── */
 var live = $('live'), livev = $('livev'), delay = 1000;
@@ -718,11 +749,14 @@ function refresh(){
       : t('○ stopped');
     pill.className = 'pill ' + (cam ? 'on' : 'off');
 
-    $('sFps').textContent = s.fps;
-    $('sViewers').textContent = s.viewers;
-    $('sFrames').textContent = s.frames;
-    $('sDropped').textContent = s.dropped || 0;
-    $('sRes').textContent = s.resolution;
+    /* val() rather than the raw field: these used to assign s.fps straight to
+       textContent, and a status.json without the key printed the literal word
+       "undefined" into the panel. */
+    $('sFps').textContent = val(s.fps);
+    $('sViewers').textContent = val(s.viewers);
+    $('sFrames').textContent = val(s.frames);
+    $('sDropped').textContent = s.dropped == null ? 0 : s.dropped;
+    $('sRes').textContent = val(s.resolution);
     $('sAudio').textContent = (s.audio && s.audio.clients) || 0;
     if($('sAudioCodec')) $('sAudioCodec').textContent =
       (s.audio && s.audio.codec) ? (s.audio.codec === 'none' ? t('off') : s.audio.codec) : '–';
@@ -744,7 +778,7 @@ function refresh(){
     // hls.js is loaded by a script tag after this one, so it may still be
     // undefined on the very first pass. Report the encoder state either way.
     var h = s.hls || {};
-    if($('sCodec')) $('sCodec').textContent = h.active ? h.codec : '–';
+    if($('sCodec')) $('sCodec').textContent = h.active ? val(h.codec) : '–';
     if($('sSegs')) $('sSegs').textContent = h.segments || 0;
     if(mode === 'hls' && h.active && !hls && typeof Hls !== 'undefined') startHls();
     $('sRec').textContent = (s.recording && s.recording.count) || 0;
@@ -754,7 +788,11 @@ function refresh(){
     } else if(s.motion && s.motion.detected){
       $('motionState').innerHTML = '<span class="rec">' + t('motion detected') + '</span>';
     } else {
-      $('motionState').textContent = t('motion: idle · sensitivity ') + s.motion.sensitivity;
+      /* s.motion is read on the last branch too, and it is absent on a phone
+         with no motion detector configured: dereferencing it unguarded threw
+         a TypeError that killed the whole poll, freezing every other row. */
+      $('motionState').textContent = t('motion: idle · sensitivity ') +
+        val(s.motion && s.motion.sensitivity);
     }
 
     if(s.zoom){
@@ -766,6 +804,19 @@ function refresh(){
     if(s.resolution){
       var q = s.resolution.split('x')[1];
       if(q) $('quality').value = q;
+    }
+    /* The slider is the one control refresh() is not allowed to move while
+       the user is on it: a 3 s poll landing mid-drag yanks the thumb back
+       under the finger. So the server's value is adopted only when the input
+       is not being touched, and always right after a save, which is what makes
+       a rejected write visible instead of being papered over by the next poll.
+       The number follows the same rule -- guarding the thumb but not the label
+       left them disagreeing, one showing 55 and the other 82. */
+    if(s.jpeg_quality != null){
+      if(!jqDirty){
+        $('jqVal').textContent = s.jpeg_quality;
+        $('jq').value = s.jpeg_quality;
+      }
     }
     if(s.motion) $('sens').value = s.motion.sensitivity;
   }).catch(function(){
@@ -779,27 +830,77 @@ function uptime(s){
   return h ? h + 'h ' + m + 'm' : m + 'm';
 }
 
+/* One place decides what a missing value looks like.
+ *
+ * Every value in this page comes from JSON the phone is free to reshape, and
+ * `a.b.c + ' ' + a.b.d` silently prints "undefined undefined" when a key is
+ * gone -- which is how the network row used to read "undefined mobile" on a
+ * phone that was perfectly healthy. Anything absent, null, or empty renders as
+ * an en-dash instead, and a bare number 0 or false is a real value, not an
+ * absence, so it survives.
+ *
+ * An empty string is treated as absent too: a Wi-Fi interface with no SSID
+ * comes back as "", and a row of nothing but an en-dash is honest, whereas an
+ * empty cell is not.
+ */
+function val(v, suffix){
+  var s = (v === 0 || typeof v === 'boolean') ? String(v)
+        : (v == null || v === '') ? null : String(v);
+  if(s === null) return '–';
+  return s + (suffix == null || s === '–' ? '' : suffix);
+}
+
+/* Joins the parts of a cell that exist, dropping the ones that do not, so a
+ * row can compose from optional fields without an empty gap or a stray dash in
+ * the middle. */
+function parts(){
+  var out = [], seen = {};
+  for(var i = 0; i < arguments.length; i++){
+    var p = arguments[i];
+    if(p == null) continue;
+    if(typeof p === 'number'){ p = String(p); }
+    if(typeof p === 'boolean'){ p = p ? t('yes') : t('no'); }
+    /* Trimmed, because a translation like ", płatny transfer" carries its own
+       separator and joining it with a space gave "mobile  metered". */
+    p = String(p).trim();
+    if(!p || p === '–' || seen[p]) continue;
+    seen[p] = 1;
+    out.push(p);
+  }
+  return out.join(' ');
+}
+
 /* ── Sensors ────────────────────────────────────────────────── */
 function refreshSensors(){
   get('/sensors.json').then(function(r){ return r.json(); }).then(function(s){
     var b = s.battery || {}, st = s.storage || {}, mem = s.memory || {},
         net = s.network || {}, th = (s.thermal && s.thermal.status) || 'n/a',
         cam = s.camera || {}, dev = s.device || {};
+    /* The network line is built from the keys the server actually sends:
+       ip, wifi, metered and name. There is no "interface" key -- the old code
+       asked for one and printed the word "undefined" for it on every phone. */
+    var kind = net.wifi ? t('Wi-Fi') : (net.wifi === false ? t('mobile') : null);
     $('devKv').innerHTML =
-      kv('Model', dev.model) +
-      kv('Android', dev.android + ' (API ' + dev.sdk + ')') +
-      kv('Battery', b.level + '%' + (b.charging ? ' ⚡' : '')) +
-      kv('Temp', b.temperature_c != null ? b.temperature_c + '°C' : '–') +
-      kv('Health', b.health) +
-      kv('Storage', st.free_mb + ' MB free') +
-      kv('RAM', mem.available_mb + ' MB free') +
-      kv('Thermal', th) +
-      kv('Network', net.interface + ' ' + (net.wifi ? 'Wi-Fi' : 'mobile') + (net.metered ? ' metered' : '')) +
-      kv('Cameras', (cam.ids || []).join(', ') + ' · ' +
-         t(cam.torch_capable ? 'torch yes' : 'torch no'));
+      kv('Model', val(dev.model)) +
+      kv('Android', parts(val(dev.android), dev.sdk != null ? t('API') + ' ' + dev.sdk : null)) +
+      kv('Battery', parts(val(b.level, b.level != null ? '%' : null), b.charging ? '⚡' : null)) +
+      kv('Temp', b.temperature_c != null ? val(b.temperature_c, '°C') : val(null)) +
+      kv('Health', val(b.health)) +
+      kv('Storage', st.free_mb != null ? val(st.free_mb, ' MB free') : val(null)) +
+      kv('RAM', mem.available_mb != null ? val(mem.available_mb, ' MB free') : val(null)) +
+      kv('Thermal', val(th)) +
+      kv('Network', parts(val(net.name), kind, net.metered ? t(' metered') : null, val(net.ip))) +
+      kv('Cameras', parts((cam.ids || []).join(', '),
+                          t(cam.torch_capable ? 'torch yes' : 'torch no')));
   }).catch(function(){});
 }
-function kv(k, v){ return '<dt>' + esc(k) + '</dt><dd>' + (v == null ? '–' : esc(v)) + '</dd>'; }
+/* A value that is absent, null, empty or NaN is a dash; anything else is
+ * escaped. The old check was `v == null`, which let NaN and "" through and
+ * printed "NaN" or left a blank cell where the reader expects a value. */
+function kv(k, v){
+  var cell = (v == null || v === '' || v === 'NaN') ? '–' : esc(v);
+  return '<dt>' + esc(k) + '</dt><dd>' + cell + '</dd>';
+}
 
 /* ── Recordings ─────────────────────────────────────────────── */
 function refreshRec(){
@@ -848,6 +949,32 @@ $('bMotion').onclick = function(){ api('/settings/motion_detection?set=' + (this
 $('bRec').onclick = function(){ api('/settings/recording?set=' + (this.className === 'on' ? 'off' : 'on')).then(refresh); };
 $('effect').onchange = function(){ api('/settings/effect?set=' + this.value).then(refresh); };
 $('quality').onchange = function(){ api('/settings/quality?set=' + this.value).then(function(){ setTimeout(refresh, 900); }); };
+
+/* JPEG quality, on 'change' and not 'input': a drag across the range fires
+ * input on every pixel, and each one is a real request to a phone that is
+ * already encoding video. Same api() path as the other settings, so the token
+ * rides along the same way. */
+$('jq').oninput = function(){ jqDirty = true; $('jqVal').textContent = this.value; };
+$('jq').onchange = function(){
+  var v = this.value;
+  $('jqVal').textContent = v;
+  $('jqNote').textContent = t('Saving…');
+  api('/settings/jpeg_quality?set=' + v)
+    .then(function(r){ return r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status)); })
+    .then(function(){
+      $('jqNote').textContent = t('Lower means smaller files over Wi-Fi; higher means a cleaner picture.');
+      /* Adopt the server's answer as truth -- it clamps, so it may not be the
+         number that was asked for, and the thumb should show what the encoder
+         is really using. */
+      jqDirty = false;
+      refresh();
+    })
+    .catch(function(e){
+      $('jqNote').textContent = t('Could not save: ') + e.message;
+      jqDirty = false;   // let the next poll put the real value back
+      refresh();
+    });
+};
 
 $('zoom').oninput = function(){
   $('zoomVal').textContent = Number(this.value).toFixed(1) + '×';

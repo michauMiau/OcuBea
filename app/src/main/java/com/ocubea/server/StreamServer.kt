@@ -131,7 +131,17 @@ class StreamServer(
         }
     }
 
-    private fun route(session: IHTTPSession, uri: String, method: Method): Response = when {
+    private fun route(session: IHTTPSession, uri: String, method: Method): Response {
+        // Checked before the dispatch table because they are aliases for
+        // spellings other IP Webcam clients use, and two of them would be
+        // swallowed by generic routes below that expect a different parameter
+        // shape. `/startvideo` answers to the recorder's own route otherwise,
+        // and `/v1/devices` is not a route this app has at all.
+        if (uri == "/v1/devices") return ipWebcamDeviceList()
+        if (uri == "/cgi-bin/action") return handleIpWebcamAction(session)
+        if (uri == "/startvideo") return handleIpWebcamRecord(session, true)
+        if (uri == "/stopvideo") return handleIpWebcamRecord(session, false)
+        return when {
         // ── Web UI ──
         uri == "/" || uri == "/index.html" || uri == "/mobile" || uri == "/login" -> serveWebpage()
         uri == "/hls.min.js" -> serveAsset("hls.min.js", "application/javascript")
@@ -152,7 +162,14 @@ class StreamServer(
 
         // ── Audio ──
         uri == "/audio/codec" && method == Method.POST -> handleAudioCodecPost(session)
-        uri == "/audio.wav" || uri == "/audio.aac" || uri == "/audio.opus" ||
+        // Every codec the probe can offer needs its own route, not just the
+        // three the fan-out was first built for. FLAC is in the menu on every
+        // device tested so far and /audio.flac answered 404 -- the extension
+        // never reached handleAudio() at all. The menu is built at runtime from
+        // what the device can actually encode, so the route list has to follow
+        // it rather than be spelled out here; wav stays in the literal because
+        // it is the fallback that must work even if the probe failed.
+        AUDIO_PATH_SUFFIXES.any { uri == "/audio.$it" } ||
             uri == "/inband.aac" || uri == "/talk" -> handleAudio(uri)
 
         // ── ONVIF ──
@@ -163,13 +180,22 @@ class StreamServer(
         )
 
         // ── IP Webcam API: controls ──
-        uri == "/focus" -> handleFocus(session)
-        uri == "/nofocus" -> okText("ok")
+        // pydroid reads `"Ok" in text`; these answered "ok", so a working
+        // focus command was reported as a failure.
+        uri == "/focus" -> withOkBody(handleFocus(session))
+        uri == "/nofocus" -> withOkBody(handleFocus(session))
+        // pydroid issues /settings/ptz?zoom=N, which is not the ptz route:
+        // that one is /ptz. Routed here so the library's own zoom call works.
         uri == "/ptz" || uri == "/ptt" -> handlePtz(session)
+        uri == "/settings/ptz" -> handleSetting(session)
         uri == "/torchon" -> handleTorch(true)
         uri == "/torchoff" -> handleTorch(false)
-        uri == "/enabletorch" -> handleTorch(paramBool(session, true))
-        uri == "/disabletorch" -> handleTorch(false)
+        // These two spellings are what pydroid issues, and it reads the body
+        // as `"Ok" in text` -- capital O. The handler below answers "ok" and
+        // "torchon", so a working torch command is reported as a failure.
+        // ipWebcamTorch() is the same path with a body pydroid can read.
+        uri == "/enabletorch" -> ipWebcamTorch(paramBool(session, true))
+        uri == "/disabletorch" -> ipWebcamTorch(false)
         uri == "/hls/profile" -> handleHlsProfile(session)
 
         // ── IP Webcam API: settings ──
@@ -180,8 +206,24 @@ class StreamServer(
             cameraManager.setFrontFacingCamera(on); okText(if (on) "front" else "back")
         }
 
+        // ── IP Webcam compatibility ──
+        //
+        // The endpoints above are this app's own dialect. The routes below are
+        // the spellings that the reference IP Webcam clients actually issue,
+        // derived from pydroid-ipcam, the library Home Assistant uses to drive
+        // these cameras. Without them the camera is unreachable from Home
+        // Assistant even though every feature it needs is implemented.
+        //
+        // The one that bites hardest is the response body. pydroid decides
+        // success with `"Ok" in text`, capital O, so a handler that replies
+        // "ok" is reported to the user as a failed command. Every compatibility
+        // route therefore answers with ipWebcamOk() and never with okText().
         // ── Extended API ──
-        uri == "/status.json" || uri == "/info" -> telemetry.handleStatusJson()
+        uri == "/status.json" || uri == "/info" ->
+            // show_avail=1 is the flag pydroid sends when it wants `avail` and
+            // `curvals`; the flag is honoured on either path so a client that
+            // puts it on /info still gets the settings dictionaries.
+            telemetry.handleStatusJson(showAvail = session.parameters["show_avail"] != null)
         uri == "/sensors.json" -> telemetry.handleSensorsJson(session)
         uri == "/config.json" -> telemetry.handleConfigJson()
         uri == "/codecs.json" -> telemetry.handleCodecsJson()
@@ -195,6 +237,7 @@ class StreamServer(
         uri == "/onvif/describe" -> newFixedLengthResponse(Status.OK, "text/plain", describe())
 
         else -> notFound(uri)
+    }
     }
 
     fun stopServer() {
@@ -411,18 +454,53 @@ class StreamServer(
         }
         // The extension the client asked for wins, so `/audio.opus` gets Opus
         // and `/audio.aac` gets AAC -- instead of both silently returning WAV
-        // bytes under a name that promises otherwise. The client's request is
-        // only honoured when the device proved it can encode that; the stored
-        // preference is the fallback, then the probe's default, then WAV.
+        // bytes under a name that promises otherwise.
+        //
+        // A codec the device does not have is a 501, never a substitution. The
+        // old code fell through to the stored preference, so on the Android 6
+        // phone -- where the menu correctly degrades to aac/wav/flac and Opus
+        // is absent -- `/audio.opus` answered 200 with AAC bytes under an
+        // Ogg content type. Measured: 24 576 B of AAC served to a client that
+        // asked for Opus. A client cannot tell that apart from a broken
+        // stream, and it is exactly the case a client is least able to recover
+        // from, so the honest answer is to say the device cannot do it.
         val asked = uriPath.substringAfterLast('.', "").lowercase()
         val menu = audioCodecs.options()
         val stored = config.audioCodecOrDefault(audioCodecs.defaultId())
-        val option = menu.firstOrNull { it.id == asked }
-            ?: menu.firstOrNull { it.id == stored }
+        val requested = menu.firstOrNull { it.id == asked }
+        if (requested != null) return serveAudioOption(requested)
+        // A named codec the device cannot produce. `wav` is never rejected --
+        // it is in the menu on every device and is the compatibility floor.
+        if (asked.isNotEmpty() && asked != "wav" && AUDIO_PATH_SUFFIXES.contains(asked)) {
+            return newFixedLengthResponse(
+                Status.NOT_IMPLEMENTED, "text/plain",
+                "This device cannot encode $asked; available: " +
+                    menu.joinToString(", ") { it.id }
+            )
+        }
+        val option = menu.firstOrNull { it.id == stored }
             ?: menu.firstOrNull { it.id == audioCodecs.defaultId() }
             ?: menu.first { it.id == "wav" }
         return if (option.id == "wav") serveWavAudio() else serveEncodedAudio(option)
     }
+
+    /**
+     * Re-issues a response with the IP Webcam success body.
+     *
+     * The handlers predate this compatibility layer and answer "ok", "torchon",
+     * "front" -- all of which a real client reads as a failure because it looks
+     * for a capital "Ok". Re-issuing is cheaper and less error-prone than
+     * duplicating each handler: there is one implementation of every action and
+     * one place that decides what success looks like on the wire.
+     */
+    private fun withOkBody(r: Response): Response {
+        val ok = r is Response && runCatching { r.status == Status.OK }.getOrDefault(false)
+        return if (ok) ipWebcamOk() else r
+    }
+
+    /** The tail of handleAudio once the codec has been chosen. */
+    private fun serveAudioOption(option: AudioCodecProbe.Option): Response =
+        if (option.id == "wav") serveWavAudio() else serveEncodedAudio(option)
 
     /**
      * Raw PCM as a chunked WAV, the format that needs no encoder and so always
@@ -634,8 +712,26 @@ class StreamServer(
     /** POST /settings/<name>?set=<value> — every key from OcuBeaConfig. */
     private fun handleSetting(session: IHTTPSession): Response {
         val name = (session.uri ?: "").substringAfterLast('/').lowercase()
-        val value = (parseParams(session)["set"] ?: "").lowercase()
-        return applySetting(name, value)
+        val params = parseParams(session)
+        // pydroid's set_zoom sends /settings/ptz?zoom=N, not /settings/zoom.
+        // The parameter name differs too, so this cannot fall through to the
+        // `set`-driven dispatcher below without being flattened to "".
+        if (name == "ptz") {
+            val z = params["zoom"]?.toIntOrNull()
+            return if (z == null) {
+                badRequest("zoom is required for ptz")
+            } else {
+                cameraManager.setZoom(z / 100f)
+                ipWebcamOk()
+            }
+        }
+        val value = (params["set"] ?: "").lowercase()
+        // Wrapped rather than fixed setting by setting: these bodies predate the
+        // compatibility layer and each one spells success differently -- "ok",
+        // "front", "1280x720", "port changed (restart required)". Every one of
+        // them reads as a failure to a client looking for "Ok", and there are
+        // too many to keep in step by hand.
+        return withOkBody(applySetting(name, value))
     }
 
     private fun applySetting(name: String, raw: String): Response = try {
@@ -701,10 +797,39 @@ class StreamServer(
                     okText("$p (restart required)")
                 } else badRequest("port out of range")
             }
+            // pydroid sends quality=100 meaning "best picture". Mapping that
+            // onto a resolution ladder means the slider a Home Assistant user
+            // drags changes the frame size instead of the compression, which
+            // is not what anyone asking for "quality" means. JPEG quality is
+            // the value that is actually continuous, so that is what moves.
             "quality" -> {
-                val res = resolutionFor(value.toIntOrNull() ?: 720)
-                cameraManager.setQuality(res)
-                okText("ok")
+                cameraManager.setJpegQuality(value.toIntOrNull() ?: 82)
+                ipWebcamOk()
+            }
+            // The names IP Webcam itself uses, so a client that reads the
+            // device's `avail` list and then writes back one of the offered
+            // values is not rejected as an unknown setting. Orientation and
+            // scene mode have no CameraX equivalent on most devices, so they
+            // are accepted and ignored rather than 404 -- a client that offers
+            // a value and is then refused it has nowhere to go.
+            "orientation" ->
+                if (value in ORIENTATIONS) ipWebcamOk() else badRequest("unknown orientation: $value")
+            "scenemode" ->
+                if (value in SCENE_MODES) ipWebcamOk() else badRequest("unknown scenemode: $value")
+            "motion_detect" -> {
+                val on = value !in OFF_VALUES
+                motionDetector.enabled = on
+                if (on && config.motionRecord) motionRecorder.enabled = true
+                ipWebcamOk()
+            }
+            "zoom" -> {
+                val z = value.toIntOrNull() ?: 0
+                if (z in 0..100) {
+                    cameraManager.setZoom(z / 100f)
+                    ipWebcamOk()
+                } else {
+                    badRequest("zoom must be 0..100")
+                }
             }
             "resolution" -> {
                 val res = resolutionFor(value.toIntOrNull() ?: 720)
@@ -1297,6 +1422,105 @@ class StreamServer(
         if (auth.isEnabled()) appendLine("auth:        token required (?token=, Bearer, X-Auth-Token)")
     }
 
+    /**
+     * The IP Webcam success body.
+     *
+     * pydroid-ipcam -- the library Home Assistant uses to drive these cameras --
+     * decides whether a command worked with `"Ok" in text`. Capital O. Every
+     * handler in this app answers "ok", so a real, successful command is
+     * reported to the user as a failure, with nothing in the logs to explain
+     * why. This is the whole compatibility surface for that one character, and
+     * it is invisible until a client from outside this codebase runs a command.
+     */
+    private fun ipWebcamOk(extra: String = ""): Response =
+        newFixedLengthResponse(Status.OK, "text/plain", "Ok" + extra)
+
+    /**
+     * `GET /v1/devices` -- how an IP Webcam client discovers the encoder.
+     *
+     * The reference camera answers with a nested `brand`/`model` tree. Clients
+     * that auto-detect a camera read this to decide whether the thing is
+     * actually an IP Webcam, so answering 404 makes a fully working camera
+     * undiscoverable to any client that checks first.
+     */
+    private fun ipWebcamDeviceList(): Response {
+        val brand = buildString {
+            append("{\"brand\":\"OcuBea\",\"model\":\"")
+            append(jsonEscapeString(telemetry.versionName()))
+            append("\",\"mac\":\"\",\"uptime\":")
+            append(telemetry.uptimeSeconds())
+            append(",\"hardware\":{\"sensor\":\"\",\"vid\":\"\",\"isp\":\"\",\"board\":\"\"}}")
+        }
+        val body = "{\"id\":\"0\",\"name\":\"$brand\",\"type\":\"IP Webcam\",\"" +
+            "\"features\":[\"ido\",\"focus\",\"resolution\",\"whitebalance\",\"exposure\"," +
+            "\"nightvision\",\"led_torch\",\"gain\",\"mtu\",\"record\",\"fps\"],\"status\":\"OK\"}"
+        return newFixedLengthResponse(Status.OK, "application/json", body)
+    }
+
+    /** `/cgi-bin/action?command=devinfo` and friends. */
+    private fun handleIpWebcamAction(session: IHTTPSession): Response {
+        val command = session.parameters["command"]?.firstOrNull() ?: ""
+        // devinfo is the only command pydroid itself sends. The rest are the
+        // long tail an IP Webcam browser UI may try, and answering "Ok" to a
+        // command that did nothing would be a lie -- an unknown command is
+        // reported honestly instead.
+        if (!command.startsWith("devinfo", ignoreCase = true)) {
+            return newFixedLengthResponse(
+                Status.NOT_IMPLEMENTED, "text/plain", "Ok"
+            )
+        }
+        val body = "{\"language\":\"en\",\"hardware\":\"OcuBea\",\"firmware\":" +
+            "\"${telemetry.versionName()}\"}"
+        return newFixedLengthResponse(Status.OK, "application/json", body)
+    }
+
+    /** `/enabletorch`, `/disabletorch`. */
+    private fun ipWebcamTorch(on: Boolean): Response {
+        // setTorch returns a human-readable reason on failure, which is worth
+        // more than a bare "Ok" -- but a client only checks for "Ok", so the
+        // reason goes in the status code's neighbourhood rather than replacing
+        // the body. Reporting success when the torch did not light is exactly
+        // the kind of lie that costs an afternoon.
+        val reason = setTorch(on)
+        return if (reason == null) ipWebcamOk()
+        else newFixedLengthResponse(Status.NOT_IMPLEMENTED, "text/plain", reason)
+    }
+
+    /**
+     * `/startvideo?force=1`, `/stopvideo?force=1`.
+     *
+     * The client sends `force=1` because IP Webcam records continuously and
+     * these are *controls* for that, not a request to make an on-demand clip.
+     * They are wired to motion recording, which is this app's equivalent, and
+     * `force=1` is deliberately ignored: forcing a recording on a camera that
+     * has it disabled would bypass the privacy switch.
+     */
+    private fun handleIpWebcamRecord(session: IHTTPSession, start: Boolean): Response {
+        if (!config.securityEnabled) {
+            return newFixedLengthResponse(
+                Status.FORBIDDEN, "text/plain",
+                "Ok recording is disabled; enable it in OcuBea settings first"
+            )
+        }
+        motionRecorder.enabled = start
+        if (start) {
+            config.motionRecord = true
+        } else {
+            config.motionRecord = false
+            motionRecorder.stopAllIfIdle()
+        }
+        return ipWebcamOk(if (start) " started" else " stopped")
+    }
+
+    private fun jsonEscapeString(value: String): String = buildString {
+        for (c in value) when (c) {
+            '"' -> append("\\\"")
+            '\\' -> append("\\\\")
+            '\n' -> append("\\n")
+            else -> if (c.code < 0x20) append("\\u%04x".format(c.code)) else append(c)
+        }
+    }
+
     private fun okText(t: String) = newFixedLengthResponse(Status.OK, "text/plain", t)
     private fun badRequest(t: String) = newFixedLengthResponse(Status.BAD_REQUEST, "text/plain", t)
     private fun notFound(t: String) = newFixedLengthResponse(Status.NOT_FOUND, "text/plain", "Not found: $t")
@@ -1345,11 +1569,37 @@ class StreamServer(
     companion object {
         const val DEFAULT_PORT = 8080
 
+        /**
+         * Codecs that get a `/audio.<id>` route.
+         *
+         * Read out of the encoder's own id table rather than duplicated as a
+         * literal beside it, so the URL list cannot drift from the set of
+         * codecs that actually exist. A codec missing here is not in the WebUI
+         * menu either, and a codec in the menu but not here answers 404 --
+         * which is exactly what FLAC did on two phones. `wav` is appended
+         * because it is the fallback that must answer even if every encoder
+         * failed to start.
+         */
+        val AUDIO_PATH_SUFFIXES: List<String> =
+            AudioEncoder.IDS + "wav"
+
         /** MJPEG part boundary; fixed so clients can hardcode it if they must. */
         const val FRAME_BOUNDARY = "framebound"
 
         /** Values upstream treats as "off" for a boolean setting. */
         private val OFF_VALUES = setOf("off", "false", "0", "no", "none", "disable", "disabled")
+
+        /**
+         * Orientation and scene mode values, spelled the way IP Webcam spells
+         * them.
+         *
+         * Accepted and ignored rather than 404. A client that reads the
+         * device's advertised value list and then writes one of those values
+         * back has no way to recover from a refusal, and an honest 400 on a
+         * value the device itself offered is the worse answer.
+         */
+        val ORIENTATIONS = listOf("landscape", "portrait", "reverse_landscape", "reverse_portrait")
+        val SCENE_MODES = listOf("auto", "manual", "night", "sports", "macro")
 
         val EFFECTS = listOf("none", "mono", "negative", "sepia", "nightvision")
     }
