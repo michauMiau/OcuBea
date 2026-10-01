@@ -531,6 +531,14 @@ function App() {
           </button>
         <//>
         <${Row} label=${t('flip')}>
+          <!-- ffc is the one endpoint that genuinely implements "toggle": it
+               reads the camera state and inverts it (StreamServer.kt:890).
+               "front"/"back" are NOT accepted -- the arm checks value == "on",
+               so set=front answers "ok" and changes nothing, which is a second
+               way of getting a dead-looking control. Verified on the phone.
+               The comment is HTML, not /* */ inside the attribute list: htm
+               treats that as a child, and the button then gets a non-function
+               handler and throws "e is not a function" on click. -->
           <${Toggle} id="bFlip" on=${!!s.front_camera} label=${t('flip')}
             onChange=${() => act(setSetting, 'ffc', 'toggle', poll)} />
         <//>
@@ -566,12 +574,21 @@ function App() {
       <section>
         <h2>${t('security')}</h2>
         <${Row} label=${t('nightVision')}>
+          <!-- onChange receives the NEXT state, not the current one. These
+               three call sites used to discard it and send the literal string
+               "toggle", which the phone reads as a fixed value: for
+               night_vision ("value != off") that is always ON, for
+               motion_detection ("value == on") always OFF. So night vision
+               could not be turned off and motion could not be turned back on
+               -- the button looked fine and did the opposite of what its label
+               said. Sending the real state works for every setting and needs no
+               server-side toggle. -->
           <${Toggle} id="bNight" on=${!!s.night_vision} label=${t('nightVision')}
-            onChange=${() => act(setSetting, 'night_vision', 'toggle', poll)} />
+            onChange=${(v) => act(setSetting, 'night_vision', v ? 'on' : 'off', poll)} />
         <//>
         <${Row} label=${t('motion')}>
           <${Toggle} id="bMotion" on=${!!motion.enabled} label=${t('motion')}
-            onChange=${() => act(setSetting, 'motion_detection', 'toggle', poll)} />
+            onChange=${(v) => act(setSetting, 'motion_detection', v ? 'on' : 'off', poll)} />
         <//>
         <${Row} label=${t('sensitivity')}>
           <${Slider} value=${motion.sensitivity != null ? motion.sensitivity : 5} min=${1} max=${10} step=${1}
