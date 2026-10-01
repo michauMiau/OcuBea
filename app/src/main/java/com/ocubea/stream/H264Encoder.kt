@@ -8,6 +8,8 @@ import android.util.Log
 import androidx.camera.core.ImageProxy
 import com.ocubea.perf.Metrics
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Hardware H.264 encoder fed straight from the camera's YUV planes.
@@ -64,6 +66,18 @@ class H264Encoder(
         private set
 
     @Volatile private var started = false
+
+    /**
+     * True while encode() holds a MediaCodec handle.
+     *
+     * The flag stop() waits on. See stop() for the crash this prevents: a
+     * released MediaCodec touched from the analyzer thread is a native
+     * SIGSEGV, and no amount of runCatching contains it.
+     */
+    private val encodeInFlight = AtomicBoolean(false)
+
+    /** How long stop() waits for the analyzer to leave the codec. */
+    private val STOP_DRAIN_TIMEOUT_NS = 500_000_000L   // 500 ms
     @Volatile var framesEncoded: Long = 0L
         private set
     @Volatile var bytesEncoded: Long = 0L
@@ -187,6 +201,15 @@ class H264Encoder(
         // exactly when the encoder is broken, which is the only time anyone
         // looks at the profiler. The comment two lines below claims this class
         // of leak was designed out; these two returns were simply missed.
+        // Claimed for the WHOLE body, not just the drain: stop() releases the
+        // native object, so the flag has to stay set until the last
+        // dequeueOutputBuffer and queueInputBuffer have finished. Setting it
+        // around the drain alone would reopen the window between the drain and
+        // the queue, which is exactly where the crash landed.
+        encodeInFlight.set(true)
+        // Set before the try so every return still clears it via the finally.
+        val heldFrom = System.nanoTime()
+        var mDrain1 = 0L; var mDequeue = 0L; var mCopy = 0L; var mDrain2 = 0L
         try {
             val mc = codec ?: return
             if (!started) return
@@ -197,9 +220,17 @@ class H264Encoder(
             // starts returning -1 forever, and the stream dies silently with
             // zero output. Recovering the slots is the whole reason to call
             // drain before asking for a new one.
+            val b1 = System.nanoTime()
             drain(mc, onSample)
+            mDrain1 = System.nanoTime() - b1
 
+            // The handshake check lives in stop(), but this is the only place
+            // worth measuring from: this call blocks for up to TIMEOUT_US (10ms)
+            // holding the handle, which is the whole of the exposure window.
+
+            val b2 = System.nanoTime()
             val inputIndex = mc.dequeueInputBuffer(TIMEOUT_US)
+            mDequeue = System.nanoTime() - b2
             if (inputIndex < 0) {
                 // Encoder is back-pressured. Dropping the frame is correct:
                 // queueing it would only add latency.
@@ -207,7 +238,9 @@ class H264Encoder(
                 return
             }
             val buf = mc.getInputBuffer(inputIndex) ?: return
+            val b3 = System.nanoTime()
             val size = copyPlanes(buf, image)
+            mCopy = System.nanoTime() - b3
             if (size <= 0) {
                 framesDropped++
                 return
@@ -216,7 +249,9 @@ class H264Encoder(
             framesQueued++
             // Output may already be waiting; collect it now so the ring buffer
             // in HlsSession stays current.
+            val b4 = System.nanoTime()
             drain(mc, onSample)
+            mDrain2 = System.nanoTime() - b4
         } catch (e: Exception) {
             lastError = e.message ?: e.javaClass.simpleName
             Log.w(TAG, "encode failed", e)
@@ -226,6 +261,21 @@ class H264Encoder(
             // recorded and the report would understate the cost exactly when
             // the encoder is struggling.
             if (t != null) t.end(t0)
+            // Bracket the WHOLE body here, not just dequeueInputBuffer. The stamp
+            // used to sit right before that one call, which ignored the drain
+            // before it and the queueInputBuffer after it -- i.e. it measured a
+            // fraction of the region stop() actually races against, and made the
+            // window look far smaller than it is.
+            //
+            // Own clock, not t0: t0 is the profiler's begin() marker and is 0
+            // when Metrics is disabled, so subtracting it measured machine uptime
+            // instead of the hold (191s per encode against a 10ms ceiling --
+            // an impossible number that pointed straight at the zero).
+            encodeHeldNanos.addAndGet(System.nanoTime() - heldFrom)
+            encodeCalls.incrementAndGet()
+            tDrain1.addAndGet(mDrain1); tDequeue.addAndGet(mDequeue)
+            tCopy.addAndGet(mCopy); tDrain2.addAndGet(mDrain2)
+            encodeInFlight.set(false)
         }
     }
 
@@ -239,10 +289,60 @@ class H264Encoder(
         }
     }
 
+    /**
+     * Stops the codec, but only after the encode thread is out of it.
+     *
+     * This was a straight data race and it killed the process in native code.
+     * encode() holds a LOCAL copy of the codec handle:
+     *
+     *     val mc = codec ?: return      <- analyze thread
+     *     drain(mc, ...)                <- dequeueOutputBuffer on mc
+     *
+     * while stop() ran on an HTTP thread and did stop()/release() on the same
+     * native object. `started = false` does not help: it is read once, before
+     * the drain, and drain() then keeps touching a released MediaCodec.
+     *
+     * `runCatching` cannot save this either. The failure is a SIGSEGV inside
+     * libstagefright, not a Java exception -- measured on a Sony F3311 as
+     *
+     *     Fatal signal 11 (SIGSEGV) ... tid (ocubea-analysis)
+     *     stopped OMX.MTK.VIDEO.ENCODER.AVC
+     *     started OMX.MTK.VIDEO.ENCODER.AVC 864x480@24
+     *     Process com.ocubea has died
+     *
+     * i.e. the crash landed first and the profile switch only logged afterwards.
+     *
+     * So the two parties have to agree: encode() marks itself busy for the whole
+     * time it holds the handle, and stop() waits for that to be clear before it
+     * touches the native object. A bounded wait, because a stop that never
+     * returns is worse than the race it prevents.
+     */
     fun stop() {
+        // Capture FIRST, then clear the field. Reading `codec` after nulling it
+        // would make the whole method a no-op -- the handle has to be taken
+        // before the analyzer is told there is none, and the field is what stops
+        // a NEW encode from starting while the wait runs.
         val mc = codec
         codec = null
         started = false
+        val deadline = System.nanoTime() + STOP_DRAIN_TIMEOUT_NS
+        while (System.nanoTime() < deadline) {
+            if (!encodeInFlight.get()) break
+            Thread.sleep(1)
+        }
+        if (encodeInFlight.get()) {
+            // The analyzer is wedged mid-drain. Releasing the codec now would
+            // crash, so keep it: a leaked encoder is recoverable, a SIGSEGV is
+            // not. Record it rather than failing silently.
+            Log.w(TAG, "stop: analyzer still inside the codec after " +
+                "${STOP_DRAIN_TIMEOUT_NS / 1_000_000}ms, keeping it alive")
+            stopsDeferred.incrementAndGet()
+            return
+        }
+        // Counter, not just the warning: "it never fired" and "it cannot fire"
+        // look identical in a log, and tools/encoder_race_verify.sh needs to
+        // tell them apart on a device where MediaCodec cannot be faked.
+        stopsCompleted.incrementAndGet()
         if (mc != null) {
             runCatching { mc.stop() }
             runCatching { mc.release() }
@@ -363,8 +463,41 @@ class H264Encoder(
         return r
     }
 
-    /** Copies one plane row by row. Returns false if the source runs out early. */
-    private fun copyPlane(dst: ByteBuffer, plane: ImageProxy.PlaneProxy, row: ByteArray, w: Int, h: Int): Boolean {
+    /**
+     /**
+      * Copies one plane row by row. Returns false if the source runs out early.
+      *
+      * Visible for testing so H264EncoderPlaneCopyTest can drive the real
+      * implementation. A test that re-implements this loop proves only that the
+      * re-implementation is correct -- it passed identically with the per-byte
+      * version restored, which is exactly the gap that let the 190ms cost ship.
+      */
+     *
+     * The per-byte loop this replaces was the single most expensive thing in the
+     * encoder, and it was not visible anywhere: status.json showed a perfectly
+     * healthy stream, because nothing was dropping frames -- the analyzer was
+     * simply spending its time in here.
+     *
+     * Measured on a Sony F3311 (Android 6) at 864x480:
+     *
+     *     copyPlanes   5712 ms over 30 encodes   = 190 ms per frame
+     *     everything   5886 ms over 30 encodes   = 196 ms per frame
+     *
+     * so 97% of the time inside encode() was this copy. The count explains it:
+     * 480 rows x 864 bytes of luma plus two 240x432 chroma planes with
+     * pixelStride 2 is 829,440 separate ByteBuffer.get() calls per frame, each
+     * one a bounds check against a direct camera buffer. ~230ns per byte is
+     * exactly the cost of doing it one byte at a time.
+     *
+     * The fix is bulk transfer per row: position once, get(w) or get(w, stride,
+     * row) in one call. 829,440 calls become 1,200.
+     *
+     * This also narrowed the stop/teardown race rather than just costing CPU.
+     * The analyzer held the MediaCodec for 196ms per frame instead of ~4ms, so
+     * a stop() had a wide window to release the codec underneath an encode in
+     * progress -- which is the SIGSEGV in OMX.MTK.VIDEO.ENCODER.AVC.
+     */
+    internal fun copyPlane(dst: ByteBuffer, plane: ImageProxy.PlaneProxy, row: ByteArray, w: Int, h: Int): Boolean {
         val src = plane.buffer
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
@@ -372,17 +505,57 @@ class H264Encoder(
         val base = buf.position()
         val limit = buf.limit()
 
+        // pixelStride 1 is the packed case and a straight row copy. 2 is the
+        // semi-planar chroma layout, where a bulk get with a stride does the
+        // de-interleave in the JNI layer instead of a Java loop.
+        val packed = pixelStride == 1
+        // Which case each plane actually takes. The speedup depends entirely on
+        // luma being packed, and on this device that is an assumption until it
+        // is read off a real frame: the planes are reported with a
+        // semi-planar layout often enough that guessing wrong would make the
+        // whole change a no-op that still looks like it worked.
+        // Not getOrDefault: that is API 24, minSdk is 23 and the phone runs
+        // Android 6, so it throws NoSuchMethodError at runtime. That is an Error,
+        // not an Exception, so it sails past catch (_: Exception) and killed
+        // every encode -- measured frames_encoded 0, frames_dropped 854.
+        // Already paid for twice in this project.
+        val n = strideSeen[pixelStride] ?: 0L
+        strideSeen[pixelStride] = n + 1
+
         for (y in 0 until h) {
             var idx = base + y * rowStride
             // Guard the source: a row that starts inside the buffer but runs
-            // past its end would also fault rather than throw.
+            // past its end would also fault rather than throw. Checked once per
+            // row, not per byte -- which is why the strided loop below can index
+            // directly without its own check.
             if (idx + (w - 1) * pixelStride >= limit) {
                 Log.w(TAG, "plane row $y exceeds buffer (idx=$idx limit=$limit)")
                 return false
             }
-            for (x in 0 until w) {
-                row[x] = buf.get(idx)
-                idx += pixelStride
+            if (packed) {
+                // Bulk row copy. position() once, then a single get(array) --
+                // one bounds check and one JNI call per row instead of w of
+                // them, which is the entire point of this change.
+                //
+                // Written as position+get rather than the four-argument
+                // get(index, array, off, len) because that overload does not
+                // resolve in this build despite existing in android.jar, and a
+                // form the compiler rejects is worth nothing.
+                buf.position(idx)
+                buf.get(row, 0, w)
+            } else {
+                // No bulk stride API exists on ByteBuffer -- there is
+                // get(byte[],int,int) and get(int,byte[],int,int), neither of
+                // which de-interleaves. So the semi-planar chroma planes still
+                // need a per-byte loop, and they are exactly half the bytes.
+                //
+                // What can be avoided is the bounds check per access, which is
+                // the expensive half on a direct camera buffer: the row is
+                // checked once above, so index directly.
+                for (x in 0 until w) {
+                    row[x] = buf.get(idx)
+                    idx += pixelStride
+                }
             }
             dst.put(row, 0, w)
         }
@@ -428,6 +601,62 @@ class H264Encoder(
     }
 
     companion object {
+        /**
+         * Encoder stops that reached MediaCodec.stop()/release().
+         *
+         * In the companion rather than on the instance, and for a measured
+         * reason: a profile switch runs stopHls() -> hlsSession = null -> a NEW
+         * encoder, so an instance counter is already back to zero by the time
+         * anything can read it. status.json reports the live session, so it
+         * would read zero after every single stop -- verified: eight profile
+         * switches with HLS actively encoding, encoder_stops still 0.
+         *
+         * This is the measuredFps bug from this same file, repeated: a counter
+         * declared, read by the status page, and reset by the lifetime of the
+         * very object it was counting. Cumulative across instances on purpose --
+         * the question is how often the handshake waited over the life of the
+         * process, not per encoder.
+         */
+        val stopsCompleted = AtomicLong(0)
+
+        /**
+         * How often the stop/teardown handshake had to wait for the analyzer
+         * instead of releasing the codec underneath it. Zero is ambiguous on its
+         * own -- it is also what a build with no handshake reports -- so it is
+         * only meaningful next to stopsCompleted.
+         */
+        val stopsDeferred = AtomicLong(0)
+
+        /**
+         * How long each encode held the codec, summed.
+         *
+         * Sum rather than max, because the question is "how much of the wall
+         * clock is a stop() racing against" -- a single long encode and many
+         * short ones answer it differently. Read next to an encode count so it
+         * can be turned into an average.
+         */
+        val encodeHeldNanos = AtomicLong(0)
+
+        /** How many encodes ran at all, so the average is computable. */
+        val encodeCalls = AtomicLong(0)
+
+        // Per-step breakdown of the hold. 195.8ms total on a Sony F3311 is far
+        // more than dequeueInputBuffer's 10ms limit, so something else in the
+        // body blocks, and "something else" is not actionable. Four separate sums
+        // so the one that owns the time can be named -- measured, not reasoned
+        // about.
+        val tDrain1 = AtomicLong(0)
+
+        /**
+         * pixelStride -> how many plane copies took that stride.
+         *
+         * {1=N} means the bulk path runs; {2=N} alone means it never does.
+         */
+        val strideSeen = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+        val tDequeue = AtomicLong(0)
+        val tCopy = AtomicLong(0)
+        val tDrain2 = AtomicLong(0)
+
         const val COLOR_YUV420_FLEXIBLE = 0x7F420888
         const val COLOR_YUV420_PLANAR = 19
         const val COLOR_YUV420_SEMI_PLANAR = 21

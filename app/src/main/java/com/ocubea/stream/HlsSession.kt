@@ -134,6 +134,40 @@ class HlsSession(
     val framesEncoded: Long get() = encoder.framesEncoded
     val framesQueued: Long get() = encoder.framesQueued
     val framesDropped: Long get() = encoder.framesDropped
+
+    /**
+     * Encoder stops that reached MediaCodec.stop()/release().
+     *
+     * Static on purpose -- see H264Encoder.Companion.stopsCompleted. An instance
+     * counter reads zero after every profile switch, because the switch creates
+     * a new encoder, and that is exactly when there is something to report.
+     */
+    val stopsCompleted: Long get() = H264Encoder.stopsCompleted.get()
+
+    /**
+     * Encoder stops that found the analyzer thread still inside the codec.
+     *
+     * Non-zero means the handshake fired: the analyzer was mid-drain and the
+     * codec was kept alive instead of released under it. Zero is ambiguous on
+     * its own -- it is also what a build with no handshake reports -- which is
+     * why both counters are exposed together.
+     */
+    val stopsDeferred: Long get() = H264Encoder.stopsDeferred.get()
+
+    /** Total nanoseconds encodes held the codec handle. */
+    val encodeHeldNanos: Long get() = H264Encoder.encodeHeldNanos.get()
+
+    /** Number of encodes, so the above can be averaged. */
+    val encodeCalls: Long get() = H264Encoder.encodeCalls.get()
+
+    /** Per-step hold breakdown, each summed over all encodes. */
+    val tDrain1: Long get() = H264Encoder.tDrain1.get()
+    val tDequeue: Long get() = H264Encoder.tDequeue.get()
+    val tCopy: Long get() = H264Encoder.tCopy.get()
+    val tDrain2: Long get() = H264Encoder.tDrain2.get()
+
+    /** pixelStride -> plane copies seen at that stride. */
+    fun strideSeen(): Map<Int, Long> = H264Encoder.strideSeen.toMap()
     val segmentsWritten: Long get() = muxer.segmentsWritten
 
     /**
