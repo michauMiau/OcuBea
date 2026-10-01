@@ -208,6 +208,19 @@ class StreamService : LifecycleService() {
         onvifDiscovery.deviceName = config.deviceName
         onvifDiscovery.start()
 
+        // Restore RTSP when the user asked for it and this is a restart.
+        //
+        // Measured missing: after any restart the preference still said enabled
+        // while nothing was listening -- status.json reported running: false,
+        // port: 0, which is a setting that survived but nothing it promised.
+        // HLS recovers on its own via startHls() on the first playlist request;
+        // RTSP is not asked for that way, so it has to be restored here, beside
+        // the other listeners. Reported rather than swallowed, because a bind
+        // failure the user cannot see is the same silent lie as before.
+        if (config.rtspEnabled) {
+            streamServer?.restoreRtspListener()
+        }
+
         startWatchdog()
         updateNotification(getString(R.string.streaming_started, port))
     }
