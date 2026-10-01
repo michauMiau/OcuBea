@@ -9,8 +9,10 @@ import htm from 'htm';
 import Hls from 'hls.js';
 
 import {
-  api, bytes, get, setSetting, ptz, deleteRecording, setToken, getToken,
-  clipOnFile, recordNow, stopClipRecording, focus, setAudioCodec, hlsProfile, setHlsProfile,
+  bytes, get, setSetting, ptz, deleteRecording, setToken, getToken,
+  clipOnFile, recordNow, stopClipRecording, clipRecordingState, focus, setAudioCodec,
+  hlsProfile, setHlsProfile,
+  clearClips, pruneClips, deleteAllRecordings,
   t, uptime, LANG as T_LANG,
 } from './state.js';
 import { hlsMessage } from './hlsmsg.js';
@@ -95,22 +97,16 @@ const PRE_RECORD_DEFAULT = 2;
 const MAX_CLIP_DEFAULT = 300;
 
 // ── clip and recording bulk actions ─────────────────────────────────────────
-// prune and clear both answer 400 "invalid clip name" when the name parameter
-// is missing, so they cannot be called bare: the phone wants a file name even
-// for an operation that applies to every clip. Passing the newest clip's name
-// satisfies the contract -- it is a real name the phone recognises, and the
-// operation itself is not per-file.
-const lastClipName = (clips) => (clips.length ? clips[0].name : '');
-
-const pruneClips = (clips) =>
-  clipOnFile('prune', lastClipName(clips));
-
-const clearClips = (clips) =>
-  clipOnFile('clear', lastClipName(clips));
-
-const deleteAllRecordings = async (recordings) => {
-  for (const r of recordings) await deleteRecording(r.name);
-};
+// These used to be worked around here: prune and clear were called through
+// clipOnFile() with the newest clip's name, because a bare POST came back 400
+// "invalid clip name" and the buttons had to do something.
+//
+// The 400 was the wrong signal. clipsClear() and clipsPrune() never read the
+// query string -- they iterate ClipStorage.list() and delete by retention rule
+// -- so the name was only ever there to get past the check. It worked by
+// accident: any list that happened to be non-empty kept these buttons alive,
+// and an empty list made them inert. The real helpers live in state.js now,
+// next to the rest of the wire layer, called bare.
 
 // ── small building blocks ───────────────────────────────────────────────────
 const Row = ({ label, children }) => html`
@@ -193,6 +189,7 @@ function Stream({ mode, running, lowLatency }) {
     let fallbackTimer = null;
 
     const run = async () => {
+      if (cancelled) return;
     // MJPEG: a plain <img> fed by a multipart endpoint. Stop it by dropping src.
     //
     // The cache-buster goes on ONCE, when there is no stream yet. Setting a
@@ -289,6 +286,11 @@ function Stream({ mode, running, lowLatency }) {
     // it duplicated the server's wait and raced it.
     if (!hlsRef.current) setHlsError('hls_warming');
 
+    // Checked after the wait as well, not only at the top of run(): this
+    // polls for the playlist, and an unmount during that poll used to carry
+    // on and attach a source to an instance the cleanup had already destroyed.
+    if (cancelled) return;
+
     hls.loadSource('/hls.m3u8');
     hls.attachMedia(vid);
 
@@ -344,6 +346,11 @@ function App() {
   const [mode, setMode] = useState(() => localStorage.getItem('ocubea_mode') || 'mjpeg');
   const [lowLatency, setLowLatency] = useState(() => localStorage.getItem('ocubea_ll') === '1');
   const [clips, setClips] = useState([]);
+  // Clip telemetry is polled on its own, separately from the file lists: it
+  // changes while a clip is being written and there is no reason to re-read the
+  // whole list for that. `dropped` in particular is the only way to see frames
+  // the encoder could not keep up with.
+  const [clipRec, setClipRec] = useState(null);
   // which clip the <video> preview is showing, if any
   const [clipPreview, setClipPreview] = useState(null);
   const [recordings, setRecordings] = useState([]);
@@ -369,6 +376,10 @@ function App() {
       return;
     }
     try { setSensors(await get('/sensors.json')); } catch { /* optional */ }
+    // Same 1s cadence as the rest. Failures are ignored: a phone with the clip
+    // writer disabled may not answer, and that must not take the status poll
+    // down with it.
+    try { setClipRec(await clipRecordingState()); } catch { /* optional */ }
   }, []);
 
   useEffect(() => {
@@ -610,7 +621,11 @@ function App() {
         <//>
         <div class="row">
           <button id="bRefreshRec" class="ctl" onClick=${() => act(loadLists)}>${t('refresh')}</button>
-          <button id="bDelAll" class="ctl danger"
+          <!-- Disabled on an empty list rather than a no-op click: the bulk
+               delete walks the list client-side, so with nothing recorded it
+               sends no request at all, and a live-looking button that does
+               nothing is the same failure as the undefined helpers were. -->
+          <button id="bDelAll" class="ctl danger" disabled=${recordings.length === 0}
             onClick=${() => act(deleteAllRecordings, recordings, loadLists)}
             >${t('deleteAll')}</button>
         </div>
@@ -629,15 +644,35 @@ function App() {
 
       <section class="files">
         <h2>${t('clips')} ${clips.length}</h2>
+        <!-- Telemetry the old UI showed and this one had dropped entirely.
+             "Record 30s" used to give no feedback at all while it wrote, and a
+             failing write reported nothing -- the error field is the phone's
+             own clipState error, and dropped frames are the one number that
+             says the encoder was falling behind. -->
+        ${clipRec && html`
+          <dl class="kv">
+            <dt>${t('recState')}</dt>
+            <dd>${clipRec.active ? t('recording') : clipRec.armed ? t('armed') : t('idle')}</dd>
+            ${clipRec.file && html`<dt>${t('recFile')}</dt><dd>${clipRec.file}</dd>`}
+            <dt>${t('recFrames')}</dt><dd>${clipRec.frames}</dd>
+            ${clipRec.dropped > 0 && html`<dt>${t('recDropped')}</dt>
+              <dd class="warn">${clipRec.dropped}</dd>`}
+            ${clipRec.bytes > 0 && html`<dt>${t('recBytes')}</dt>
+              <dd>${bytes(clipRec.bytes)}</dd>`}
+            ${clipRec.error && html`<dt>${t('recError')}</dt>
+              <dd class="warn">${clipRec.error}</dd>`}
+          </dl>`}
         <div class="row">
           <button id="bRecNow" class="ctl primary" onClick=${() => act(recordNow, 30, loadLists)}
             >${t('recordNow')}</button>
           <button id="bRecStop" class="ctl" onClick=${() => act(stopClipRecording, loadLists)}
             >${t('stopClip')}</button>
           <button id="bRefreshClips" class="ctl" onClick=${() => act(loadLists)}>${t('refresh')}</button>
-          <button id="bPruneClips" class="ctl" onClick=${() => act(pruneClips, clips, loadLists)}
+          <button id="bPruneClips" class="ctl" disabled=${clips.length === 0}
+            onClick=${() => act(pruneClips, loadLists)}
             >${t('applyLimits')}</button>
-          <button id="bClearClips" class="ctl danger" onClick=${() => act(clearClips, clips, loadLists)}
+          <button id="bClearClips" class="ctl danger" disabled=${clips.length === 0}
+            onClick=${() => act(clearClips, loadLists)}
             >${t('deleteAll')}</button>
         </div>
         ${clips.length === 0

@@ -81,6 +81,47 @@ export const recordNow = (seconds) =>
 
 export const stopClipRecording = () => api('/clips/record/stop', { method: 'POST' });
 
+/**
+ * Live clip telemetry: armed, active, frames, dropped, bytes, file, error.
+ *
+ * The old UI showed this (sRec, sFrames, sDropped, recBody) and the new one
+ * showed none of it -- "Record 30s" would show nothing at all while writing, and
+ * a write that was failing reported no error anywhere on the page. `dropped` is
+ * the interesting one: a phone that cannot keep up with the encoder drops
+ * frames, and without this the loss is invisible.
+ */
+export const clipRecordingState = () => get('/clips/recording');
+
+// ── bulk actions ────────────────────────────────────────────────────────────
+// prune and clear act on the WHOLE collection and read no parameter. The
+// contract was verified against the server, not the old UI: clipsClear() and
+// clipsPrune() iterate ClipStorage.list() and never look at the query string,
+// so passing ?name= is not merely redundant -- clipOnFile('clear', name) looks
+// like it deletes one file and in fact deletes everything but the open clip.
+//
+// That is also why clipOnFile is right for a single clip and wrong for these:
+// the server answers a name-less POST /clips/<action> with
+// 400 "invalid clip name", which is the tell that a name was required.
+/** Delete every clip except the one currently being written. */
+export const clearClips = () => api('/clips/clear', { method: 'POST' });
+
+/** Apply the retention limits (bytes, age, file count) to the whole collection. */
+export const pruneClips = () => api('/clips/prune', { method: 'POST' });
+
+// /recordings has no bulk delete: handleRecordings only routes POST delete,
+// which takes one name. So "delete all" has to be the list walked client-side.
+// It reports how many actually went, because the single-file endpoint answers
+// "not found" with a 200 and a careless loop would claim success for all.
+export const deleteAllRecordings = async (recordings) => {
+  const gone = [];
+  for (const r of recordings) {
+    const res = await api(
+      '/recordings/delete?name=' + encodeURIComponent(r.name), { method: 'POST' });
+    if (res.text !== 'not found') gone.push(r.name);
+  }
+  return { deleted: gone.length, failed: recordings.length - gone.length };
+};
+
 // Autofocus takes normalised coordinates, not pixels: 0.5/0.5 is the centre.
 export const focus = (x, y) =>
   api('/focus?x=' + x + '&y=' + y, { method: 'POST' });
