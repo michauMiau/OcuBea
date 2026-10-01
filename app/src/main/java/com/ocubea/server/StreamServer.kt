@@ -812,7 +812,19 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             "exposure", "exposure_lock" -> okText("ok")
             "whitebalance", "whitebalance_lock" -> okText("auto")
             "antibanding" -> okText("auto")
-            "rotate", "rotation", "mirror_flip" -> okText("ok")
+            // "rotation" is handled by the real implementation above. "rotate"
+            // is the name IP Webcam itself uses for the same thing, and
+            // "mirror_flip" mirrors the image. Both are real now, so neither
+            // answers a success it does not do.
+            "rotate" -> {
+                cameraManager.setDisplayOrientation(value)
+                ipWebcamOk()
+            }
+            "mirror_flip" -> {
+                val on = value !in OFF_VALUES
+                cameraManager.setMirror(on)
+                ipWebcamOk()
+            }
             "overlay" -> okText("ok")
             "norecord" -> {
                 motionRecorder.enabled = value in OFF_VALUES
@@ -857,8 +869,18 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             // scene mode have no CameraX equivalent on most devices, so they
             // are accepted and ignored rather than 404 -- a client that offers
             // a value and is then refused it has nowhere to go.
-            "orientation" ->
-                if (value in ORIENTATIONS) ipWebcamOk() else badRequest("unknown orientation: $value")
+            "orientation" -> {
+                // CameraX can rotate at the target, not only in the sensor, so
+                // this is a real frame rotation rather than a metadata flag. A
+                // client asking for portrait gets portrait pixels.
+                val wanted = ORIENTATIONS_ALIASES[value] ?: value
+                if (wanted !in ORIENTATIONS) {
+                    badRequest("unknown orientation: $value")
+                } else {
+                    cameraManager.setDisplayOrientation(wanted)
+                    ipWebcamOk()
+                }
+            }
             "scenemode" ->
                 if (value in SCENE_MODES) ipWebcamOk() else badRequest("unknown scenemode: $value")
             "motion_detect" -> {
@@ -1678,7 +1700,18 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
          * back has no way to recover from a refusal, and an honest 400 on a
          * value the device itself offered is the worse answer.
          */
-        val ORIENTATIONS = listOf("landscape", "portrait", "reverse_landscape", "reverse_portrait")
+        // The names pydroid-ipcam accepts. It validates against exactly this list
+    // before sending, so a value it offers must not be refused here. It spells
+    // the upside-down pair "upsidedown", not "reverse_*" as IP Webcam folklore
+    // suggests, and a mismatch fails the round trip on the client side.
+    val ORIENTATIONS = listOf("landscape", "portrait", "upsidedown", "upsidedown_portrait")
+
+    /** The same four, under the other spelling some clients send. */
+    val ORIENTATIONS_ALIASES = mapOf(
+        "reverse_landscape" to "upsidedown",
+        "reverse_portrait" to "upsidedown_portrait",
+        "reverse" to "upsidedown"
+    )
         val SCENE_MODES = listOf("auto", "manual", "night", "sports", "macro")
 
         val EFFECTS = listOf("none", "mono", "negative", "sepia", "nightvision")
