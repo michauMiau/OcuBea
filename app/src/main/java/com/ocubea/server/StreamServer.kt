@@ -182,10 +182,19 @@ class StreamServer(
 
         // ── ONVIF ──
         uri.startsWith("/onvif/") && method == Method.POST -> handleOnvif(session)
-        uri == "/onvif/device_service" -> newFixedLengthResponse(
-            Status.OK, "application/soap+xml; charset=utf-8",
-            "ONVIF device service — POST SOAP requests here"
-        )
+        // The WSDL, which a generated client fetches before it can form a request
+        // at all. This used to answer a plain-text greeting, so every ONVIF client
+        // failed to generate its stubs and the service was unreachable while still
+        // returning 200 to everything -- which is the failure tools/onvif_verify.py
+        // exists to catch.
+        uri == "/onvif/device_service" || uri == "/onvif/device_service?wsdl" -> {
+            val wsdlHost = auth.clientIp(session).takeIf { it != "unknown" }
+                ?: localIpFallback()
+            newFixedLengthResponse(
+                Status.OK, "application/wsdl+xml; charset=utf-8",
+                OnvifSoap.deviceServiceWsdl(wsdlHost, listeningPort)
+            )
+        }
 
         // ── IP Webcam API: controls ──
         // pydroid reads `"Ok" in text`; these answered "ok", so a working
@@ -598,8 +607,18 @@ class StreamServer(
     private fun handleOnvif(session: IHTTPSession): Response {
         val body = readBody(session)
         val action = OnvifSoap.extractAction(body)
-        val host = auth.clientIp(session).takeIf { it != "unknown" } ?: localIpFallback()
-        val xml = OnvifSoap.deviceServiceResponse(action, host, listeningPort, config.deviceName)
+        // The camera's own address, never the client's. Building the advertised
+        // URI from clientIp() looked right on a LAN with one device and produced a
+        // URL pointing at the prober instead of the camera -- measured: the probe
+        // reached the phone from 192.168.1.222 and GetStreamUri returned
+        // http://192.168.1.222:8080/video, which the client then failed to fetch.
+        // An NVR renders that as "camera online, preview dead", which is worse
+        // than a refused stream because it looks like a working device.
+        val host = localIpFallback()
+        val xml = OnvifSoap.deviceServiceResponse(
+            action, host, listeningPort, config.deviceName,
+            telemetry.versionName(), onvifDiscovery.stableDeviceId()
+        )
         return newFixedLengthResponse(Status.OK, "application/soap+xml; charset=utf-8", xml)
     }
 
