@@ -394,10 +394,32 @@ class H264Encoder(
         // tell them apart on a device where MediaCodec cannot be faked.
         stopsCompleted.incrementAndGet()
         if (mc != null) {
+            if (!claimRelease(mc)) return
             runCatching { mc.stop() }
             runCatching { mc.release() }
             released.incrementAndGet()
         }
+    }
+
+    /**
+     * Claims the right to release this handle, exactly once.
+     *
+     * Both teardown paths funnel through here because they can overlap: the
+     * inline path and the drain thread started by releaseWhenIdle() race whenever
+     * a stop() lands while the analyzer is inside the codec and the flag clears a
+     * moment later. Whichever claims first releases; the other must not, since a
+     * double release is the native fault the whole handshake is here to prevent.
+     *
+     * Returns false when someone else already owns the release.
+     */
+    private fun claimRelease(mc: MediaCodec): Boolean {
+        val id = System.identityHashCode(mc)
+        if (!releasedIds.add(id)) {
+            Log.w(TAG, "release: handle ${Integer.toHexString(id)} already " +
+                "released, skipping a double free")
+            return false
+        }
+        return true
     }
 
     /**
@@ -413,6 +435,11 @@ class H264Encoder(
         if (mc == null) return
         val t = Thread({
             while (encodeInFlight.get()) Thread.sleep(2)
+            // Re-check after the wait: stop() may have completed on another path
+            // while this thread was parked, and releasing a handle twice is the
+            // fault this whole handshake exists to prevent. `codec` is null in
+            // both cases, so the identity is what tells the two apart.
+            if (!claimRelease(mc)) return@Thread
             runCatching { mc.stop() }
             runCatching { mc.release() }
             released.incrementAndGet()
@@ -422,12 +449,19 @@ class H264Encoder(
             t.start()
         } catch (e: Exception) {
             // Thread creation can fail under memory pressure. Fall back to
-            // releasing immediately -- worse than leaking, but this is a
+            // releasing on this thread -- worse than leaking, but this is a
             // best-effort cleanup path either way.
+            //
+            // It claims first, like every other release site: falling back to an
+            // unclaimed release would reintroduce exactly the double free the
+            // claim exists to prevent, on the one path nobody tests because it
+            // only runs when the thread could not start at all.
             Log.w(TAG, "could not start release thread, releasing now", e)
-            runCatching { mc.stop() }
-            runCatching { mc.release() }
-            released.incrementAndGet()
+            if (claimRelease(mc)) {
+                runCatching { mc.stop() }
+                runCatching { mc.release() }
+                released.incrementAndGet()
+            }
         }
     }
 
@@ -723,6 +757,16 @@ class H264Encoder(
 
     /** Codecs actually handed back to the driver. Deferred ones must land here. */
     val released = AtomicLong(0)
+
+    /**
+     * Identities of handles already released.
+     *
+     * A double release is the fault this whole handshake exists to prevent, and
+     * a counter cannot catch it: `codec` is null after both the inline path and
+     * the deferred one, so only the handle's own identity separates "this thread
+     * is the one that must release it" from "someone else already did".
+     */
+    val releasedIds: MutableSet<Int> = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
 
         /**
          * How long each encode held the codec, summed.
