@@ -1571,18 +1571,91 @@ class CameraManager(
         cameraRef?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 1f
     } catch (_: Exception) { 1f }
 
-    fun setFocus(xNorm: Float, yNorm: Float) {
-        try {
-            val cam = cameraRef ?: return
+    /**
+     * Whether this camera can autofocus at all.
+     *
+     * Reported rather than assumed. The settings layer used to answer "Ok" for
+     * focusmode=on, macro, infinity and focus_distance alike, with nothing behind
+     * any of them: measured eight values in, eight "Ok" out, zero effect.
+     */
+        /**
+     * Whether this camera can autofocus, judged on a FLAG_AF action.
+     *
+     * Reported rather than assumed. The settings layer used to answer "Ok" for
+     * focusmode=on, macro, infinity and focus_distance alike with nothing behind
+     * any of them: measured eight values in, eight "Ok" out, zero effect.
+     *
+     * CameraX 1.3.0's signature is isFocusMeteringSupported(FocusMeteringAction),
+     * not a no-arg property, so the question is asked with the exact action we
+     * would otherwise run.
+     */
+    fun isFocusCapable(): Boolean = try {
+        val cam = cameraRef
+        if (cam == null) {
+            false
+        } else {
+        val probe = FocusMeteringAction.Builder(
+            androidx.camera.core.SurfaceOrientedMeteringPointFactory(
+                currentTargetWidth.toFloat(), currentTargetHeight.toFloat()
+            ).createPoint(0f, 0f),
+            FocusMeteringAction.FLAG_AF,
+        ).build()
+        cam.cameraInfo.isFocusMeteringSupported(probe)
+        }
+    } catch (_: Exception) { false }
+    /**
+     * Runs autofocus, optionally locking the focus where it lands.
+     *
+     * `lock` maps to disableAutoCancel(), which is the real primitive behind
+     * focusmode=off/fixed in the IP Webcam API: the lens drives once and then
+     * stops hunting. Without it every action auto-cancels after the default
+     * duration and the camera goes back to hunting, so "off" would be a setting
+     * that changed nothing.
+     */
+    fun setFocus(xNorm: Float, yNorm: Float, lock: Boolean = false): String? {
+        val cam = cameraRef ?: return "camera is not running"
+        if (!isFocusCapable()) {
+            return "this camera reports no autofocus (isFocusMeteringSupported is false)"
+        }
+        return try {
             val factory = androidx.camera.core.SurfaceOrientedMeteringPointFactory(
                 currentTargetWidth.toFloat(), currentTargetHeight.toFloat()
             )
-            val point = factory.createPoint(xNorm * currentTargetWidth, yNorm * currentTargetHeight)
-            cam.cameraControl.startFocusAndMetering(
-                FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF).build()
+            val point = factory.createPoint(
+                (xNorm * currentTargetWidth).coerceIn(0f, currentTargetWidth.toFloat()),
+                (yNorm * currentTargetHeight).coerceIn(0f, currentTargetHeight.toFloat()),
             )
-        } catch (_: Exception) {}
+            val builder = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF)
+            if (lock) builder.disableAutoCancel()
+            cam.cameraControl.startFocusAndMetering(builder.build())
+            focusLocked = lock
+            null
+        } catch (e: Exception) {
+            "focus failed: ${e.message}"
+        }
     }
+
+    /**
+     * Releases a locked focus so the camera hunts again.
+     *
+     * The counterpart of setFocus(lock = true). A client that set focusmode=off
+     * and then wants continuous autofocus has no other way back.
+     */
+    fun clearFocusLock(): String? {
+        val cam = cameraRef ?: return "camera is not running"
+        return try {
+            cam.cameraControl.cancelFocusAndMetering()
+            focusLocked = false
+            null
+        } catch (e: Exception) {
+            "focus failed: ${e.message}"
+        }
+    }
+
+    /** True when a locked focus is in effect, for status.json. */
+    fun isFocusLocked(): Boolean = focusLocked
+
+    private var focusLocked = false
 
     fun isUsingFrontCamera(): Boolean = cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA
 

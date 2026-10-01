@@ -667,7 +667,16 @@ class StreamServer(
         val host = localIpFallback()
         val xml = OnvifSoap.deviceServiceResponse(
             action, host, listeningPort, config.deviceName,
-            telemetry.versionName(), onvifDiscovery.stableDeviceId()
+            telemetry.versionName(), onvifDiscovery.stableDeviceId(),
+            // 0 unless the listener is genuinely bound, which is what makes
+            // GetStreamUri fall back to HTTP instead of advertising an rtsp:// URI
+            // for a port nothing is on.
+            if (rtspServer.isRunning()) rtspServer.boundPort else 0,
+            torchCapable = torchControlActive(),
+            // Returns whether the torch state actually changed, so a refused
+            // lamp becomes ActionNotSupported instead of a 200 that lies.
+            torchControl = { command -> applyOnvifTorch(command) },
+            soapBody = body,
         )
         return newFixedLengthResponse(Status.OK, "application/soap+xml; charset=utf-8", xml)
     }
@@ -687,8 +696,13 @@ class StreamServer(
         val p = parseParams(session)
         val x = p["x"]?.toFloatOrNull() ?: 0.5f
         val y = p["y"]?.toFloatOrNull() ?: 0.5f
-        cameraManager.setFocus(x.coerceIn(0f, 1f), y.coerceIn(0f, 1f))
-        return okText("ok")
+        // setFocus() returns a reason string on failure; it used to be discarded and
+        // "ok" returned anyway, so this endpoint lied exactly like focusmode did --
+        // measured HTTP 200 "Ok" from a camera that reports no autofocus at all.
+        val release = session.uri == "/nofocus"
+        val reason = if (release) cameraManager.clearFocusLock()
+                     else cameraManager.setFocus(x.coerceIn(0f, 1f), y.coerceIn(0f, 1f))
+        return if (reason == null) okText("ok") else badRequest(reason)
     }
 
     private fun handlePtz(session: IHTTPSession): Response {
@@ -871,11 +885,34 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             "flashmode" -> {
                 handleTorch(value !in OFF_VALUES && value != "auto")
             }
-            // "focus" alone was missing even though focusmode/focus_distance were
-            // here, so a client setting focus on this key got 404 while the
-            // neighbouring spellings succeeded. Accepting "on"/"off" and
-            // ignoring it matches focusmode: the camera autofocuses either way.
-            "focus", "focusmode", "focus_distance" -> okText("auto")
+            // These three answered okText("auto") for every value: measured
+            // focusmode on/off/macro/infinity/fixed, focus on/off and
+            // focus_distance 0.0/5.0 -- eight values, eight "Ok", nothing behind
+            // any of them. A client setting macro got a confirmation and an
+            // unchanged image, which is worse than a refusal because it looks
+            // like it worked.
+            //
+            // What is actually possible here:
+            //   on / auto / macro  -> autofocus (macro is the same autofocus; the
+            //     camera exposes no minimum-focus-distance control, and saying so
+            //     is better than pretending the mode changed)
+            //   off / fixed        -> focus locked where it lands
+            //     (disableAutoCancel is the real primitive)
+            //   infinity           -> same as off, named explicitly, because the
+            //     lens cannot be driven to a focal distance from here
+            //   anything else      -> 400 with the accepted values, not a bare Ok
+            //
+            // focus_distance takes a 0.0-10.0 diopter scale in the IP Webcam API.
+            // There is no diopter control in CameraX, so it is refused with a
+            // reason instead of accepted and dropped.
+            "focus", "focusmode" -> focusMode(value)
+            "focus_distance" -> {
+                cameraManager.clearFocusLock()?.let { badRequest(it) }
+                    ?: badRequest(
+                        "focus_distance is not supported: this camera exposes no " +
+                            "diopter control; use focusmode=on or focusmode=off"
+                    )
+            }
             // Declared in IpWebcamCompat.SUPPORTED but never handled, so a client
             // device_name is NOT one of the no-ops, and it used to be. It is the
             // Model and profile Name in ONVIF and the name WS-Discovery
@@ -1786,6 +1823,81 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
 
     private fun okText(t: String) = newFixedLengthResponse(Status.OK, "text/plain", t)
     private fun badRequest(t: String) = newFixedLengthResponse(Status.BAD_REQUEST, "text/plain", t)
+
+    /**
+     * focusmode / focus from the IP Webcam API, doing what it says or refusing.
+     *
+     * Every value used to return okText("auto") unconditionally. The accepted set
+     * is the API's own vocabulary -- on, auto, off, macro, infinity, fixed -- but
+     * only three of them are distinct actions on this hardware:
+     *
+     *   on / auto / macro  -> autofocus at centre. macro is deliberately mapped to
+     *     plain autofocus and the response says so: CameraX exposes no
+     *     minimum-focus-distance control, so "macro" cannot become what a client
+     *     expects. Silently accepting it is what this handler is fixing.
+     *   off / fixed / infinity -> lock the focus where it lands
+     *     (FocusMeteringAction.disableAutoCancel)
+     *
+     * The response echoes the effective mode, not the requested one, so a client
+     * can see what it actually got. An unrecognised value is a 400 listing the
+     * accepted set instead of an Ok that does nothing.
+     */
+    /** Whether the camera has a flash LED this build can drive at all. */
+        /**
+     * Whether the torch can be driven right now.
+     *
+     * Deliberately not a guess from CameraCharacteristics: the platform refuses a
+     * torch request while the camera is streaming, so a device that answers
+     * "no torch" during an active stream would advertise a command it cannot
+     * honour right now. Reusing the same call the HTTP route uses keeps the ONVIF
+     * capability and the HTTP endpoint from disagreeing.
+     */
+    private fun torchControlActive(): Boolean =
+        cameraManager.setTorch(false) == null
+
+    /**
+     * Runs an ONVIF auxiliary command against the real torch.
+     *
+     * tt:LED|On and tt:LED|Off are the only commands advertised, and both end in
+     * the same setTorch() call that /torchon and /torchoff use, so the ONVIF route
+     * cannot claim a lamp the HTTP route would not also light. setTorch returns a
+     * reason string on failure and null on success, which is what decides the
+     * answer: a refused lamp becomes ActionNotSupported rather than a 200 that
+     * claims light that never came on.
+     */
+    private fun applyOnvifTorch(command: String): Boolean = when (command) {
+        "tt:LED|On" -> setTorch(true) == null
+        "tt:LED|Off" -> setTorch(false) == null
+        else -> false
+    }
+
+    private fun focusMode(value: String): Response {
+        val v = value.trim().lowercase()
+        if (!cameraManager.isFocusCapable()) {
+            return badRequest(
+                "this camera reports no autofocus, so focusmode cannot be changed " +
+                    "(focusmetering is unsupported); /focus is unavailable too"
+            )
+        }
+        return when (v) {
+            "on", "auto", "macro" -> {
+                val err = cameraManager.setFocus(0.5f, 0.5f, lock = false)
+                if (err != null) badRequest(err) else okText(
+                    if (v == "macro")
+                        "auto; macro is not a distinct mode on this camera, so continuous " +
+                            "autofocus was enabled instead"
+                    else "auto"
+                )
+            }
+            "off", "fixed", "infinity" -> {
+                val err = cameraManager.setFocus(0.5f, 0.5f, lock = true)
+                if (err != null) badRequest(err) else okText("off; focus is now locked")
+            }
+            else -> badRequest(
+                "unknown focusmode: $value (accepted: on, auto, macro, off, fixed, infinity)"
+            )
+        }
+    }
     private fun notFound(t: String) = newFixedLengthResponse(Status.NOT_FOUND, "text/plain", "Not found: $t")
 
     private fun parseParams(session: IHTTPSession): Map<String, String> =
