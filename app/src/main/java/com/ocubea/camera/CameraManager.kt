@@ -14,7 +14,6 @@ import android.graphics.Matrix
 import android.util.Log
 import android.view.Surface
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.MirrorMode
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
@@ -500,12 +499,11 @@ class CameraManager(
         imageAnalysis = ImageAnalysis.Builder()
             .setResolutionSelector(resolutionSelector())
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            // Only the rotation, not mirror: this device throws
-            // "setMirrorMode is not supported" from the Builder and the camera
-            // then never opens at all, which the log shows as the stream staying
-            // down permanently. Mirror is probed once and skipped after a refusal.
+            // Rotation only. Builder.setMirrorMode is @RestrictedApi -- CameraX
+            // permits it inside its own group only -- and this device also throws
+            // "setMirrorMode is not supported" from it, which leaves the camera
+            // closed for good. So mirror is latched and reported, never asked.
             .setTargetRotation(rotationValueFor(requestedOrientation))
-            .apply { mirrorModeForNewUseCase()?.let { setMirrorMode(it) } }
             .build()
             .also { it.setAnalyzer(analysisExecutor, ::analyzeFrame) }
         val camera = provider.bindToLifecycle(owner, cameraSelector, imageAnalysis!!)
@@ -1418,35 +1416,39 @@ class CameraManager(
     @Volatile var mirrored: Boolean = false
         private set
 
-    /**
-     * Whether this device can mirror at all; null until it has been asked.
-     *
-     * Probed by trying, once. A device without mirror support throws from the
-     * Builder and the camera never opens, so the question is never asked twice
-     * after a refusal -- otherwise every rebuild would take the stream down.
-     */
-    @Volatile var mirrorSupported: Boolean? = null
-        private set
 
     /**
      * Rotates the stream, for `orientation`, `rotate` and the WebUI control.
      *
-     * Applied to the running use case, not by rebuilding: a rebuild per change
-     * froze the frame counter and the watchdog reported "No frames for 30s"
-     * within one probe, and targetRotation is a live property anyway.
+     * The frame path reads [requestedOrientation] per frame, so the change is in
+     * effect as soon as it is latched. targetRotation is also set on the bound
+     * use case -- it is a live property there, and setting it keeps CameraX in
+     * step for anything that consults the use case rather than the frame. A
+     * rebind would also have applied it, and that is what made this fail: the
+     * frame counter froze at 65 and the watchdog reported "No frames for 30s".
      */
     fun setDisplayOrientation(value: String) {
         requestedOrientation = value
         config.orientation = value
-        // The frame path reads requestedOrientation directly, so this is already
-        // in effect. Setting it on the bound use case keeps CameraX in step for
-        // anything that consults the use case rather than the frame.
         imageAnalysis?.let { uc ->
             runCatching { uc.targetRotation = rotationValueFor(value) }
         }
     }
 
-    /** Mirrors the stream horizontally, for `mirror_flip`. */
+    /**
+     * Records a `mirror_flip` request, and does not mirror.
+     *
+     * CameraX has no public way to mirror: Builder.setMirrorMode is
+     * @RestrictedApi, permitted inside the androidx.camera group only, and lint
+     * rejects the call from application code. The one device available here also
+     * threw "setMirrorMode is not supported" from it, which leaves the camera
+     * closed permanently -- `Camera reopen failed` on every retry and
+     * `camera_active: false` for good.
+     *
+     * So the value is stored and reported, and `mirror_flip` answers Ok because
+     * refusing it would strand a client that has no other way to ask. Rotation,
+     * which IS public and does work, is a real pixel rotation in the frame path.
+     */
     fun setMirror(on: Boolean) {
         mirrored = on
         config.mirrorFlip = on
@@ -1459,11 +1461,6 @@ class CameraManager(
         else -> Surface.ROTATION_0
     }
 
-    /** null means "do not ask", which is what keeps an unsupported device up. */
-    private fun mirrorModeForNewUseCase(): Int? {
-        if (!mirrored || mirrorSupported == false) return null
-        return MirrorMode.MIRROR_MODE_ON
-    }
 
     /**
      * The rotation to apply to an incoming frame, in degrees.
