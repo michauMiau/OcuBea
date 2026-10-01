@@ -83,6 +83,14 @@
   button.primary:hover{background:#2ea043}
   button.danger{background:transparent;border-color:#6e2b2b;color:#ff8a80}
   button.danger:hover{background:#3d1d1d}
+  /* A disabled bulk action has to LOOK disabled. The three "delete all" /
+     "apply limits" buttons walk the list client-side, so on an empty list they
+     send nothing at all -- without this they were indistinguishable from a
+     working control, which is the failure the undefined helpers had. */
+  button.ctl:disabled{opacity:.4;cursor:not-allowed}
+  button.ctl:disabled:hover{background:inherit;border-color:var(--line)}
+  button.primary:disabled:hover{background:#238636}
+  button.danger:disabled:hover{background:transparent}
   /* The download link is a control, not text: same box as the buttons beside
      it, arrow centred. */
   a.ctl{height:36px;min-width:32px;padding:0 8px;display:inline-flex;align-items:center;

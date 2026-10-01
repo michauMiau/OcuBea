@@ -9,8 +9,9 @@ import htm from 'htm';
 import Hls from 'hls.js';
 
 import {
-  api, bytes, get, setSetting, ptz, deleteRecording, setToken, getToken,
+  bytes, get, setSetting, ptz, deleteRecording, setToken, getToken,
   clipOnFile, recordNow, stopClipRecording, focus, setAudioCodec, hlsProfile, setHlsProfile,
+  clearClips, pruneClips, deleteAllRecordings,
   t, uptime, LANG as T_LANG,
 } from './state.js';
 import { hlsMessage } from './hlsmsg.js';
@@ -95,22 +96,16 @@ const PRE_RECORD_DEFAULT = 2;
 const MAX_CLIP_DEFAULT = 300;
 
 // ── clip and recording bulk actions ─────────────────────────────────────────
-// prune and clear both answer 400 "invalid clip name" when the name parameter
-// is missing, so they cannot be called bare: the phone wants a file name even
-// for an operation that applies to every clip. Passing the newest clip's name
-// satisfies the contract -- it is a real name the phone recognises, and the
-// operation itself is not per-file.
-const lastClipName = (clips) => (clips.length ? clips[0].name : '');
-
-const pruneClips = (clips) =>
-  clipOnFile('prune', lastClipName(clips));
-
-const clearClips = (clips) =>
-  clipOnFile('clear', lastClipName(clips));
-
-const deleteAllRecordings = async (recordings) => {
-  for (const r of recordings) await deleteRecording(r.name);
-};
+// These used to be worked around here: prune and clear were called through
+// clipOnFile() with the newest clip's name, because a bare POST came back 400
+// "invalid clip name" and the buttons had to do something.
+//
+// The 400 was the wrong signal. clipsClear() and clipsPrune() never read the
+// query string -- they iterate ClipStorage.list() and delete by retention rule
+// -- so the name was only ever there to get past the check. It worked by
+// accident: any list that happened to be non-empty kept these buttons alive,
+// and an empty list made them inert. The real helpers live in state.js now,
+// next to the rest of the wire layer, called bare.
 
 // ── small building blocks ───────────────────────────────────────────────────
 const Row = ({ label, children }) => html`
@@ -193,6 +188,7 @@ function Stream({ mode, running, lowLatency }) {
     let fallbackTimer = null;
 
     const run = async () => {
+      if (cancelled) return;
     // MJPEG: a plain <img> fed by a multipart endpoint. Stop it by dropping src.
     //
     // The cache-buster goes on ONCE, when there is no stream yet. Setting a
@@ -288,6 +284,11 @@ function Stream({ mode, running, lowLatency }) {
     // client-side retry loop waited for the same thing here and was removed:
     // it duplicated the server's wait and raced it.
     if (!hlsRef.current) setHlsError('hls_warming');
+
+    // Checked after the wait as well, not only at the top of run(): this
+    // polls for the playlist, and an unmount during that poll used to carry
+    // on and attach a source to an instance the cleanup had already destroyed.
+    if (cancelled) return;
 
     hls.loadSource('/hls.m3u8');
     hls.attachMedia(vid);
@@ -610,7 +611,11 @@ function App() {
         <//>
         <div class="row">
           <button id="bRefreshRec" class="ctl" onClick=${() => act(loadLists)}>${t('refresh')}</button>
-          <button id="bDelAll" class="ctl danger"
+          <!-- Disabled on an empty list rather than a no-op click: the bulk
+               delete walks the list client-side, so with nothing recorded it
+               sends no request at all, and a live-looking button that does
+               nothing is the same failure as the undefined helpers were. -->
+          <button id="bDelAll" class="ctl danger" disabled=${recordings.length === 0}
             onClick=${() => act(deleteAllRecordings, recordings, loadLists)}
             >${t('deleteAll')}</button>
         </div>
@@ -635,9 +640,11 @@ function App() {
           <button id="bRecStop" class="ctl" onClick=${() => act(stopClipRecording, loadLists)}
             >${t('stopClip')}</button>
           <button id="bRefreshClips" class="ctl" onClick=${() => act(loadLists)}>${t('refresh')}</button>
-          <button id="bPruneClips" class="ctl" onClick=${() => act(pruneClips, clips, loadLists)}
+          <button id="bPruneClips" class="ctl" disabled=${clips.length === 0}
+            onClick=${() => act(pruneClips, loadLists)}
             >${t('applyLimits')}</button>
-          <button id="bClearClips" class="ctl danger" onClick=${() => act(clearClips, clips, loadLists)}
+          <button id="bClearClips" class="ctl danger" disabled=${clips.length === 0}
+            onClick=${() => act(clearClips, loadLists)}
             >${t('deleteAll')}</button>
         </div>
         ${clips.length === 0

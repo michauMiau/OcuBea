@@ -76,6 +76,19 @@ jobs:
       - name: Check WebUI labels keep their language
         run: node tools/interaction_verify.js
 
+      # no-undef, and specifically for this: app.jsx once called
+      # deleteAllRecordings / pruneClips / clearClips without importing them.
+      # esbuild passes undefined names straight through, so the bundle built,
+      # the buttons rendered, the clicks did nothing and the console stayed
+      # clean -- three dead controls that looked alive. A bundler cannot catch
+      # that; this can.
+      - name: Lint WebUI sources
+        run: npx eslint src/
+
+      # Needs a running phone, so it is NOT wired into this job: it creates and
+      # deletes a clip. Run it against a device with tools/bulk_actions_verify.js
+      # -- it is the check that caught the bulk buttons doing nothing.
+
       - name: Upload APK as artifact
         uses: actions/upload-artifact@v4
         with:
