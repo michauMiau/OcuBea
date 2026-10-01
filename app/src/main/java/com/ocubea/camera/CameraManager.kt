@@ -277,7 +277,20 @@ class CameraManager(
     @Volatile var hlsProfile: com.ocubea.model.HlsProfile =
         com.ocubea.model.HlsProfile.DEFAULT
     @Volatile var hlsSession: com.ocubea.stream.HlsSession? = null
-        private set
+
+    /**
+     * The per-frame tap RTSP installs on the HLS session.
+     *
+     * Null clears it. Set to null on teardown so a stopped HLS session cannot
+     * leave a dead client sink attached to whatever starts next.
+     */
+    fun setRtspFrameTap(tap: ((com.ocubea.stream.H264Encoder.Sample) -> Unit)?) {
+        hlsSession?.frameTap = tap
+    }
+
+    /** True when there is an encoder producing access units to tap. */
+    val rtspVideoAvailable: Boolean get() = hlsSession?.isEncoding == true
+
     @Volatile private var hlsLastError = "none"
 
     /**
@@ -933,6 +946,8 @@ class CameraManager(
                 runCatching { hls!!.encodeFrame(imageProxy, now / 1000) }
                     .onFailure { hlsLastError = it.message ?: "h264 feed failed" }
             }
+
+
 
             // Clip path: a second hardware encoder reading the same YUV. Fed
             // before the JPEG work for the same reason as HLS — never let a

@@ -42,6 +42,13 @@ class TelemetryHandler(
     private val listeningPort: () -> Int,
     private val pipelineJson: () -> String,
     private val hlsJson: () -> String,
+    /**
+     * RTSP state as JSON, from the server itself and not from the setting:
+     * "enabled" with no listener behind it is exactly the lie this project keeps
+     * finding, so the port reported is the one actually bound and `running` is
+     * the socket rather than the preference.
+     */
+    private val rtspJson: () -> String,
 ) {
 
     private val startedAt = System.currentTimeMillis()
@@ -130,6 +137,7 @@ class TelemetryHandler(
             append("\"dropped\":${cfg["dropped"]},")
             append("\"pipeline\":" + pipelineJson() + ",")
             append("\"hls\":" + hlsJson() + ",")
+              append("\"rtsp\":" + rtspJson() + ",")
             append("\"viewers\":${cfg["viewers"]},")
             // Refused connections are the visible half of BoundedAsyncRunner:
             // without them a device hammering the camera looks like a healthy

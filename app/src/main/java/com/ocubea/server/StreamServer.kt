@@ -38,6 +38,7 @@ class StreamServer(
     private val motionDetector: MotionDetector,
     private val motionRecorder: MotionRecorder,
     private val onvifDiscovery: OnvifDiscovery,
+
     private val config: OcuBeaConfig = OcuBeaConfig(context),
     port: Int = config.port
 ) : NanoHTTPD(port) {
@@ -76,10 +77,47 @@ class StreamServer(
         listeningPort = { listeningPort },
         pipelineJson = { pipelineJson() },
         hlsJson = { hlsJson() },
+        // The socket, not the preference. `running` is whether a ServerSocket is
+        // open and `port` is the one actually bound, so a client reading
+        // "enabled: true" can trust something is listening -- and after a failed
+        // bind, where the setting was rolled back, it will see false.
+        rtspJson = { rtspJson() },
     )
 
     init {
         setAsyncRunner(connectionRunner)
+    }
+
+    /**
+     * RTSP, constructed always but LISTENING only when enabled.
+     *
+     * Constructed unconditionally so status.json can report a real state; the
+     * socket is only bound in setRtspEnabled(true), so "off" means no port
+     * exists rather than a port that answers and refuses.
+     */
+    private val rtspServer: RtspServer = RtspServer(
+        config,
+        { openRtspAudio() },
+        { tap -> cameraManager.setRtspFrameTap(tap) },
+    )
+
+    /**
+     * A raw PCM source for one RTSP session, or null.
+     *
+     * `addEncodedClient` has no matching call on the way out unless the ring is
+     * closed -- EncodedAudioResponse documents that leak, one abandoned encoder
+     * per session. Closing the InputStream is what returns the ring, so the
+     * stream returned here must always be closed, and RtspServer closes it in its
+     * own finally.
+     *
+     * "wav" because L16 is what that ring holds: the encoder's PCM with a WAV
+     * header the caller has already stripped. Handing an RTP payload a 44-byte
+     * RIFF header would be 44 bytes of noise at the start of every session.
+     */
+    private fun openRtspAudio(): java.io.InputStream? {
+        if (!config.audioEnabled) return null
+        val ring = audio.addEncodedClient("wav", 706_000) ?: return null
+        return ring.asInputStream()
     }
 
     /** Live connection stats for status.json. */
@@ -94,6 +132,18 @@ class StreamServer(
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri ?: "/"
+
+        // Reconcile the RTSP listener against the setting on every request.
+        //
+        // Belt and braces with restoreRtspListener() at start-up: if the socket
+        // died since then, a client asking for anything at all is proof the phone
+        // is alive and the port should be open. Cheap, and it means a dead socket
+        // cannot stay dead until the next restart.
+        //
+        // Needed because the accept loop now clears the state when the socket dies
+        // rather than spinning -- correct, but it leaves the setting claiming a
+        // port nobody is on until something notices.
+        if (config.rtspEnabled && !rtspServer.isRunning()) rtspServer.start()
         val method = session.method
 
         // Measured on every request, camera or not.
@@ -851,6 +901,42 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             // to a password would tell a user the stream is protected when it is
             // not, which is a worse lie than a no-op, so they are refused below
             // instead of faked.
+            // RTSP, off by default because it opens a second LAN socket. The
+            // reply is the outcome of actually binding the port: an "Ok" with no
+            // listener behind it would be the same lie as device_name used to be,
+            // and this one is invisible from the UI.
+            "rtsp" -> {
+                config.rtspEnabled = value == "on"
+                if (config.rtspEnabled) {
+                    if (rtspServer.start()) ipWebcamOk()
+                    else {
+                        config.rtspEnabled = false
+                        badRequest("cannot bind RTSP port ${config.rtspPort}")
+                    }
+                } else {
+                    rtspServer.stop()
+                    ipWebcamOk()
+                }
+            }
+
+            "rtsp_port" -> {
+                val p = value.toIntOrNull()
+                if (p == null) badRequest("rtsp_port must be a number")
+                else if (p < 1024 || p > 65535) {
+                    badRequest("rtsp_port must be 1024..65535")
+                } else if (config.rtspEnabled && p != rtspServer.boundPort) {
+                    // Changing the port while live would leave the old socket bound
+                    // and the setting claiming the new one. Rebind, and say so.
+                    rtspServer.stop()
+                    config.rtspPort = p
+                    if (rtspServer.start()) ipWebcamOk()
+                    else badRequest("cannot bind RTSP port $p")
+                } else {
+                    config.rtspPort = p
+                    ipWebcamOk()
+                }
+            }
+
             "autostart", "noremote",
             "motion_limit" -> okText("ok")
             "exposure", "exposure_lock" -> okText("ok")
@@ -1224,6 +1310,43 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             val jv = if (v is String) "\"${v.jsonEscape()}\"" else v.toString()
             "\"$k\":$jv"
         }
+
+    /**
+     * Reopens the RTSP listener if the setting says it should be open.
+     *
+     * Called at start-up. Idempotent, and reports the outcome rather than
+     * returning silently: if the port cannot be bound the setting is rolled back
+     * so status.json cannot report an enabled feature with nothing behind it.
+     */
+    fun restoreRtspListener() {
+        if (!config.rtspEnabled) return
+        if (rtspServer.isRunning()) return
+        if (!rtspServer.start()) {
+            config.rtspEnabled = false
+        }
+    }
+
+    /**
+     * RTSP state for status.json.
+     *
+     * Reports the socket, not the setting. `enabled` is the preference so a
+     * client can see the intent, `running` is whether a ServerSocket is actually
+     * open, and `port` is the port really bound. A failed bind rolls the setting
+     * back, so those two can never disagree here -- but a client that trusted
+     * `enabled` alone would be told a port is open when nothing is listening,
+     * which is the failure this whole file has been about.
+     */
+    private fun rtspJson(): String =
+        """{"enabled":${config.rtspEnabled},"running":${rtspServer.isRunning()},""" +
+            """"port":${if (rtspServer.isRunning()) rtspServer.boundPort else 0},""" +
+            """"configured_port":${config.rtspPort},""" +
+            """"sessions":${rtspServer.activeSessions()},""" +
+            """"clients_total":${rtspServer.totalSessions()},""" +
+            """"packets":${rtspServer.packetsSent()},""" +
+            """"video":${if (cameraManager.rtspVideoAvailable) "true" else "false"},""" +
+            """"audio":${config.audioEnabled},""" +
+            """"url":"rtsp://${localIpFallback()}:""" +
+            """${if (rtspServer.isRunning()) rtspServer.boundPort else 0}/h264_pcm.sdp"}"""
 
     /** Escapes a string for safe inclusion inside a JSON string literal. */
     private fun String.jsonEscape(): String {
