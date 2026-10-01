@@ -102,6 +102,15 @@ class HlsSession(
     private val ring = ArrayDeque<Segment>()
 
     @Volatile private var initReady = false
+
+    /**
+     * Optional per-frame tap, set by RTSP. Null when no client is streaming.
+     *
+     * A single sink rather than a list: RTSP drains its own sessions from here,
+     * and one reference means the frame loop cannot walk a list that a client
+     * thread is mutating underneath it.
+     */
+    @Volatile var frameTap: ((H264Encoder.Sample) -> Unit)? = null
     @Volatile var mediaSequence = 0
         private set
     @Volatile var lastError: String = "none"
@@ -274,6 +283,16 @@ class HlsSession(
                 return@encode
             }
             noteFrame()
+            // Tap the access unit on its way to the muxer, for RTSP.
+            //
+            // Tapped here rather than from CameraManager afterwards because the
+            // sample exists only inside this callback -- there is no "last sample"
+            // to read, and caching one would be a buffer with a lifetime nobody
+            // owns. The tap must run AFTER initReady is set, or a client would
+            // receive codec-config buffers it cannot decode as frames.
+            //
+            // Must not block: this runs on the camera's frame loop.
+            frameTap?.invoke(sample)
             if (measuredFps > 0.0) muxer.setMeasuredFps(measuredFps)
             muxer.append(sample)?.let { seg ->
                 // Trim by measured duration rather than by a fixed count: the

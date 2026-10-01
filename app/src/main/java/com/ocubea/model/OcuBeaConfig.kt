@@ -96,6 +96,33 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         set(v) = prefs.edit().putBoolean(KEY_AUDIO, v).apply()
 
     /**
+     * RTSP, off unless the user turns it on.
+     *
+     * RTSP opens a second listening socket on the LAN, so "off" has to mean
+     * there is no port to connect to at all -- not a port that answers and
+     * refuses. The socket is only constructed when this is true and closed when
+     * it goes false, so switching it off removes the surface instead of hiding
+     * it.
+     *
+     * Default false, unlike audioEnabled, because this one opens a door.
+     */
+    var rtspEnabled: Boolean
+        get() = prefs.getBoolean(KEY_RTSP_ENABLED, false)
+        set(v) = prefs.edit().putBoolean(KEY_RTSP_ENABLED, v).apply()
+
+    /**
+     * The port the RTSP listener binds.
+     *
+     * 554 is the registered RTSP port, but an Android app cannot bind below 1024
+     * without root, so the default is 8554 -- the de facto RTSP port every camera
+     * and player falls back to. pydroid-ipcam takes the port from the URL it is
+     * given, so any port works as long as both agree.
+     */
+    var rtspPort: Int
+        get() = prefs.getInt(KEY_RTSP_PORT, DEFAULT_RTSP_PORT)
+        set(v) = prefs.edit().putInt(KEY_RTSP_PORT, v.coerceIn(1024, 65535)).apply()
+
+    /**
      * Which audio codec `/audio.<ext>` serves.
      *
      * Stored as an id from `AudioCodecProbe.options`. An empty string means
@@ -199,6 +226,8 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         "pre_record_seconds" to preRecordSeconds,
         "max_clip_seconds" to maxClipSeconds,
         "device_name" to deviceName,
+        "rtsp_enabled" to rtspEnabled,
+        "rtsp_port" to rtspPort,
         "autostart" to autostart,
         "power_saving" to powerSaving,
         "auth_required" to accessToken.isNotEmpty()
@@ -222,6 +251,11 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         const val KEY_NIGHT_VISION = "night_vision"
         const val KEY_FRONT_CAMERA = "front_camera"
         const val KEY_AUDIO = "audio_enabled"
+        const val KEY_RTSP_ENABLED = "rtsp_enabled"
+        const val KEY_RTSP_PORT = "rtsp_port"
+
+        /** 554 is the registered RTSP port and is unreachable from an app on Android. */
+        const val DEFAULT_RTSP_PORT = 8554
         const val KEY_AUDIO_CODEC = "audio_codec"
         const val KEY_SECURITY = "security_enabled"
         const val KEY_MOTION_SENS = "motion_sensitivity"
