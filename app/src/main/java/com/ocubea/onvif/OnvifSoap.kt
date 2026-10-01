@@ -44,6 +44,8 @@ object OnvifSoap {
   <wsdl:message name="GetProfilesResponse"/>
   <wsdl:message name="GetStreamUriResponse"/>
   <wsdl:message name="GetSnapshotUriResponse"/>
+  <wsdl:message name="GetServiceCapabilitiesResponse"/>
+  <wsdl:message name="SendAuxiliaryCommandResponse"/>
   <wsdl:portType name="OnvifDevicePortType">
 $ops
   </wsdl:portType>
@@ -67,15 +69,96 @@ $ops
      */
     val OPERATIONS = listOf(
         "GetSystemDateAndTime", "GetServices", "GetDeviceInformation",
-        "GetCapabilities", "GetProfiles", "GetStreamUri", "GetSnapshotUri"
+        "GetCapabilities", "GetProfiles", "GetStreamUri", "GetSnapshotUri",
+    // SendAuxiliaryCommand lives in Device Management (tds:), not Device IO --
+    // verified against devicemgmt.wsdl, where it is declared alongside
+    // GetServiceCapabilities. Device IO (tmd:) has no AuxiliaryCommand at all.
+    "GetServiceCapabilities", "SendAuxiliaryCommand"
     )
 
+
+    /**
+     * The auxiliary commands this device actually honours.
+     *
+     * tt:LED is the honest one: it is the white flash LED, and it only entered the
+     * spec in 25.06 (January 2025). tt:IRLamp is deliberately absent -- that is the
+     * infrared illuminator, this phone has no IR emitter, and answering Ok for it
+     * would be claiming hardware that does not exist. tt:IRLamp is announced by
+     * real NVRs only when they drive IR through the IR-cut filter.
+     *
+     * LED|Auto is left out for the same reason: no camera-side logic decides to
+     * light the LED from exposure, so "Auto" would be a promise nothing keeps.
+     */
+    fun auxiliaryCommands(torchCapable: Boolean): String =
+        if (torchCapable) "tt:LED|On tt:LED|Off" else ""
+
+    /**
+     * Checks a command against the advertised list, or explains why it is refused.
+     *
+     * Returns null when the command may be attempted. The distinction matters: a
+     * command that is syntactically fine but not supported must be
+     * ActionNotSupported, not a silent success.
+     */
+    fun auxiliaryCommandProblem(command: String, torchCapable: Boolean): String? {
+        if (command.isEmpty()) return "AuxiliaryCommand is empty"
+        if (command.length > 128) return "AuxiliaryCommand exceeds the 128 character limit"
+        if (!torchCapable) {
+            return "this device has no torch, so no auxiliary command is supported"
+        }
+        if (command !in auxiliaryCommands(true).split(" ")) {
+            return "unsupported auxiliary command: $command " +
+                "(this device supports: ${auxiliaryCommands(true)})"
+        }
+        return null
+    }
+
+    /**
+     * A spec-shaped SOAP fault.
+     *
+     * Subcode in the ONVIF namespace, so a client sees ActionNotSupported rather
+     * than an empty 200 that it has to guess the meaning of.
+     */
+            /**
+     * The Body of a SOAP fault, for a branch inside deviceServiceResponse().
+     *
+     * Body content only, not a whole envelope: the dispatcher wraps whatever a
+     * branch returns in its own envelope, so returning a full one produced a
+     * nested `<?xml ...?><s:Envelope>...` inside `<s:Body>` -- caught by sending
+     * a real SendAuxiliaryCommand and looking at the bytes.
+     */
+    fun onvifFault(subcode: String, reason: String): String {
+        val suffix = if (subcode.startsWith("ter:")) subcode.removePrefix("ter:") else subcode
+        return """
+    <s:Fault>
+      <faultcode>s:Sender</faultcode>
+      <faultstring>$reason</faultstring>
+      <detail>
+        <ter:$suffix/>
+      </detail>
+    </s:Fault>"""
+    }
 
     fun deviceServiceResponse(
         action: String, host: String, port: Int, deviceName: String,
         versionName: String, deviceId: String,
+        rtspPort: Int = 0,
+        torchCapable: Boolean = false,
+        torchControl: ((String) -> Boolean)? = null,
+        // The raw request Body. extractAction() returns the operation name only,
+        // so an operation carrying parameters (SendAuxiliaryCommand's
+        // AuxiliaryCommand) cannot read them from `action`; this is where they are.
+        soapBody: String = "",
     ): String {
-        val streamUri = "http://$host:$port/video"
+        val auxiliaryCommands = auxiliaryCommands(torchCapable)
+        // Prefer RTSP only when the listener is genuinely bound. `rtspPort` is 0
+        // whenever it is not, which is why the fallback is not a guess: an NVR that
+        // was handed an rtsp:// URI for a closed port would show a camera that
+        // connects but never streams -- the exact failure RTSP was added to remove.
+        // rtsp://host:0 is what status.json used to report, and it is useless to a
+        // client, so the same rule applies here: no live listener, no RTSP URI.
+        val rtspLive = rtspPort in 1024..65535
+        val streamUri = if (rtspLive) "rtsp://$host:$rtspPort/h264.sdp" else "http://$host:$port/video"
+        val streamTransport = if (rtspLive) "RTP/AVP/TCP;unicast;interleaved=0-1" else "HTTP"
         val snapshotUri = "http://$host:$port/shot.jpg"
         val body = when {
             action.contains("GetDeviceInformation") -> """
@@ -102,13 +185,59 @@ $ops
                   </tds:Capabilities>
                 </tds:GetCapabilitiesResponse>"""
 
+            // GetServiceCapabilities answers with tds:DeviceServiceCapabilities,
+            // which is the type that carries Misc/AuxiliaryCommands. GetCapabilities
+            // answers with tt:Capabilities, which has no Misc at all -- putting it
+            // there would not validate, and clients read the list from here.
+            action.contains("GetServiceCapabilities") -> """
+                <tds:GetServiceCapabilitiesResponse>
+                  <tds:Capabilities>
+                    <tt:Network/>
+                    <tt:Security/>
+                    <tt:System/>
+                    <tt:Misc AuxiliaryCommands="$auxiliaryCommands"/>
+                  </tds:Capabilities>
+                </tds:GetServiceCapabilitiesResponse>"""
+
+            // The torch, as ONVIF spells it. AuxiliaryCommand is a plain string
+            // (tt:AuxiliaryData, maxLength 128) in "domain|action" form.
+            action.contains("SendAuxiliaryCommand") -> {
+                // Only the text content, never the element name. The first attempt
+                // used <[^>]*AuxiliaryCommand[^>]*>(.*?)</...> which captured
+                // "<tds:AuxiliaryCommand>tt:LED|On" -- the tag plus the value --
+                // so even a command this device advertises was rejected as
+                // unsupported. Measured: all six commands came back
+                // ActionNotSupported with the tag glued into the name.
+                val command = Regex(
+                    """<(?:[\w.-]+:)?AuxiliaryCommand[^>]*>([^<]*)<""",
+                ).find(soapBody)?.groupValues?.get(1)?.trim().orEmpty()
+                val problem = auxiliaryCommandProblem(command, torchCapable)
+                if (problem != null) {
+                    // ActionNotSupported is the fault the spec assigns to a command
+                    // outside the advertised AuxiliaryCommands list. This camera has a
+                    // LED, not an IR illuminator, so tt:IRLamp must not be answered Ok.
+                    onvifFault("ter:ActionNotSupported", problem)
+                } else {
+                    val applied = torchControl?.invoke(command) ?: false
+                    if (!applied) {
+                        onvifFault("ter:ActionNotSupported", "$command was accepted but the torch did not change")
+                    } else {
+                        """
+                <tds:SendAuxiliaryCommandResponse>
+                  <tds:AuxiliaryCommandResponse>$command</tds:AuxiliaryCommandResponse>
+                </tds:SendAuxiliaryCommandResponse>"""
+                    }
+                }
+            }
+
             action.contains("GetProfiles") -> """
                 <trt:GetProfilesResponse>
                   <trt:Profiles fixed="true" token="profile_1">
                     <tt:Name>${deviceName.escapeXml()}</tt:Name>
                     <tt:VideoEncoderConfiguration>
                       <tt:Name>MJPEG</tt:Name><tt:UseCount>1</tt:UseCount><tt:token>vec_1</tt:token>
-                      <tt:Encoding>JPEG</tt:Encoding>
+                      <tt:Encoding>H264</tt:Encoding>
+                      <tt:Multicast><tt:Transport>$streamTransport</tt:Transport></tt:Multicast>
                       <tt:Resolution><tt:Width>1280</tt:Width><tt:Height>720</tt:Height></tt:Resolution>
                       <tt:RateControl><tt:FrameRateLimit>15</tt:FrameRateLimit></tt:RateControl>
                     </tt:VideoEncoderConfiguration>
@@ -119,6 +248,7 @@ $ops
                 <trt:GetStreamUriResponse>
                   <trt:MediaUri><tt:Uri>$streamUri</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect><tt:InvalidAfterReboot>false</tt:InvalidAfterReboot><tt:Timeout>PT60S</tt:Timeout></trt:MediaUri>
                 </trt:GetStreamUriResponse>"""
+
 
             action.contains("GetSnapshotUri") -> """
                 <trt:GetSnapshotUriResponse>
