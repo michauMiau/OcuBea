@@ -10,7 +10,7 @@ import Hls from 'hls.js';
 
 import {
   api, bytes, get, setSetting, ptz, deleteRecording, setToken, getToken,
-  clipOnFile, recordNow, stopClipRecording, focus, setAudioCodec, hlsProfile,
+  clipOnFile, recordNow, stopClipRecording, focus, setAudioCodec, hlsProfile, setHlsProfile,
   t, uptime, LANG as T_LANG,
 } from './state.js';
 import { hlsMessage } from './hlsmsg.js';
@@ -231,8 +231,38 @@ function Stream({ mode, running, lowLatency }) {
     }
 
 
-    const hls = new Hls({ lowLatencyMode: lowLatency, enableWorker: true });
+    const hls = new Hls({
+      // Latency here is set by the SERVER, not by this flag. /hls/profile
+      // answers `segment_ms=250 sync=3 buffer=6` and the playlist carries no
+      // EXT-X-PART or EXT-X-SERVER-CONTROL, so this is ordinary HLS: a client
+      // cannot start a segment until the muxer closes it, and playback sits at
+      // least one buffer behind. lowLatencyMode only lets hls.js skip the extra
+      // safety margin it would otherwise keep; it cannot make an ordinary
+      // playlist low-latency. Measured on the phone: 4.14s of media on the
+      // playlist, produced every 0.17s.
+      lowLatencyMode: lowLatency,
+      // Keep the buffer shallow. A deep buffer on a live stream is only lag, so
+      // these are what actually move the playhead: the size it will grow to,
+      // and how far behind live it is allowed to sit.
+      maxBufferLength: lowLatency ? 2 : 6,
+      backBufferLength: lowLatency ? 4 : 30,
+      liveSyncDurationCount: lowLatency ? 2 : 3,
+      // Without this hls.js refuses to start at all when the manifest reports
+      // no EXT-X-ENDLIST and the first sync point is behind the live edge.
+      liveDurationInfinity: true,
+      enableWorker: true,
+      // The playlist is served without a Vary header, so a stale one can be
+      // reused; that alone is a second or more of dead time.
+      manifestLoadingMaxRetry: 2,
+      manifestLoadingRetryDelay: 200,
+      levelLoadingMaxRetry: 4,
+      fragLoadingMaxRetry: 6,
+    });
     hlsRef.current = hls;
+    // Exposed so the page can be measured from outside: `__hls.config` is the
+    // only place the effective buffer settings are visible once hls.js has
+    // merged them with its own defaults.
+    window.__hls = hls;
     hls.on(Hls.Events.ERROR, (_e, d) => {
       // A live stream drops fragments and reloads its playlist constantly; those
       // are recoverable and hls.js retries them itself. Only a fatal error needs
@@ -432,6 +462,13 @@ function App() {
               const v = !lowLatency;
               setLowLatency(v);
               localStorage.setItem('ocubea_ll', v ? '1' : '0');
+              // The client flag is half the job. The player cannot start a
+              // segment before the muxer closes it, so the profile on the phone
+              // is what sets the floor: LOW_LATENCY cuts segments to 120ms and
+              // sync to 1, DEFAULT is 250ms/3. Measured on the phone, DEFAULT
+              // put 4.14s of media on the playlist -- with `lowLatencyMode`
+              // alone the button changed nothing an end viewer could see.
+              act(setHlsProfile, v ? 'low' : 'default', poll);
             }}>
             ${t('lowLatency')}: ${lowLatency ? t('on') : t('off')}
           </button>
