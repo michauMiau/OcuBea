@@ -154,6 +154,14 @@ class HlsSession(
      */
     val stopsDeferred: Long get() = H264Encoder.stopsDeferred.get()
 
+    /**
+     * Codecs actually released. Every stop must land here exactly once, whether
+     * it ran inline or was deferred to the drain thread -- the sum of
+     * stopsCompleted + stopsDeferred has to match it, and that identity is the
+     * only thing that catches a dropped release.
+     */
+    val codecsReleased: Long get() = H264Encoder.released.get()
+
     /** Total nanoseconds encodes held the codec handle. */
     val encodeHeldNanos: Long get() = H264Encoder.encodeHeldNanos.get()
 
@@ -181,12 +189,13 @@ class HlsSession(
         val stopsCompleted: Long,
         val stopsDeferred: Long,
         val encodeCalls: Long,
+        val codecsReleased: Long = 0L,
     ) {
         companion object { val EMPTY = Telemetry(0, 0, 0) }
     }
 
     fun telemetry(): Telemetry =
-        Telemetry(stopsCompleted, stopsDeferred, encodeCalls)
+        Telemetry(stopsCompleted, stopsDeferred, encodeCalls, codecsReleased)
 
     /** Per-step hold breakdown, each summed over all encodes. */
     val tDrain1: Long get() = H264Encoder.tDrain1.get()

@@ -144,6 +144,67 @@ class H264EncoderStopRaceTest {
     }
 
     /**
+     * A deferred stop must not release inline -- that is the use-after-free.
+     *
+     * The guarded branch used to `return` straight after bumping the deferral
+     * counter, which did NOT keep the codec alive: `mc` went out of scope with no
+     * stop() and no release(). The guard turned a crash into a leaked native
+     * MediaCodec on every profile switch, invisible in every other number on the
+     * status page. It now hands the handle to a thread that waits for the analyzer
+     * and finishes the teardown.
+     *
+     * What this asserts is the decision, not the native effect. MediaCodec is final
+     * with a package-private constructor, so no JVM test can put a real codec in
+     * the field and the two branches are indistinguishable here; two earlier
+     * versions of this test claimed more and both passed with the leak present
+     * (one counted releases, one subclassed MediaCodec). The native release is
+     * checked on the device as encoder_codecs_released.
+     */
+    @Test
+    fun `a deferred stop does not release inline`() {
+        val enc = encoder()
+        val flag = field("encodeInFlight").get(enc) as AtomicBoolean
+        flag.set(true)          // simulate an analyzer wedged inside encode()
+        val beforeDeferred = H264Encoder.stopsDeferred.get()
+        val beforeStops = H264Encoder.stopsCompleted.get()
+
+        enc.stop()              // takes the deferred branch
+
+        assertTrue("stop() should have deferred", H264Encoder.stopsDeferred.get() > beforeDeferred)
+        assertTrue(
+            "a deferred stop must not take the completed path -- it has to wait " +
+                "for the analyzer, or it is a use-after-free",
+            H264Encoder.stopsCompleted.get() == beforeStops
+        )
+        flag.set(false)
+    }
+
+    /**
+     * The idle path must stay synchronous.
+     *
+     * The handoff thread exists for a wedged analyzer, not as a way to make every
+     * stop asynchronous: deferring unconditionally would work but would leave the
+     * analyzer racing a codec that is already gone.
+     */
+    @Test
+    fun `an idle stop takes the inline path`() {
+        val enc = encoder()
+        val beforeStops = H264Encoder.stopsCompleted.get()
+        val beforeDeferred = H264Encoder.stopsDeferred.get()
+
+        enc.stop()
+
+        assertTrue(
+            "idle stop should have completed inline",
+            H264Encoder.stopsCompleted.get() > beforeStops
+        )
+        assertTrue(
+            "idle stop should not have deferred",
+            H264Encoder.stopsDeferred.get() == beforeDeferred
+        )
+    }
+
+    /**
      * requestKeyFrame() also dereferences the codec. If it runs against a released
      * handle it is the same native crash through a different door, so it has to
      * respect the same handshake.
