@@ -160,6 +160,34 @@ class HlsSession(
     /** Number of encodes, so the above can be averaged. */
     val encodeCalls: Long get() = H264Encoder.encodeCalls.get()
 
+    /**
+     * Diagnostic hold, milliseconds. Default 0 = off.
+     *
+     * Set through /diagnostic/encoder_hold. Exists so the stop/teardown
+     * handshake can be shown to fire on demand rather than inferred from
+     * "it has never fired in 155 tries" -- which is equally consistent with a
+     * working guard behind a now-narrow window and with dead code.
+     */
+    fun setDiagnosticHold(ms: Long) { encoder.diagnosticHoldMs = ms.coerceIn(0, 5000) }
+    val diagnosticHoldMs: Long get() = encoder.diagnosticHoldMs.toLong()
+
+    /**
+     * The handshake counters, in one value.
+     *
+     * Grouped because a diagnostic endpoint wants all three and a caller reaching
+     * into three separate properties is how one of them silently goes stale.
+     */
+    data class Telemetry(
+        val stopsCompleted: Long,
+        val stopsDeferred: Long,
+        val encodeCalls: Long,
+    ) {
+        companion object { val EMPTY = Telemetry(0, 0, 0) }
+    }
+
+    fun telemetry(): Telemetry =
+        Telemetry(stopsCompleted, stopsDeferred, encodeCalls)
+
     /** Per-step hold breakdown, each summed over all encodes. */
     val tDrain1: Long get() = H264Encoder.tDrain1.get()
     val tDequeue: Long get() = H264Encoder.tDequeue.get()
