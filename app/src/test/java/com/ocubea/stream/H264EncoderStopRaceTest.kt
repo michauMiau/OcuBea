@@ -4,6 +4,7 @@ import java.lang.reflect.Field
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -261,5 +262,45 @@ class H264EncoderStopRaceTest {
         enc.stop()   // must not throw, must not hang
         val flag = field("encodeInFlight").get(enc) as AtomicBoolean
         assertTrue("flag left set after two stops", !flag.get())
+    }
+
+
+    /**
+     * Every release goes through claimRelease().
+     *
+     * The hazard is a double release: the inline path in stop() and the drain
+     * thread from releaseWhenIdle() overlap whenever a stop() lands while the
+     * analyzer is inside the codec and the flag clears a moment later. A counter
+     * cannot catch it -- `codec` is null after both paths, so only the handle's
+     * identity separates "this thread must release" from "someone already did".
+     *
+     * This cannot be a behavioural test. claimRelease() is private and takes a
+     * MediaCodec, which cannot be constructed off-device, and the previous
+     * version of this test simply asserted that Set.add refuses a duplicate --
+     * which passed whether or not the production code consulted the set at all.
+     *
+     * So it checks the one thing visible from here: both release sites call it.
+     * A third mc.release() added without a claim goes red, which is the
+     * regression worth catching.
+     */
+    @Test
+    fun `both release paths claim the handle first`() {
+        val src = java.io.File("src/main/java/com/ocubea/stream/H264Encoder.kt")
+            .takeIf { it.exists() }?.readText()
+            ?: java.io.File(
+                System.getProperty("user.dir") +
+                    "/app/src/main/java/com/ocubea/stream/H264Encoder.kt"
+            ).readText()
+
+        val releases = Regex("mc\\.release\\(\\)").findAll(src).count()
+        val claims = Regex("claimRelease\\(mc\\)").findAll(src).count()
+        assertTrue("could not read the encoder source", releases > 0)
+
+        // claimRelease is declared once, and every release site must go through
+        // it. Two release sites exist: the inline path and the drain thread.
+        assertEquals(
+            "every mc.release() must be preceded by a claimRelease(mc) call",
+            releases, claims
+        )
     }
 }
