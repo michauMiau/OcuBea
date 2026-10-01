@@ -28,7 +28,7 @@ class HlsSession(
     val profile: com.ocubea.model.HlsProfile = com.ocubea.model.HlsProfile.DEFAULT
 ) {
 
-    private companion object {
+    internal companion object {
         const val TAG = "OcuBeaHLS"
         // 20 segments at 250ms is ~5s of video retained for late joiners.
         //
@@ -40,7 +40,53 @@ class HlsSession(
         // itself advertised moments earlier. The ring is the client's buffer
         // and has to cover a slow poll, a stalled request and the initial
         // seek-back, so it is sized in seconds, not in "segments".
-        const val RING_SIZE = 20
+        //
+        // The playlist must advertise only as much history as a client is meant
+        // to have buffered: hls.js seeks to (live edge - liveSyncDuration), and
+        // every extra segment in the manifest is a segment it may load before
+        // it starts playing. Measured on the phone with the ring at 20 and the
+        // DEFAULT profile: 4.14s on the playlist. With LOW_LATENCY (120ms
+        // segments) 20 segments is nominally 2.4s, but the phone delivers frames
+        // slower than 120ms, so the measured playlist was still 3.98s -- the
+        // count was the binding constraint, not the length.
+        //
+        // So the ring is sized in SECONDS and the count follows from it. A
+        // 4s window is enough to survive a slow poll plus a stalled request
+        // (the reason the old fixed 8 was raised: "GET /hls/seg141.m4s 404" for
+        // a sequence the playlist had just advertised), while capping how far
+        // behind live a client can be parked.
+        // A floor, not a target: the profile's own sync count is the target, and
+        // a client only ever needs enough history to cover its seek target plus
+        // one playlist refresh in flight.
+        //
+        // Measured on the phone with a flat 4s window: DEFAULT (sync=3) held
+        // 3.90s and LOW_LATENCY (sync=1) held 3.90s too -- a single flat window
+        // ignores the profile, so switching to LOW_LATENCY changed nothing an
+        // end viewer could see. That is the exact complaint that started this.
+        const val RING_SECONDS_FLOOR = 2
+
+        /**
+         * Seconds of history to retain for a profile: two segments per sync
+         * unit, so hls.js's seek target (live edge - liveSyncDurationCount) plus
+         * the refresh in flight is always inside the ring, with a floor so a
+         // late joiner can still find something.
+         */
+        internal fun ringSecondsFor(profile: com.ocubea.model.HlsProfile): Int =
+            maxOf(RING_SECONDS_FLOOR, profile.liveSyncDurationCount)
+
+        /** Segments to retain for a profile and a MEASURED segment length. */
+        internal fun ringSizeFor(profile: com.ocubea.model.HlsProfile, segmentMs: Int): Int =
+            maxOf(6, (ringSecondsFor(profile) * 1000) / segmentMs.coerceAtLeast(1))
+
+        /** Test seam: the companion is private, this reaches it from outside. */
+        internal fun ringSizeForTest(segmentMs: Int): Int =
+            ringSizeFor(com.ocubea.model.HlsProfile.DEFAULT, segmentMs)
+
+        /** Test seam for the profile-driven path. */
+        internal fun ringSizeForProfileTest(
+            profile: com.ocubea.model.HlsProfile,
+            segmentMs: Int,
+        ): Int = ringSizeFor(profile, segmentMs)
     }
 
     private val encoder =
@@ -159,9 +205,14 @@ class HlsSession(
             noteFrame()
             if (measuredFps > 0.0) muxer.setMeasuredFps(measuredFps)
             muxer.append(sample)?.let { seg ->
+                // Trim by measured duration rather than by a fixed count: the
+                // profile's segmentMs is the REQUEST and the phone delivers
+                // frames slower than that, so a count-based ring holds far more
+                // seconds than intended on a slow device.
+                val keep = ringSizeFor(profile, seg.durationMs.toInt().coerceAtLeast(1))
                 synchronized(ring) {
                     ring.addLast(seg)
-                    while (ring.size > RING_SIZE) ring.removeFirst()
+                    while (ring.size > keep) ring.removeFirst()
                 }
                 mediaSequence = seg.sequence
                 lastSegmentDurationMs = seg.durationMs

@@ -94,6 +94,12 @@ export const setAudioCodec = (id) =>
 // sync=3 buffer=6" rather than JSON.
 export const hlsProfile = () => get('/hls/profile');
 
+// POST /hls/profile?set=low|high|default. Switching restarts the encoder, so
+// the media sequence restarts and an open viewer has to reload -- unavoidable,
+// KEY_I_FRAME_INTERVAL is a codec-config value.
+export const setHlsProfile = (name) =>
+  api('/hls/profile?set=' + encodeURIComponent(name), { method: 'POST' });
+
 // ── formatting ──────────────────────────────────────────────────────────────
 export const bytes = (n) => {
   if (!n) return '0 B';
