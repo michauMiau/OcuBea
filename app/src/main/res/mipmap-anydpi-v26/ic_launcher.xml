@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon, Android 8 and newer.
+
+  This file did not exist before. The icon was a plain vector in mipmap-mdpi,
+  which is not an adaptive icon at all: the launcher drew it as-is, with no
+  mask, no monochrome layer, and no ability to take a colour from the wallpaper.
+
+  The anydpi qualifier is what makes one file serve every density. The old
+  mipmap-mdpi copy was 108dp of artwork sitting in the lowest density bucket, so
+  the launcher scaled it and it looked soft on anything denser.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <!--
+      Themed icon support on Android 13 and newer. The launcher asks for a flat
+      silhouette and tints it with a palette colour, so the icon can match a
+      themed wallpaper rather than only a coloured one.
+    -->
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>
