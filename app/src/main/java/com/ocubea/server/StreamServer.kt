@@ -993,10 +993,21 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             // is the name IP Webcam itself uses for the same thing, and
             // "mirror_flip" mirrors the image. Both are real now, so neither
             // answers a success it does not do.
-            "rotate" -> {
-                cameraManager.setDisplayOrientation(value)
-                ipWebcamOk()
-            }
+            // `rotate` is IP Webcam's own name for the same rotation
+            // `orientation` performs. It used to pass the raw value straight to
+            // setDisplayOrientation, which accepts any String -- measured:
+            // rotate=banana, rotate=0, rotate=sideways and rotate=90 all answered
+            // "Ok". setDisplayOrientation stored the string and rotationValueFor()
+            // fell through its `else` to ROTATION_0, so the image did not rotate
+            // at all while /status.json reported orientation "banana". Worse, the
+            // bogus value was persisted, so `orientation` could no longer get back
+            // to a known state either.
+            //
+            // Now the alias map and the ORIENTATIONS whitelist apply, exactly as
+            // for `orientation`. Sideways and 90 are degrees the API does not
+            // spell this way; ORIENTATIONS_ALIASES decides whether they mean
+            // something here.
+            "rotate" -> setOrientation(value)
             "mirror_flip" -> {
                 val on = value !in OFF_VALUES
                 cameraManager.setMirror(on)
@@ -1046,18 +1057,14 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             // scene mode have no CameraX equivalent on most devices, so they
             // are accepted and ignored rather than 404 -- a client that offers
             // a value and is then refused it has nowhere to go.
-            "orientation" -> {
-                // CameraX can rotate at the target, not only in the sensor, so
-                // this is a real frame rotation rather than a metadata flag. A
-                // client asking for portrait gets portrait pixels.
-                val wanted = ORIENTATIONS_ALIASES[value] ?: value
-                if (wanted !in ORIENTATIONS) {
-                    badRequest("unknown orientation: $value")
-                } else {
-                    cameraManager.setDisplayOrientation(wanted)
-                    ipWebcamOk()
-                }
-            }
+            // CameraX can rotate at the target, not only in the sensor, so
+            // this is a real frame rotation rather than a metadata flag. A
+            // client asking for portrait gets portrait pixels.
+            //
+            // `rotate` shares this path: it is IP Webcam's own name for the same
+            // thing, and letting it bypass the whitelist is what let rotate=banana
+            // answer "Ok" and persist an orientation nothing could rotate.
+            "orientation", "rotate" -> setOrientation(value)
             "scenemode" ->
                 if (value in SCENE_MODES) ipWebcamOk() else badRequest("unknown scenemode: $value")
             "motion_detect" -> {
@@ -1835,6 +1842,22 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
     private fun badRequest(t: String) = newFixedLengthResponse(Status.BAD_REQUEST, "text/plain", t)
 
     /**
+     * Applies an orientation value through the alias map and the whitelist.
+     *
+     * Shared by `orientation` and `rotate`, which are the same rotation under two
+     * names in the IP Webcam API. Neither may accept a raw string: setDisplayOrientation
+     * takes any String, and rotationValueFor() silently maps an unknown name to
+     * ROTATION_0, so an unchecked value both does nothing and persists a state the
+     * caller can no longer name.
+     */
+    private fun setOrientation(value: String): Response {
+        val wanted = OrientationVocabulary.resolve(value)
+            ?: return badRequest(OrientationVocabulary.refusal(value))
+        cameraManager.setDisplayOrientation(wanted)
+        return ipWebcamOk()
+    }
+
+    /**
      * focusmode / focus from the IP Webcam API, doing what it says or refusing.
      *
      * Every value used to return okText("auto") unconditionally. The accepted set
@@ -1992,14 +2015,10 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
     // before sending, so a value it offers must not be refused here. It spells
     // the upside-down pair "upsidedown", not "reverse_*" as IP Webcam folklore
     // suggests, and a mismatch fails the round trip on the client side.
-    val ORIENTATIONS = listOf("landscape", "portrait", "upsidedown", "upsidedown_portrait")
+    val ORIENTATIONS = OrientationVocabulary.ORIENTATIONS
 
     /** The same four, under the other spelling some clients send. */
-    val ORIENTATIONS_ALIASES = mapOf(
-        "reverse_landscape" to "upsidedown",
-        "reverse_portrait" to "upsidedown_portrait",
-        "reverse" to "upsidedown"
-    )
+    val ORIENTATIONS_ALIASES = OrientationVocabulary.ALIASES
         val SCENE_MODES = listOf("auto", "manual", "night", "sports", "macro")
 
         val EFFECTS = listOf("none", "mono", "negative", "sepia", "nightvision")
