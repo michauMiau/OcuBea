@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Background colour for the adaptive icon.
+
+      Named for the icon rather than reused from colors.xml on purpose: Material
+      You substitutes this value at runtime from the wallpaper palette, and a
+      name borrowed by the app's own theme would make that substitution fight
+      the app's colours instead of standing on its own.
+
+      #4CAF50 is the green the previous launcher icon used, so an unthemed
+      device keeps exactly the icon it had.
+    -->
+    <color name="ic_launcher_background">#4CAF50</color>
+</resources>

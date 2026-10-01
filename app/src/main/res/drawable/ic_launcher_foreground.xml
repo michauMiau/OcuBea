@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon layer: the lens itself.
+
+  Kept as foreground because Material You tints the BACKGROUND layer from the
+  wallpaper palette and leaves the foreground alone. Putting the lens there is
+  what makes it recolour; putting it in the background would freeze the colour
+  and the whole feature would silently do nothing.
+
+  The canvas is 108x108 with an inner 72x72 safe zone, and anything outside gets
+  cropped by the launcher mask. The lens is centred at 54,54 with radius 31, so
+  it spans 23 to 85: inside the safe zone with room for the mask.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!--
+      Outer barrel ring, white so it reads against any wallpaper colour the
+      system picks. A mid-grey lens disappears into a grey wallpaper.
+    -->
+    <path
+        android:pathData="M54,54m-31,0a31,31 0,1 1,62 0a31,31 0,1 1,-62 0"
+        android:fillColor="#FFFFFFFF"/>
+
+    <!-- Iris: the darker inner disc, a second step of depth. -->
+    <path
+        android:pathData="M54,54m-20,0a20,20 0,1 1,40 0a20,20 0,1 1,-40 0"
+        android:fillColor="#FF1B5E20"/>
+
+    <!-- Pupil. -->
+    <path
+        android:pathData="M54,54m-10,0a10,10 0,1 1,20 0a10,10 0,1 1,-20 0"
+        android:fillColor="#FFFFFFFF"/>
+
+    <!--
+      Specular highlight, upper left. This is the detail that makes it read as a
+      lens rather than a plain donut: a lit glass surface has one.
+    -->
+    <path
+        android:pathData="M46,46m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0"
+        android:fillColor="#FFFFFFFF"/>
+</vector>
