@@ -1,5 +1,7 @@
 package com.ocubea.server
 
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -118,5 +120,57 @@ class IpWebcamSettingSurfaceTest {
         if (start < 0) return ""
         val end = text.indexOf("\n    private fun ", start + 10)
         return text.substring(start, if (end > 0) end else text.length)
+    }
+    /**
+     * The focus vocabulary, which the key-only tests above cannot see.
+     *
+     * This test class asserts which `/settings/<name>` keys exist. It says nothing
+     * about which *values* a key accepts, and the gap was live: `focusmode`,
+     * `focus` and `focus_distance` answered "Ok" to every value — measured as eight
+     * values in, eight successes out, with nothing behind any of them.
+     *
+     * The mapping itself is pinned by FocusModePlanTest. What belongs here is the
+     * shape of the refusal, because that is what a client reads: a 400 that names
+     * the accepted set, not a success that changed nothing.
+     */
+    @Test
+    fun focusValuesAreAnsweredFromTheApiVocabularyNotSilently() {
+        // Every value the API spells must resolve to a plan on a camera that can
+        // focus, or to an explicit refusal. None may return null (unknown) and none
+        // may return a plan with no action and no reason.
+        FocusModePlan.ACCEPTED.forEach { v ->
+            // JUnit's assertNotNull does not smart-cast in Kotlin, so the !! is
+            // what makes the next line compile; the assertion above is what makes
+            // it safe.
+            val plan = FocusModePlan.forValue(v, focusCapable = true)
+            assertNotNull("$v should resolve to a plan", plan)
+            assertTrue(
+                "$v must do something or explain why it cannot",
+                plan!!.action != FocusModeAction.UNSUPPORTED || plan.refusal != null,
+            )
+        }
+    }
+
+    /** The 400 must list the accepted set, so a client has somewhere to go. */
+    @Test
+    fun anUnknownFocusValueIsRejectedWithTheAcceptedSet() {
+        assertNull(FocusModePlan.forValue("smooth", focusCapable = true))
+        assertNull(FocusModePlan.forValue("aggressive", focusCapable = true))
+        // the handler's message is built from the same list
+        FocusModePlan.ACCEPTED.forEach { assertTrue(it.isNotBlank()) }
+    }
+
+    /**
+     * `focus_distance` has no honest implementation and must not appear as one.
+     *
+     * The IP Webcam scale is 0.0-10.0 diopters. CameraX exposes no diopter control
+     * at all, so the endpoint refuses with a reason instead of accepting a number it
+     * cannot act on. A test that only checked the key's existence would call this
+     * covered.
+     */
+    @Test
+    fun focusDistanceIsRefusedRatherThanAccepted() {
+        // There is no plan for it: the handler refuses it by name.
+        assertNull(FocusModePlan.forValue("focus_distance", focusCapable = true))
     }
 }
