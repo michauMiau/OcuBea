@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon background: one colour reference.
+
+  This is the whole mechanism. On Android 8 and newer the launcher replaces the
+  colour named here with one drawn from the user's wallpaper palette, so the icon
+  adopts the system theme instead of imposing one. Any raster or gradient here
+  would defeat it, so the value must resolve to a colour and never to an image.
+
+  A fallback for pre-8 launchers lives in mipmap-mdpi/ic_launcher.xml, and it is
+  deliberately the same green, so the icon does not change appearance on a
+  device that cannot theme it.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/ic_launcher_background" />
+</selector>

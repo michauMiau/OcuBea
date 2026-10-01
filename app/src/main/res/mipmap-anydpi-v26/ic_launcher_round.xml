@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Round variant, identical to ic_launcher.xml on purpose.
+
+  They were byte-identical before too, and that is the only reason the two
+  variants are kept separately: launchers that ask for a round icon, because the
+  user picked that mask or it matches the system default, get the same artwork
+  rather than a squashed square.
+
+  The launcher applies its own mask, so no shape is baked in here. Baking a
+  circle in would double the mask on a round device and crop the lens on a
+  square one.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+</adaptive-icon>

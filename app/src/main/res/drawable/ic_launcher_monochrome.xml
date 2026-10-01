@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Themed icon silhouette, for Android 13 and newer.
+
+  The launcher tints this whole layer with a single colour, so it must be flat
+  and must not rely on a white-versus-dark contrast: one colour means the
+  layering in the foreground disappears entirely. Barrel, iris and pupil all
+  collapse to the same fill, so the shape has to be carried by holes instead.
+
+  Three shapes, matching the foreground: outer disc, an iris-sized hole, and a
+  pupil-sized dot back inside that hole. Without the dot it flattens into a
+  plain ring that reads as a CD rather than as a lens; with it, the silhouette
+  survives being tinted.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer barrel. -->
+    <path
+        android:pathData="M54,54m-31,0a31,31 0,1 1,62 0a31,31 0,1 1,-62 0"
+        android:fillColor="#FF000000" />
+
+    <!-- Iris, cut out of the barrel. -->
+    <path
+        android:pathData="M54,54m-20,0a20,20 0,1 1,40 0a20,20 0,1 1,-40 0"
+        android:fillColor="#FF000000"
+        android:fillType="evenOdd" />
+
+    <!-- Pupil, filled back in inside the iris hole. -->
+    <path
+        android:pathData="M54,54m-9,0a9,9 0,1 1,18 0a9,9 0,1 1,-18 0"
+        android:fillColor="#FF000000" />
+</vector>

@@ -1,20 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Launcher icon for Android 6 and 7, API below 26.
+
+  minSdk is 23, so those launchers never see the adaptive icon in
+  mipmap-anydpi-v26 and look the icon up here instead.
+
+  Two things this fixes. The old file sat in mipmap-mdpi at 108dp, which is 108dp
+  of artwork in the lowest density bucket, so the launcher scaled it and it
+  looked soft on anything denser than mdpi; 48dp is the real size for an mdpi
+  launcher icon. And it drew a flat green square with an "O": no mask, no themed
+  colour, and nothing to say the app is a camera.
+
+  Same lens as the adaptive icon, flattened, because there is no background layer
+  to tint and no monochrome to fall back from. v26 and newer get the adaptive
+  icon instead, which wins because anydpi-v26 is a more specific match than
+  mdpi.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
+    android:width="48dp"
+    android:height="48dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    
-    <!-- Background circle -->
+
     <path
         android:pathData="M0,0h108v108h-108z"
-        android:fillColor="#4CAF50"/>
-    
-    <!-- Letter "O" representing OcuBea -->
+        android:fillColor="#FF4CAF50" />
+
     <path
-        android:pathData="M54,32m-16,0a16,16 0,1 1,32 0a16,16 0,1 1,-32 0"
-        android:fillColor="#FFFFFF"/>
+        android:pathData="M54,54m-31,0a31,31 0,1 1,62 0a31,31 0,1 1,-62 0"
+        android:fillColor="#FFFFFFFF" />
+
     <path
-        android:pathData="M54,46m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0"
-        android:fillColor="#4CAF50"/>
+        android:pathData="M54,54m-20,0a20,20 0,1 1,40 0a20,20 0,1 1,-40 0"
+        android:fillColor="#FF1B5E20" />
+
+    <path
+        android:pathData="M54,54m-10,0a10,10 0,1 1,20 0a10,10 0,1 1,-20 0"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- Specular highlight: what makes it read as glass rather than a donut. -->
+    <path
+        android:pathData="M46,46m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0"
+        android:fillColor="#FFFFFFFF" />
 </vector>
