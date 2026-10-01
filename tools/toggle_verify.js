@@ -22,8 +22,9 @@ const H = 'http://192.168.1.184:8080';
 const post = (p, v) => fetch(H.replace(/\/$/, '') + '/settings/' + p + '?set=' + v,
   { method: 'POST' });
 const state = async () => {
-  const d = JSON.parse(await (await fetch(H + '/status.json')).text());
-  return { night: !!d.night_vision, motion: !!d.motion?.enabled, front: !!d.front_camera };
+const d = JSON.parse(await (await fetch(H + '/status.json')).text());
+return { night: !!d.night_vision, motion: !!d.motion?.enabled, front: !!d.front_camera,
+         torch: !!d.torch, recording: !!d.recording?.enabled };
 };
 
 (async () => {
@@ -38,16 +39,34 @@ const state = async () => {
   await p.waitForTimeout(9000);
 
   // name -> [id, setting, desired value when the button shows ON]
+  // Every Toggle in the UI, not just the two that were reported broken:
+  // torch and recording went untested, and "works" for a toggle means
+  // "changes the phone's state", which only status.json can say.
   const CASES = [
     ['nocne widzenie', 'bNight', 'night_vision', true],
     ['ruch', 'bMotion', 'motion_detection', true],
-    ['ffc', 'bFlip', 'ffc', null],   // null: the server inverts, any change counts
+    ['ffc', 'bFlip', 'ffc', null],        // the server inverts; movement is all
+    ['latarka', 'bTorch', 'torch', true],
+    ['nagrywanie ruchu', 'bRec', 'recording', true],
   ];
+
+  // Recording is not independent: the server sets motionRecorder.enabled to
+  // "on && config.securityEnabled" (StreamServer.kt:910), so with motion
+  // detection off the toggle is correctly inert -- and a test that calls it a
+  // failure would be reporting the design. Enable the precondition, and say so
+  // rather than quietly making the case pass.
+  const preMotion = (await state()).motion;
+  if (!preMotion) {
+    await post('motion_detection', 'on');
+    await new Promise(r => setTimeout(r, 1500));
+    console.log('  (nagrywanie wymaga wlaczonego wykrywania ruchu -- wlaczone na czas testu)');
+  }
 
   const results = [];
   for (const [label, id, setting, wantOn] of CASES) {
     const before = await state();
-    const key = setting === 'night_vision' ? 'night' : setting === 'motion_detection' ? 'motion' : 'front';
+    const key = { night_vision: 'night', motion_detection: 'motion', ffc: 'front',
+                  torch: 'torch', recording: 'recording' }[setting];
 
     // First press: whatever the button currently shows, pressing must move it.
     await p.click('#' + id, { timeout: 4000 });
@@ -62,6 +81,9 @@ const state = async () => {
     const movedOnce = afterFirst[key] !== before[key];
     const movedBack = afterSecond[key] !== afterFirst[key];
     // For ffc the direction is the server's business; only movement matters.
+    // ffc is the exception: the server inverts, so the direction is its
+    // business and only movement counts. Everything else has to return to where
+    // it started, which is what catches a toggle pinned to one value.
     const ok = setting === 'ffc'
       ? (movedOnce && movedBack)
       : (movedOnce && movedBack && afterSecond[key] === before[key]);
@@ -77,7 +99,10 @@ const state = async () => {
   // Restore.
   await post('night_vision', start.night ? 'on' : 'off');
   await post('motion_detection', start.motion ? 'on' : 'off');
-  if (await state() && (await state()).front !== start.front) await post('ffc', 'toggle');
+  await post('torch', start.torch ? 'on' : 'off');
+  await post('recording', start.recording ? 'on' : 'off');
+  if (!preMotion) await post('motion_detection', 'off');
+  if ((await state()).front !== start.front) await post('ffc', 'toggle');
   console.log('stan po przywroceniu:', JSON.stringify(await state()));
 
   console.log('JS errors: ' + (errs.length ? errs.join(' | ') : 'brak'));
