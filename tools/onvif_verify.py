@@ -40,6 +40,18 @@ def record(name, ok, detail=""):
 
 def post(action, body="", headers=""):
     """POST a SOAP request. Returns (status, headers, body)."""
+    # A generated client puts the operation in the Body, self-closing when it has
+    # no arguments -- which is every operation this device implements. It also
+    # sets the SOAP 1.2 action header.
+    #
+    # The probe used to send an EMPTY Body and rely on the header. That made it
+    # pass against a build where the Body path was broken: extractAction() was
+    # truncating `GetDeviceInformation` to `Get` and falling through to
+    # ActionNotSupported, and an empty Body meant the header path ran instead and
+    # hid it. 18/18 on a device that answered Fault to every real client. The
+    # Body element is the whole point of the request, so the probe must send it.
+    if not body:
+        body = f'<tds:{action}/>'
     env = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
@@ -69,6 +81,11 @@ def post(action, body="", headers=""):
 
 def has_no_fault(body):
     return "Fault" not in body
+
+
+def has_element(body, name):
+    """True only for a real <ns:Name>...</ns:Name> or <ns:Name/>, not a mention."""
+    return re.search(rf"<(?:\w+:)?{re.escape(name)}\b", body) is not None
 
 
 print(f"=== ONVIF probe: {BASE}/onvif/device_service ===\n")
@@ -101,8 +118,11 @@ OPS = [
 bodies = {}
 for action, want in OPS:
     code, hdrs, body = post(action)
+    # The operation is sent in the Body, so the response must be produced by the
+    # Body path: requiring the FULL response element name (not a substring like
+    # "Get") is what catches a truncating extractAction().
     ok = (code == "200"
-          and want in body
+          and has_element(body, want)
           and has_no_fault(body)
           and "http://www.onvif.org/ver10/device/wsdl" in body)
     bodies[action] = body

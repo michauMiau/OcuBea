@@ -147,38 +147,42 @@ $ops
     /**
      * The operation name from a SOAP request, without its namespace prefix.
      *
-     * Two things this had to survive, both of which a real NVR sends and which
-     * made every operation answer ActionNotSupported against tools/onvif_verify.py:
+     * Three ways this was wrong before, all of them found by tools/onvif_verify.py
+     * only after the probe itself was corrected to send what a client sends:
      *
-     *  - A self-closing body element. `<tds:GetProfiles/>` has no space and no
-     *    `>` immediately after the name, so the old `[\s>]` pattern never matched
-     *    it -- and a self-closing element is exactly how every generated client
-     *    encodes an operation with no arguments, which is nearly all of them.
-     *  - The SOAP 1.2 HTTP action header. A client that puts the action there and
-     *    sends an empty Body would otherwise extract nothing at all.
+     *  - It matched `<tds:GetProfiles ` with a required space or bracket after the
+     *    name, so a self-closing `<tds:GetProfiles/>` never matched -- and
+     *    self-closing is how every generated client encodes an argument-less
+     *    operation, which is nearly all of them.
+     *  - It was an alternation, `(Get|Set|Add|...)`, so it captured `Get` out of
+     *    `GetDeviceInformation` and the response builder -- which keys on
+     *    contains("GetDeviceInformation") -- fell through to ActionNotSupported.
+     *    The element name must be captured whole and then matched against the
+     *    operations this device implements; truncating a name by prefix is not
+     *    the same thing as reading it.
+     *  - It ignored the SOAP 1.2 action header, which some clients send instead.
      *
-     * Returns the bare name ("GetProfiles"), which is what the response builder
-     * keys on.
+     * Returns the bare name ("GetProfiles"), or "" when nothing matches.
      */
     fun extractAction(soapBody: String): String {
-        // Prefixed or bare, self-closing or not, attributes allowed.
-        val fromBody = Regex("<(?:[A-Za-z][\\w.-]*:)?(Get|Set|Add|Delete|Start|Stop|Get)[A-Za-z]+")
+        // Every element name in the request, prefix stripped, captured WHOLE. A
+        // name is accepted only on an exact match against an implemented
+        // operation, so no fragment and no prefix can ever satisfy it.
+        val fromBody = Regex("<(?:[A-Za-z][\\w.-]*:)?([A-Za-z][\\w.-]*)")
             .findAll(soapBody)
             .map { it.groupValues[1] }
-            .firstOrNull()
+            .firstOrNull { name -> OPERATIONS.contains(name) }
         if (fromBody != null) return fromBody
 
-        // Fall back to the action header, which arrives in the body only when the
-        // client inlined it; the HTTP header copy is stripped of its namespace
-        // prefix and quotes by the caller.
-        val fromAction = Regex("<(?:[A-Za-z][\\w.-]*:)?Action[^>]*>([^<]+)<")
+        // The action header, for a client that puts the operation there and sends
+        // an empty Body.
+        val fromHeader = Regex("<(?:[A-Za-z][\\w.-]*:)?Action[^>]*>([^<]+)<")
             .findAll(soapBody)
             .map { it.groupValues[1].trim().trim('"') }
-            .firstOrNull()
-        if (fromAction != null) {
-            val bare = fromAction.substringAfterLast('/').substringAfterLast(':')
-            if (bare.isNotBlank()) return bare
-        }
+            .map { it.substringAfterLast('/').substringAfterLast(':') }
+            .firstOrNull { candidate -> OPERATIONS.contains(candidate) }
+        if (fromHeader != null) return fromHeader
+
         return ""
     }
 
