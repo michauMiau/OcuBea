@@ -298,9 +298,32 @@ class H264Encoder(
         }
     }
 
-    /** Forces the next frame to be an IDR, e.g. right after a client joins. */
+    /**
+     * Forces the next frame to be an IDR, e.g. right after a client joins.
+     *
+     * setParameters() on a codec that stop() is releasing underneath it is the
+     * same native use-after-free as dequeueOutputBuffer, through a different
+     * door, so it reads the handle and calls under the same handshake encode()
+     * uses. Reading the field and calling straight through -- which is what this
+     * did -- has no protection at all.
+     *
+     * Nothing in main/ calls this today (keyframes come from the GOP the profile
+     * sets, and HlsSession starts a segment on the keyframe it observes), so the
+     * missing guard never had a chance to fire. The guard belongs with the
+     * function rather than with whoever eventually wires it up.
+     */
     fun requestKeyFrame() {
         val mc = codec ?: return
+        if (!started) return
+        // Bounded wait, same policy as stop(): better to skip a keyframe request
+        // than to block a client-facing call indefinitely. Nothing currently calls
+        // this, so the bound is insurance rather than a measured requirement.
+        val deadline = System.nanoTime() + STOP_DRAIN_TIMEOUT_NS
+        while (System.nanoTime() < deadline && encodeInFlight.get()) Thread.sleep(1)
+        if (encodeInFlight.get()) {
+            Log.w(TAG, "requestKeyFrame: encoder busy, skipping the request")
+            return
+        }
         runCatching {
             val params = android.os.Bundle()
             params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)

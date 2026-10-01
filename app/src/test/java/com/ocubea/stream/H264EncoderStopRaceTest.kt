@@ -160,6 +160,48 @@ class H264EncoderStopRaceTest {
      * (one counted releases, one subclassed MediaCodec). The native release is
      * checked on the device as encoder_codecs_released.
      */
+    /**
+     * requestKeyFrame() calls setParameters() on the codec -- the same native
+     * use-after-free as dequeueOutputBuffer, through a different door.
+     *
+     * It had no handshake: `val mc = codec ?: return` and straight through. Dead
+     * code today (nothing in main/ calls it), so nothing had crashed, but a
+     * comment claimed it was protected.
+     *
+     * With the analyzer wedged it must SKIP rather than call through, and it must
+     * not hang: a client-facing call is worse than a missed keyframe.
+     */
+    @Test
+    fun `requestKeyFrame skips while the analyzer is inside the codec`() {
+        val enc = encoder()
+        val flag = field("encodeInFlight").get(enc) as AtomicBoolean
+        flag.set(true)
+
+        val start = System.currentTimeMillis()
+        enc.requestKeyFrame()          // must return, not block until cleared
+        val ms = System.currentTimeMillis() - start
+        flag.set(false)
+
+        assertTrue(
+            "requestKeyFrame blocked for ${ms}ms with the encoder busy; it must " +
+                "be bounded or a client-facing call can hang",
+            ms < 2000
+        )
+    }
+
+    /**
+     * ...and it must still return promptly once the analyzer is out, rather than
+     * being permanently short-circuited by the guard above.
+     */
+    @Test
+    fun `requestKeyFrame returns promptly when the encoder is idle`() {
+        val enc = encoder()
+        val start = System.currentTimeMillis()
+        enc.requestKeyFrame()
+        val ms = System.currentTimeMillis() - start
+        assertTrue("idle requestKeyFrame took ${ms}ms", ms < 200)
+    }
+
     @Test
     fun `a deferred stop does not release inline`() {
         val enc = encoder()
@@ -205,9 +247,12 @@ class H264EncoderStopRaceTest {
     }
 
     /**
-     * requestKeyFrame() also dereferences the codec. If it runs against a released
-     * handle it is the same native crash through a different door, so it has to
-     * respect the same handshake.
+     * A second stop is harmless -- idempotent, no throw, no hang.
+     *
+     * The comment above this test used to be about requestKeyFrame, and the body
+     * never called it. So the class asserted a protection that nothing checked,
+     * and requestKeyFrame turned out to have no handshake at all. The comment was
+     * the only evidence the door was closed, which is worth nothing.
      */
     @Test
     fun `a second stop is harmless`() {
