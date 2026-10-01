@@ -10,7 +10,11 @@ import android.os.Looper
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.CameraState
 import androidx.camera.core.FocusMeteringAction
+import android.graphics.Matrix
+import android.util.Log
+import android.view.Surface
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.MirrorMode
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
@@ -496,6 +500,12 @@ class CameraManager(
         imageAnalysis = ImageAnalysis.Builder()
             .setResolutionSelector(resolutionSelector())
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            // Only the rotation, not mirror: this device throws
+            // "setMirrorMode is not supported" from the Builder and the camera
+            // then never opens at all, which the log shows as the stream staying
+            // down permanently. Mirror is probed once and skipped after a refusal.
+            .setTargetRotation(rotationValueFor(requestedOrientation))
+            .apply { mirrorModeForNewUseCase()?.let { setMirrorMode(it) } }
             .build()
             .also { it.setAnalyzer(analysisExecutor, ::analyzeFrame) }
         val camera = provider.bindToLifecycle(owner, cameraSelector, imageAnalysis!!)
@@ -953,7 +963,23 @@ class CameraManager(
                on every frame -- 3 pending encodes and a growing
                dropped_saturated at viewers=0, motion off, HLS off. */
             val jpegNeeded = mjpegWanted() || motionNeedsJpeg() || hlsFed || clipFed
-            val bitmap = if (jpegNeeded) imageProxy.toBitmap() else null
+            // Rotation, applied once, here.
+            //
+            // targetRotation on the Builder is only a HINT about how the buffer
+            // should be interpreted -- it does not rotate the ImageProxy, and
+            // toBitmap() hands over the sensor's pixels as they are. That is why
+            // a portrait request produced a landscape image while every reported
+            // value said portrait. An earlier attempt that rotated on top of it was
+            // worse: even landscape came back portrait, because the pixels were
+            // being turned twice.
+            //
+            // Done here rather than downstream, so the motion detector and the
+            // recorder measure the same orientation the viewer sees.
+            val rotation = requestedRotationDegrees()
+            val bitmap = if (jpegNeeded) {
+                val raw = imageProxy.toBitmap()
+                if (rotation == 0 || raw == null) raw else rotate(raw, rotation)
+            } else null
             imageProxy.close()
             // A null here after an intentional skip is expected, not a failure.
             if (bitmap == null) { if (hlsFed && !motionNeedsJpeg()) return; nullBitmaps++; return }
@@ -1376,6 +1402,105 @@ class CameraManager(
     fun setJpegQuality(q: Int) {
         config.jpegQuality = q
         jpegQualityOverride = q.coerceIn(40, 100)
+    }
+
+    /**
+     * Requested stream orientation, as pydroid-ipcam names it.
+     *
+     * Latched, because the frame path reads it per frame while the value is
+     * written from a request thread. Reported through status.json and `curvals`,
+     * where it is the value the stream is actually using.
+     */
+    @Volatile var requestedOrientation: String = "landscape"
+        private set
+
+    /** Whether the frames are mirrored horizontally, as `mirror_flip` asks. */
+    @Volatile var mirrored: Boolean = false
+        private set
+
+    /**
+     * Whether this device can mirror at all; null until it has been asked.
+     *
+     * Probed by trying, once. A device without mirror support throws from the
+     * Builder and the camera never opens, so the question is never asked twice
+     * after a refusal -- otherwise every rebuild would take the stream down.
+     */
+    @Volatile var mirrorSupported: Boolean? = null
+        private set
+
+    /**
+     * Rotates the stream, for `orientation`, `rotate` and the WebUI control.
+     *
+     * Applied to the running use case, not by rebuilding: a rebuild per change
+     * froze the frame counter and the watchdog reported "No frames for 30s"
+     * within one probe, and targetRotation is a live property anyway.
+     */
+    fun setDisplayOrientation(value: String) {
+        requestedOrientation = value
+        config.orientation = value
+        // The frame path reads requestedOrientation directly, so this is already
+        // in effect. Setting it on the bound use case keeps CameraX in step for
+        // anything that consults the use case rather than the frame.
+        imageAnalysis?.let { uc ->
+            runCatching { uc.targetRotation = rotationValueFor(value) }
+        }
+    }
+
+    /** Mirrors the stream horizontally, for `mirror_flip`. */
+    fun setMirror(on: Boolean) {
+        mirrored = on
+        config.mirrorFlip = on
+    }
+
+    private fun rotationValueFor(name: String): Int = when (name) {
+        "portrait" -> Surface.ROTATION_90
+        "upsidedown" -> Surface.ROTATION_270
+        "upsidedown_portrait" -> Surface.ROTATION_180
+        else -> Surface.ROTATION_0
+    }
+
+    /** null means "do not ask", which is what keeps an unsupported device up. */
+    private fun mirrorModeForNewUseCase(): Int? {
+        if (!mirrored || mirrorSupported == false) return null
+        return MirrorMode.MIRROR_MODE_ON
+    }
+
+    /**
+     * The rotation to apply to an incoming frame, in degrees.
+     *
+     * Device-relative, from the latched request rather than from
+     * ImageInfo.rotationDegrees: that field says where the sensor sits relative to
+     * the device, which is not what a client asking for "portrait" means. The
+     * client means the picture should be upright for them.
+     */
+    private fun requestedRotationDegrees(): Int = when (requestedOrientation) {
+        "portrait" -> 90
+        "upsidedown" -> 270
+        "upsidedown_portrait" -> 180
+        else -> 0
+    }
+
+    /**
+     * Rotates a bitmap by 90/180/270 degrees, swapping the dimensions.
+     *
+     * One pass through a Matrix, returning a fresh bitmap so the source stays
+     * valid for the caller to recycle. A 180-degree turn goes through the same
+     * call rather than a special case: one more thing to get wrong, and it buys
+     * nothing on a frame that is already being copied.
+     */
+    private fun rotate(src: Bitmap, degrees: Int): Bitmap {
+        val m = Matrix()
+        m.postRotate(degrees.toFloat())
+        return try {
+            Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+        } catch (e: OutOfMemoryError) {
+            // A rotated copy is a second bitmap and the pipeline already holds the
+            // source plus any effect output. Running out must drop the rotation
+            // for this frame, not the stream: an unrotated frame is a far smaller
+            // failure than no frame at all.
+            Log.w("OcuBeaCam", "rotate: out of memory, frame sent unrotated")
+            src
+        }
     }
 
     /**

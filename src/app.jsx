@@ -93,6 +93,21 @@ const AudioCodecs = (available) => {
 // These two are not in status.json, so the slider shows what was last set.
 // They are written on every input event, so a reload always starts from the
 // phone's value once the user touches them.
+// i18n key suffix per protocol value. Written out rather than derived: a
+// derivation that misses renders the raw key, which is visible in the picker and
+// invisible in the audit, and these four are the only values that exist.
+const ORIENT_LABELS = {
+  landscape: 'orientLandscape',
+  portrait: 'orientPortrait',
+  upsidedown: 'orientUpsidedown',
+  upsidedown_portrait: 'orientUpsidePortrait',
+};
+
+// pydroid-ipcam's own list, used only as a fallback when status.json carries no
+// `avail`. The server is the authority: it validates against the same four, and a
+// value it would refuse must not appear as an option here.
+const ORIENTATIONS = ['landscape', 'portrait', 'upsidedown', 'upsidedown_portrait'];
+
 const PRE_RECORD_DEFAULT = 2;
 const MAX_CLIP_DEFAULT = 300;
 
@@ -121,6 +136,39 @@ const Slider = ({ value, min = 0, max = 100, step = 1, onInput, label, id }) => 
 // /hls/profile answers text, not JSON:
 //   "profile=default segment_ms=250 keyframe_sec=0 sync=3 buffer=6"
 // so the values are parsed out of it rather than fetched as an object.
+
+// MJPEG compression quality.
+//
+// The select labelled "quality" in this UI is a resolution list, which collides
+// with the API's `quality`, where it means JPEG quality. So the slider is named
+// for what it changes rather than reusing either word: it moves compression, and
+// it is live on every input event so a drag is felt immediately instead of after
+// a release. 40..100 is the range the server actually applies -- below that a
+// value is never used, and a slider spanning 0..100 would show numbers the
+// encoder ignores.
+const JpegQuality = ({ value, onInput }) => html`
+  <${Row} label=${t('jpegQuality')}>
+    <${Slider} id="jpeg-quality" min=${40} max=${100} step=${1}
+      value=${value} label=${t('jpegQuality')} onInput=${onInput} />
+    <span class="ctl-val">${value}</span>
+  </${Row}>
+`;
+
+// Stream orientation, as pydroid-ipcam names it.
+//
+// These four strings are the library's own list, and the server validates
+// against it, so the option values are taken from status.json's `avail` rather
+// than hardcoded here: a hand-typed value the server refuses would leave the
+// picker showing something the API will not take.
+const Orientation = ({ value, options, onChange }) => html`
+  <${Row} label=${t('orientation')}>
+    <select id="orientation" class="ctl" value=${value} aria-label=${t('orientation')}
+      onChange=${(e) => onChange(e.target.value)}>
+      ${options.map((o) => html`<option value=${o} selected=${value === o}>${t(ORIENT_LABELS[o] || o)}</option>`)}
+    </select>
+  </${Row}>
+`;
+
 const HlsQuality = () => {
   const [p, setP] = useState(null);
   useEffect(() => {
@@ -556,6 +604,11 @@ function App() {
               html`<option value=${id} selected=${qualityKey(s.resolution) === id}>${label}</option>`)}
           </select>
         <//>
+        <${JpegQuality} value=${s.jpeg_quality != null ? s.jpeg_quality : 82}
+          onInput=${(v) => act(setSetting, 'jpeg_quality', v, poll)} />
+        <${Orientation} value=${s.orientation || 'landscape'}
+          options=${(s.avail && s.avail.orientation) || ORIENTATIONS}
+          onChange=${(v) => act(setSetting, 'orientation', v, poll)} />
         <${Row} label=${t('viewers')}>
           <span class="val">${s.viewers || 0}</span>
         <//>
@@ -564,7 +617,6 @@ function App() {
       <section>
         <h2>${t('image')}</h2>
         <dl>
-          <dt>${t('jpegQuality')}</dt><dd>${s.jpeg_quality != null ? s.jpeg_quality : '–'}</dd>
           <dt>${t('bitrate')}</dt><dd>${s.video_bitrate_kbps ? s.video_bitrate_kbps + ' kbps' : '–'}</dd>
           <dt>${t('frames')}</dt><dd>${s.frames != null ? s.frames : '–'}</dd>
           <dt>${t('effect')}</dt><dd>${s.effect || '–'}</dd>

@@ -139,6 +139,12 @@ class TelemetryHandler(
                 "\"refused\":${connectionStats()["refused"]}," +
                 "\"max_threads\":${connectionStats()["max_threads"]}},")
             append("\"jpeg_quality\":${cfg["jpeg_quality"]},")
+        // Rotated and mirrored streams, so a client can read back what it set
+        // instead of assuming the write landed. These come from the camera's
+        // latched values, not from config, because they are what the next rebind
+        // will actually use.
+        append("\"orientation\":\"${cameraManager.requestedOrientation}\",")
+        append("\"mirror_flip\":${cameraManager.mirrored},")
             append("\"video_bitrate_kbps\":${cfg["video_bitrate_kbps"]},")
             append("\"night_vision\":${cfg["night_vision"]},")
             append("\"effect\":\"${cfg["effect"]}\",")
@@ -247,7 +253,8 @@ class TelemetryHandler(
             "gps_active" to "off",
             "motion_detect" to boolStr(motionDetector.enabled),
             "scenemode" to "auto",
-            "orientation" to "landscape",
+            "orientation" to cameraManager.requestedOrientation,
+            "mirror_flip" to boolStr(cameraManager.mirrored),
             "led_torch" to "auto",
             "norecord" to "off",
             "audio" to boolStr(config.audioEnabled),
@@ -276,6 +283,7 @@ class TelemetryHandler(
             "audio_codec" to audioCodecs.options().map { it.id },
             "scenemode" to StreamServer.SCENE_MODES,
             "orientation" to StreamServer.ORIENTATIONS,
+            "mirror_flip" to onOff,
             "led_torch" to listOf("auto", "on", "off", "flash"),
             "norecord" to onOff,
             "audio" to onOff,
@@ -370,10 +378,10 @@ class TelemetryHandler(
         "night_vision_gain" -> "0"
         "night_vision_average" -> "0"
         "focus_homing", "focus_region" -> "false"
-        "orientation" -> "0"
+        "orientation" -> "\"${cameraManager.requestedOrientation}\""
         "overlay" -> "false"
         "proximity", "pressure" -> "false"
-        "mirror_flip" -> "false"
+        "mirror_flip" -> boolStr(cameraManager.mirrored)
         "adet_limit" -> motionDetector.sensitivity.toString()
         "ip_address" -> "\"${localIpFallback()}\""
         "ipv6_address" -> "\"\""

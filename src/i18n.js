@@ -76,6 +76,11 @@ export const STR = {
     audioAmr: 'AMR-NB',
     sec: ' s',
     jpegQuality: 'Jakość JPEG',
+    orientation: 'Obrót',
+    orientLandscape: 'Pozioma',
+    orientPortrait: 'Pionowa',
+    orientUpsidedown: 'Do góry nogami',
+    orientUpsidePortrait: 'Do góry nogami, pionowa',
     hlsInternal: 'Wewnętrzny błąd hls.js',
   },
   en: {
@@ -150,6 +155,11 @@ export const STR = {
     audioAmr: 'AMR-NB',
     sec: ' s',
     jpegQuality: 'JPEG quality',
+    orientation: 'Rotation',
+    orientLandscape: 'Landscape',
+    orientPortrait: 'Portrait',
+    orientUpsidedown: 'Upside down',
+    orientUpsidePortrait: 'Upside down portrait',
     hlsInternal: 'hls.js internal error',
   },
 };

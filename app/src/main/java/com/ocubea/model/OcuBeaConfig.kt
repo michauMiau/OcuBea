@@ -40,6 +40,23 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         set(v) = prefs.edit().putInt(KEY_JPEG_QUALITY, v.coerceIn(40, 100)).apply()
 
     /**
+     * Stream orientation, as pydroid-ipcam names it.
+     *
+     * The four values are the library's own list, because a client validates
+     * against it before sending and a value it offers must not be refused here.
+     */
+    var orientation: String
+        get() = prefs.getString(KEY_ORIENTATION, ORIENTATIONS.first()) ?: ORIENTATIONS.first()
+        set(v) = prefs.edit().putString(
+            KEY_ORIENTATION, if (v in ORIENTATIONS) v else ORIENTATIONS.first()
+        ).apply()
+
+    /** Whether the stream is mirrored horizontally, for `mirror_flip`. */
+    var mirrorFlip: Boolean
+        get() = prefs.getBoolean(KEY_MIRROR_FLIP, false)
+        set(v) = prefs.edit().putBoolean(KEY_MIRROR_FLIP, v).apply()
+
+    /**
      * HLS video bitrate in kbps.
      *
      * The old value was width * height * 4 bits per pixel per second, which
@@ -168,6 +185,8 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         "resolution" to "${resolution.width}x${resolution.height}",
         "fps" to frameRate,
         "jpeg_quality" to jpegQuality,
+        "orientation" to orientation,
+        "mirror_flip" to mirrorFlip,
         "video_bitrate_kbps" to videoBitrateKbps,
         "effect" to effect,
         "night_vision" to nightVision,
@@ -193,6 +212,8 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         const val KEY_RESOLUTION_IDX = "resolution_idx"
         const val KEY_FPS = "fps"
         const val KEY_JPEG_QUALITY = "jpeg_quality"
+    const val KEY_ORIENTATION = "orientation"
+    const val KEY_MIRROR_FLIP = "mirror_flip"
         const val KEY_VIDEO_BITRATE_KBPS = "video_bitrate_kbps"
 
         /** 1080p15 on the measured hardware lands near 4 Mbps, not 8.3. */
@@ -214,5 +235,17 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         const val KEY_AUTOSTART = "autostart"
         const val KEY_POWER_SAVING = "power_saving"
         const val KEY_TORCH = "torch_on"
+
+    /**
+     * The orientation values pydroid-ipcam accepts.
+     *
+     * It validates against exactly this list before sending, so it has to be
+     * the source of truth for both validation and the `avail` list. Spelled
+     * "upsidedown", not IP Webcam's "reverse_*", which the library does not
+     * send.
+     */
+    val ORIENTATIONS = listOf(
+        "landscape", "portrait", "upsidedown", "upsidedown_portrait"
+    )
     }
 }
