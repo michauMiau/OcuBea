@@ -76,6 +76,25 @@ class H264Encoder(
      */
     private val encodeInFlight = AtomicBoolean(false)
 
+    /**
+     * Diagnostic only, default 0. Parks INSIDE drain(), i.e. while the native
+     * codec is genuinely mid-use -- the only place a concurrent stop() can
+     * produce the use-after-free.
+     *
+     * It exists because "deferred: 0 after 155 profile switches" cannot tell a
+     * working guard behind a now-narrow window apart from dead code, and the two
+     * call for opposite conclusions.
+     *
+     * A first version held after the encode body instead, and the negative
+     * control proved it was worthless: guard removed, 900ms hold, still no
+     * SIGSEGV -- by then encode() no longer touched MediaCodec. Holding inside
+     * the drain is what actually exercises the race.
+     *
+     * It can only hold, never crash: a stop() that finds the analyzer busy keeps
+     * the codec alive rather than releasing it, which is the designed behaviour.
+     */
+    @Volatile var diagnosticHoldMs: Long = 0
+
     /** How long stop() waits for the analyzer to leave the codec. */
     private val STOP_DRAIN_TIMEOUT_NS = 500_000_000L   // 500 ms
     @Volatile var framesEncoded: Long = 0L
@@ -353,6 +372,18 @@ class H264Encoder(
 
     private fun drain(mc: MediaCodec, onSample: (Sample) -> Unit) {
         val info = MediaCodec.BufferInfo()
+        if (diagnosticHoldMs > 0) {
+            // Still holding: encodeInFlight is deliberately NOT cleared. A stop()
+            // landing here has to find the analyzer busy and defer. Keeps calling
+            // dequeueOutputBuffer so the codec is not merely idle but genuinely
+            // mid-use -- an idle hold would pass the guard without ever
+            // reproducing the crash.
+            val until = System.currentTimeMillis() + diagnosticHoldMs
+            while (System.currentTimeMillis() < until) {
+                mc.dequeueOutputBuffer(info, 0)
+                Thread.sleep(2)
+            }
+        }
         while (true) {
             val outIndex = mc.dequeueOutputBuffer(info, 0)
             when {

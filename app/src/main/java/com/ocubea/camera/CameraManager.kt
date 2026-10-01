@@ -647,6 +647,15 @@ class CameraManager(
         return true
     }
 
+    /** Diagnostic: widen the encoder hold so the stop() handshake must fire. */
+    fun setEncoderDiagnosticHold(ms: Long) { hlsSession?.setDiagnosticHold(ms) }
+    val encoderDiagnosticHoldMs: Long get() = hlsSession?.diagnosticHoldMs ?: 0L
+
+    /** Encoder handshake counters, read by the diagnostic endpoint. */
+    fun hlsTelemetry(): com.ocubea.stream.HlsSession.Telemetry =
+        hlsSession?.telemetry()
+            ?: com.ocubea.stream.HlsSession.Telemetry.EMPTY
+
     fun stopHls() {
         runCatching { hlsSession?.stop() }
         hlsSession = null

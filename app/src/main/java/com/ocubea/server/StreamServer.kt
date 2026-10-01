@@ -204,7 +204,9 @@ class StreamServer(
         // ipWebcamTorch() is the same path with a body pydroid can read.
         uri == "/enabletorch" -> ipWebcamTorch(paramBool(session, true))
         uri == "/disabletorch" -> ipWebcamTorch(false)
-        uri == "/hls/profile" -> handleHlsProfile(session)
+        uri == "/diagnostic/encoder_hold" -> handleEncoderHold(session)
+    uri == "/hls/profile" -> handleHlsProfile(session)
+
 
         // ── IP Webcam API: settings ──
         uri == "/settings" && method == Method.POST -> handleSettingsBulk(session)
@@ -645,7 +647,32 @@ class StreamServer(
      * restart. That is unavoidable: KEY_I_FRAME_INTERVAL is a codec-config
      * value and the muxer has already cut segments to the old length.
      */
-    private fun handleHlsProfile(session: IHTTPSession): Response {
+    /**
+ * Widens the encoder's handle hold so the stop/teardown handshake is forced to
+ * fire, rather than waiting for a collision that a 10ms window makes rare.
+ *
+ * "deferred: 0 after 155 profile switches" cannot tell a working guard behind a
+ * narrow window apart from dead code, and the two call for opposite conclusions.
+ * Forcing the collision is the only way to find out which one it is -- the same
+ * move that caught the reported dead buttons, where the request fired and the
+ * state did not change.
+ *
+ * Default 0, and it can only hold: a stop() that finds the analyzer busy keeps
+ * the codec alive rather than releasing it underneath, which is the designed
+ * behaviour. No new failure mode is reachable from here.
+ */
+private fun handleEncoderHold(session: IHTTPSession): Response {
+    val ms = parseParams(session)["ms"]?.toLongOrNull() ?: 0L
+    cameraManager.setEncoderDiagnosticHold(ms)
+    val s = cameraManager.hlsTelemetry()
+    return okText(
+        "encoder_hold=${cameraManager.encoderDiagnosticHoldMs} " +
+            "stops=${s.stopsCompleted} deferred=${s.stopsDeferred} " +
+            "calls=${s.encodeCalls}"
+    )
+}
+
+private fun handleHlsProfile(session: IHTTPSession): Response {
         val set = parseParams(session)["set"]
         if (set == null) {
             val p = cameraManager.hlsProfile
