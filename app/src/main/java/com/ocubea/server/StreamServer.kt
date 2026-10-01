@@ -700,6 +700,16 @@ class StreamServer(
         // "ok" returned anyway, so this endpoint lied exactly like focusmode did --
         // measured HTTP 200 "Ok" from a camera that reports no autofocus at all.
         val release = session.uri == "/nofocus"
+        // Checked before the call, not after its return value: clearFocusLock()
+        // succeeds on a camera with no focus hardware -- there is no lock to
+        // release, so nothing can fail -- which made /nofocus answer 200 while
+        // /focus answered 400 on the same device, reading as "focus works, you just
+        // have nothing to unlock". A camera with no autofocus has no lock in any
+        // state, so releasing one is refused the same way setting one is.
+        if (!cameraManager.isFocusCapable()) {
+            val refusal = FocusModePlan.forValue("nofocus", false)?.refusal
+            return badRequest(refusal ?: "this camera reports no autofocus")
+        }
         val reason = if (release) cameraManager.clearFocusLock()
                      else cameraManager.setFocus(x.coerceIn(0f, 1f), y.coerceIn(0f, 1f))
         return if (reason == null) okText("ok") else badRequest(reason)
@@ -1871,32 +1881,25 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
         else -> false
     }
 
+    /**
+     * focusmode / focus from the IP Webcam API: decide, then say what was decided.
+     *
+     * [FocusModePlan] is returned instead of a Response so the mapping can be unit
+     * tested. On this phone every value is refused earlier by isFocusCapable(), so
+     * a test of the response alone would prove nothing about the mapping.
+     */
     private fun focusMode(value: String): Response {
-        val v = value.trim().lowercase()
-        if (!cameraManager.isFocusCapable()) {
-            return badRequest(
-                "this camera reports no autofocus, so focusmode cannot be changed " +
-                    "(focusmetering is unsupported); /focus is unavailable too"
+        val plan = FocusModePlan.forValue(value, cameraManager.isFocusCapable())
+            ?: return badRequest(
+                "unknown focusmode: $value (accepted: ${FocusModePlan.ACCEPTED.joinToString(", ")})"
             )
+        val err = when (plan.action) {
+            FocusModeAction.AUTOFOCUS -> cameraManager.setFocus(0.5f, 0.5f, lock = false)
+            FocusModeAction.LOCK -> cameraManager.setFocus(0.5f, 0.5f, lock = true)
+            FocusModeAction.RELEASE -> cameraManager.clearFocusLock()
+            FocusModeAction.UNSUPPORTED -> plan.refusal
         }
-        return when (v) {
-            "on", "auto", "macro" -> {
-                val err = cameraManager.setFocus(0.5f, 0.5f, lock = false)
-                if (err != null) badRequest(err) else okText(
-                    if (v == "macro")
-                        "auto; macro is not a distinct mode on this camera, so continuous " +
-                            "autofocus was enabled instead"
-                    else "auto"
-                )
-            }
-            "off", "fixed", "infinity" -> {
-                val err = cameraManager.setFocus(0.5f, 0.5f, lock = true)
-                if (err != null) badRequest(err) else okText("off; focus is now locked")
-            }
-            else -> badRequest(
-                "unknown focusmode: $value (accepted: on, auto, macro, off, fixed, infinity)"
-            )
-        }
+        return if (err == null) okText(plan.reply) else badRequest(err)
     }
     private fun notFound(t: String) = newFixedLengthResponse(Status.NOT_FOUND, "text/plain", "Not found: $t")
 
