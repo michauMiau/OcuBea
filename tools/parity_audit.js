@@ -56,23 +56,95 @@ const BACK = /^(bLL|bNight|bMotion|bTorch|bStream)$/;
   // handle -- the first version of this script stopped after one control for
   // exactly that reason and reported the untouched endpoints as "not wired up".
   const inventory = await p.evaluate(() =>
-    [...document.querySelectorAll('button, [role=button], .ctl')].map((e, i) => ({
+    [...document.querySelectorAll('button, [role=button], .ctl, select, input[type=radio], input[type=range]')].map((e, i) => ({
       i, id: e.id || '', tag: e.tagName,
       label: (e.textContent || '').trim().slice(0, 30),
+      options: e.tagName === 'SELECT'
+        ? [...e.options].map(o => o.value).filter(Boolean) : [],
     })));
 
   const clicked = [];
   // Destructive: these delete files or stop a running recording.
   const skip = /^(clipDelete|clipClear|stopRec|bRec30)$/;
   for (const item of inventory) {
-    const { i, id, tag, label } = item;
+    const { i, id, tag, label, options } = item;
     if (skip.test(id)) { clicked.push(`${id} "${label}" POMINIETY (niszczy dane)`); continue; }
     if (tag === 'A') { clicked.push(`${id || '(link)'} "${label}" POMINIETY (nawigacja)`); continue; }
-    // Re-acquire the handle per click: a reload between controls invalidates
+    // Re-acquire the handle per control: a reload between controls invalidates
     // the earlier ones, and a stale handle throws instead of reporting.
-    const c = (await p.$$('button, [role=button], .ctl'))[i];
+    const sel = () => p.$$(
+      'button, [role=button], .ctl, select, input[type=radio], input[type=range]');
+    const c = (await sel())[i];
     if (!c) { clicked.push(`${id} "${label}" NIEZNALAZIONY po reloadzie`); continue; }
     const before = reqs.length;
+
+    // Radios and sliders are how the audio codec and every numeric setting are
+    // reached -- /audio/codec sent nothing because its control is a radio group,
+    // not a select, and the audit only ever clicked buttons. A radio that is
+    // already checked fires no change, so the first unchecked one is chosen.
+    if (tag === 'INPUT') {
+      const type = await c.evaluate(e => e.type);
+      if (type === 'radio') {
+        const state = await c.evaluate(e => ({ checked: e.checked, val: e.value }));
+        if (state.checked) {
+          clicked.push(`${id || '(radio)'} ${state.val} POMINIETY (już zaznaczony)`);
+          continue;
+        }
+        try { await c.check({ timeout: 2500 }); } catch (e) {
+          clicked.push(`${id || '(radio)'} ${state.val} nie udalo sie zaznaczyc`);
+          continue;
+        }
+        await p.waitForTimeout(600);
+        const firedR = reqs.slice(before).filter(r => !/status\.json/.test(r));
+        clicked.push(`${id || '(radio)'} ${state.val} -> ` +
+          (firedR.length ? firedR.join(' ') : 'brak HTTP'));
+        continue;
+      }
+      if (type === 'range') {
+        const meta = await c.evaluate(e => ({ min: +e.min, max: +e.max, now: +e.value }));
+        // Move it a step rather than to the extreme: the extremes are valid but
+        // an unrelated setting would then be left at a value nobody chose.
+        const target = meta.now + 1 <= meta.max ? meta.now + 1 : meta.now - 1;
+        try {
+          await c.evaluate((e, v) => {
+            e.value = v;
+            e.dispatchEvent(new Event('input', { bubbles: true }));
+            e.dispatchEvent(new Event('change', { bubbles: true }));
+          }, target);
+        } catch (e) { clicked.push(`${id || '(range)'} nie udalo sie ustawic`); continue; }
+        await p.waitForTimeout(600);
+        const firedRg = reqs.slice(before).filter(r => !/status\.json/.test(r));
+        clicked.push(`${id || '(range)'} ${meta.now}->${target} -> ` +
+          (firedRg.length ? firedRg.join(' ') : 'brak HTTP'));
+        continue;
+      }
+      clicked.push(`${id || '(input ' + type + ')'} POMINIETY (typ ${type})`);
+      continue;
+    }
+
+    if (tag === 'SELECT') {
+      // A <select> never sends anything on its own -- the endpoints behind
+      // /audio/codec, /settings/effect and /settings/quality are all reached
+      // through a change event, so clicking one reported "brak HTTP" and the
+      // three settings looked unwired. Pick a real option and fire change.
+      if (!options.length) { clicked.push(`${id} "${label}" POMINIETY (brak opcji)`); continue; }
+      const pick = options[options.length - 1];
+      try {
+        await p.selectOption('#' + CSS.escape(id) || 'select', pick).catch(async () => {
+          await c.selectOption(pick);
+        });
+      } catch (e) {
+        try { await c.selectOption(pick); } catch (e2) {
+          clicked.push(`${id} "${label}" nie udalo sie wybrac opcji`); continue;
+        }
+      }
+      await p.waitForTimeout(600);
+      const firedS = reqs.slice(before).filter(r => !/status\.json/.test(r));
+      clicked.push(`${id} "${label}" [wybrano ${pick}] -> ` +
+        (firedS.length ? firedS.join(' ') : 'brak HTTP'));
+      continue;
+    }
+
     try { await c.click({ timeout: 2500 }); } catch (e) {
       clicked.push(`${id} "${label}" kliknięcie nieudane`);
       continue;

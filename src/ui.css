@@ -87,6 +87,9 @@
      "apply limits" buttons walk the list client-side, so on an empty list they
      send nothing at all -- without this they were indistinguishable from a
      working control, which is the failure the undefined helpers had. */
+  /* A dropped-frame count and a clip error are the two numbers on this page that
+     mean something is wrong; they must not read like the values beside them. */
+  .warn{color:#ffb454}
   button.ctl:disabled{opacity:.4;cursor:not-allowed}
   button.ctl:disabled:hover{background:inherit;border-color:var(--line)}
   button.primary:disabled:hover{background:#238636}

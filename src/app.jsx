@@ -10,7 +10,8 @@ import Hls from 'hls.js';
 
 import {
   bytes, get, setSetting, ptz, deleteRecording, setToken, getToken,
-  clipOnFile, recordNow, stopClipRecording, focus, setAudioCodec, hlsProfile, setHlsProfile,
+  clipOnFile, recordNow, stopClipRecording, clipRecordingState, focus, setAudioCodec,
+  hlsProfile, setHlsProfile,
   clearClips, pruneClips, deleteAllRecordings,
   t, uptime, LANG as T_LANG,
 } from './state.js';
@@ -345,6 +346,11 @@ function App() {
   const [mode, setMode] = useState(() => localStorage.getItem('ocubea_mode') || 'mjpeg');
   const [lowLatency, setLowLatency] = useState(() => localStorage.getItem('ocubea_ll') === '1');
   const [clips, setClips] = useState([]);
+  // Clip telemetry is polled on its own, separately from the file lists: it
+  // changes while a clip is being written and there is no reason to re-read the
+  // whole list for that. `dropped` in particular is the only way to see frames
+  // the encoder could not keep up with.
+  const [clipRec, setClipRec] = useState(null);
   // which clip the <video> preview is showing, if any
   const [clipPreview, setClipPreview] = useState(null);
   const [recordings, setRecordings] = useState([]);
@@ -370,6 +376,10 @@ function App() {
       return;
     }
     try { setSensors(await get('/sensors.json')); } catch { /* optional */ }
+    // Same 1s cadence as the rest. Failures are ignored: a phone with the clip
+    // writer disabled may not answer, and that must not take the status poll
+    // down with it.
+    try { setClipRec(await clipRecordingState()); } catch { /* optional */ }
   }, []);
 
   useEffect(() => {
@@ -634,6 +644,24 @@ function App() {
 
       <section class="files">
         <h2>${t('clips')} ${clips.length}</h2>
+        <!-- Telemetry the old UI showed and this one had dropped entirely.
+             "Record 30s" used to give no feedback at all while it wrote, and a
+             failing write reported nothing -- the error field is the phone's
+             own clipState error, and dropped frames are the one number that
+             says the encoder was falling behind. -->
+        ${clipRec && html`
+          <dl class="kv">
+            <dt>${t('recState')}</dt>
+            <dd>${clipRec.active ? t('recording') : clipRec.armed ? t('armed') : t('idle')}</dd>
+            ${clipRec.file && html`<dt>${t('recFile')}</dt><dd>${clipRec.file}</dd>`}
+            <dt>${t('recFrames')}</dt><dd>${clipRec.frames}</dd>
+            ${clipRec.dropped > 0 && html`<dt>${t('recDropped')}</dt>
+              <dd class="warn">${clipRec.dropped}</dd>`}
+            ${clipRec.bytes > 0 && html`<dt>${t('recBytes')}</dt>
+              <dd>${bytes(clipRec.bytes)}</dd>`}
+            ${clipRec.error && html`<dt>${t('recError')}</dt>
+              <dd class="warn">${clipRec.error}</dd>`}
+          </dl>`}
         <div class="row">
           <button id="bRecNow" class="ctl primary" onClick=${() => act(recordNow, 30, loadLists)}
             >${t('recordNow')}</button>

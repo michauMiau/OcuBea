@@ -81,6 +81,17 @@ export const recordNow = (seconds) =>
 
 export const stopClipRecording = () => api('/clips/record/stop', { method: 'POST' });
 
+/**
+ * Live clip telemetry: armed, active, frames, dropped, bytes, file, error.
+ *
+ * The old UI showed this (sRec, sFrames, sDropped, recBody) and the new one
+ * showed none of it -- "Record 30s" would show nothing at all while writing, and
+ * a write that was failing reported no error anywhere on the page. `dropped` is
+ * the interesting one: a phone that cannot keep up with the encoder drops
+ * frames, and without this the loss is invisible.
+ */
+export const clipRecordingState = () => get('/clips/recording');
+
 // ── bulk actions ────────────────────────────────────────────────────────────
 // prune and clear act on the WHOLE collection and read no parameter. The
 // contract was verified against the server, not the old UI: clipsClear() and
