@@ -1345,8 +1345,14 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             """"packets":${rtspServer.packetsSent()},""" +
             """"video":${if (cameraManager.rtspVideoAvailable) "true" else "false"},""" +
             """"audio":${config.audioEnabled},""" +
-            """"url":"rtsp://${localIpFallback()}:""" +
-            """${if (rtspServer.isRunning()) rtspServer.boundPort else 0}/h264_pcm.sdp"}"""
+            // The URL reports the port that WOULD be bound, not 0. Measured after
+            // the RTSP work: with RTSP off, status.json said
+            // `url: rtsp://192.168.1.184:0/h264_pcm.sdp`, which no client can use
+            // and which reads as though the port were part of the problem. The
+            // `running` flag already says whether it is live; `configured_port`
+            // already says what will be bound. A url of `:0` told the user nothing
+            // the two existing fields did not say better.
+            """"url":"rtsp://${localIpFallback()}:${config.rtspPort}/h264_pcm.sdp"}"""
 
     /** Escapes a string for safe inclusion inside a JSON string literal. */
     private fun String.jsonEscape(): String {
