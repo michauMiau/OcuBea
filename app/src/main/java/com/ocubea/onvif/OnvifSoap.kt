@@ -7,10 +7,86 @@ package com.ocubea.onvif
  */
 object OnvifSoap {
 
-    fun deviceServiceResponse(action: String, host: String, port: Int, deviceName: String): String {
+    /**
+     * The WSDL for the device service.
+     *
+     * Not decoration: a generated client fetches this and builds its stubs from
+     * it, so without it the service is unreachable however correct the SOAP is.
+     * That is exactly the state tools/onvif_verify.py caught -- the endpoint
+     * answered 200 to every request while no client could have used it.
+     *
+     * Only the operations actually implemented are declared. An operation listed
+     * here and missing from deviceServiceResponse() is a promise the device cannot
+     * keep, so the two lists are the same one.
+     */
+    fun deviceServiceWsdl(host: String, port: Int): String {
+        val endpoint = "http://$host:$port/onvif/device_service"
+        val ops = OPERATIONS.joinToString("\n") { op ->
+            """    <operation name="$op">
+      <input message="tns:${op}Request"/>
+      <output message="tns:${op}Response"/>
+    </operation>"""
+        }
+        return """<?xml version="1.0" encoding="UTF-8"?>
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+  xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+  xmlns:tds="http://www.onvif.org/ver10/device/wsdl"
+  xmlns:trt="http://www.onvif.org/ver10/media/wsdl"
+  xmlns:tt="http://www.onvif.org/ver10/schema"
+  xmlns:tns="http://www.onvif.org/ver10/device/wsdl"
+  targetNamespace="http://www.onvif.org/ver10/device/wsdl"
+  name="OnvifDeviceService">
+  <types/>
+  <wsdl:message name="GetSystemDateAndTimeResponse"/>
+  <wsdl:message name="GetServicesResponse"/>
+  <wsdl:message name="GetDeviceInformationResponse"/>
+  <wsdl:message name="GetCapabilitiesResponse"/>
+  <wsdl:message name="GetProfilesResponse"/>
+  <wsdl:message name="GetStreamUriResponse"/>
+  <wsdl:message name="GetSnapshotUriResponse"/>
+  <wsdl:portType name="OnvifDevicePortType">
+$ops
+  </wsdl:portType>
+  <wsdl:binding name="OnvifDeviceBinding" type="tns:OnvifDevicePortType">
+    <soap:binding style="document"
+      transport="http://schemas.xmlsoap.org/soap/http"/>
+  </wsdl:binding>
+  <wsdl:service name="OnvifDeviceService">
+    <wsdl:port name="OnvifDevicePort" binding="tns:OnvifDeviceBinding">
+      <soap:address location="$endpoint"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>"""
+    }
+
+    /**
+     * The operations this service implements.
+     *
+     * The WSDL and deviceServiceResponse() are generated from this one list, so
+     * an operation cannot be advertised without being answered.
+     */
+    val OPERATIONS = listOf(
+        "GetSystemDateAndTime", "GetServices", "GetDeviceInformation",
+        "GetCapabilities", "GetProfiles", "GetStreamUri", "GetSnapshotUri"
+    )
+
+
+    fun deviceServiceResponse(
+        action: String, host: String, port: Int, deviceName: String,
+        versionName: String, deviceId: String,
+    ): String {
         val streamUri = "http://$host:$port/video"
         val snapshotUri = "http://$host:$port/shot.jpg"
         val body = when {
+            action.contains("GetDeviceInformation") -> """
+                <tds:GetDeviceInformationResponse>
+                  <tds:Manufacturer>Occult</tds:Manufacturer>
+                  <tds:Model>${deviceName.escapeXml()}</tds:Model>
+                  <tds:FirmwareVersion>${versionName.escapeXml()}</tds:FirmwareVersion>
+                  <tds:SerialNumber>$deviceId</tds:SerialNumber>
+                  <tds:HardwareId>$deviceId</tds:HardwareId>
+                </tds:GetDeviceInformationResponse>"""
+
             action.contains("GetSystemDateAndTime") -> """
                 <tds:GetSystemDateAndTimeResponse>
                   <tds:SystemDateAndTime><tt:DateTimeType>NTP</tt:DateTimeType><tt:DaylightSavings>false</tt:DaylightSavings></tds:SystemDateAndTime>
@@ -68,12 +144,42 @@ object OnvifSoap {
 <s:Body>$body</s:Body>
 </s:Envelope>"""
 
-    /** Extract SOAP action from the request envelope's Action header or body root. */
+    /**
+     * The operation name from a SOAP request, without its namespace prefix.
+     *
+     * Two things this had to survive, both of which a real NVR sends and which
+     * made every operation answer ActionNotSupported against tools/onvif_verify.py:
+     *
+     *  - A self-closing body element. `<tds:GetProfiles/>` has no space and no
+     *    `>` immediately after the name, so the old `[\s>]` pattern never matched
+     *    it -- and a self-closing element is exactly how every generated client
+     *    encodes an operation with no arguments, which is nearly all of them.
+     *  - The SOAP 1.2 HTTP action header. A client that puts the action there and
+     *    sends an empty Body would otherwise extract nothing at all.
+     *
+     * Returns the bare name ("GetProfiles"), which is what the response builder
+     * keys on.
+     */
     fun extractAction(soapBody: String): String {
-        val m = Regex("<([a-z]+:[A-Za-z]+)[\\s>]").findAll(soapBody)
+        // Prefixed or bare, self-closing or not, attributes allowed.
+        val fromBody = Regex("<(?:[A-Za-z][\\w.-]*:)?(Get|Set|Add|Delete|Start|Stop|Get)[A-Za-z]+")
+            .findAll(soapBody)
             .map { it.groupValues[1] }
-            .firstOrNull { it.contains(":Get") || it.contains(":Set") || it.contains(":Add") }
-        return m ?: ""
+            .firstOrNull()
+        if (fromBody != null) return fromBody
+
+        // Fall back to the action header, which arrives in the body only when the
+        // client inlined it; the HTTP header copy is stripped of its namespace
+        // prefix and quotes by the caller.
+        val fromAction = Regex("<(?:[A-Za-z][\\w.-]*:)?Action[^>]*>([^<]+)<")
+            .findAll(soapBody)
+            .map { it.groupValues[1].trim().trim('"') }
+            .firstOrNull()
+        if (fromAction != null) {
+            val bare = fromAction.substringAfterLast('/').substringAfterLast(':')
+            if (bare.isNotBlank()) return bare
+        }
+        return ""
     }
 
     private fun String.escapeXml(): String =
