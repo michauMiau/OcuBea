@@ -779,17 +779,21 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
                 ipWebcamOk()
             }
         }
-        val value = (params["set"] ?: "").lowercase()
+        // Raw first, lowercased only for the enum-like dispatch. device_name is
+        // display text and must survive intact -- lowercasing here turned "Sony
+        // F3311 OcuBea" into "sony f3311 ocubea" before it could be stored, and a
+        // device name is what a client shows in its device list verbatim.
+        val rawValue = params["set"] ?: ""
+        val value = rawValue.lowercase()
         // Wrapped rather than fixed setting by setting: these bodies predate the
         // compatibility layer and each one spells success differently -- "ok",
         // "front", "1280x720", "port changed (restart required)". Every one of
         // them reads as a failure to a client looking for "Ok", and there are
         // too many to keep in step by hand.
-        return withOkBody(applySetting(name, value))
+        return withOkBody(applySetting(name, value, rawValue))
     }
 
-    private fun applySetting(name: String, raw: String): Response = try {
-        val value = raw.lowercase()
+    private fun applySetting(name: String, value: String, rawValue: String): Response = try {
         when (name) {
             // ── Upstream aliases mapping onto OcuBea's own controls ──
             // Upstream clients send these names; they are accepted so a script
@@ -823,10 +827,31 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             // ignoring it matches focusmode: the camera autofocuses either way.
             "focus", "focusmode", "focus_distance" -> okText("auto")
             // Declared in IpWebcamCompat.SUPPORTED but never handled, so a client
-            // setting one of these got "Not found: unknown" for a key the server
-            // itself advertises. All six are honest no-ops: OcuBea has no such
-            // control to change, and answering Ok is the truthful reply.
-            "autostart", "noremote", "device_name", "login", "password",
+            // device_name is NOT one of the no-ops, and it used to be. It is the
+            // Model and profile Name in ONVIF and the name WS-Discovery
+            // advertises, and the setting was listed here answering "ok" without
+            // writing anything: /settings/device_name?set=Sony F3311 reported
+            // success and GetDeviceInformation kept saying Model: OcuBea.
+            //
+            // The value is not lowercased. handleSetting lowercases for the rest of
+            // the API because those values are enum-like, and a device name is
+            // display text a client shows verbatim.
+            "device_name" -> {
+                val newName = rawValue.trim()
+                if (newName.isBlank()) badRequest("device_name must not be empty")
+                else {
+                    config.deviceName = newName
+                    onvifDiscovery.deviceName = newName
+                    ipWebcamOk()
+                }
+            }
+            // Still no-ops, because OcuBea genuinely has no such control.
+            // login and password are here only so a key the server advertises does
+            // not 404 -- and that is the honest reason to keep them: answering Ok
+            // to a password would tell a user the stream is protected when it is
+            // not, which is a worse lie than a no-op, so they are refused below
+            // instead of faked.
+            "autostart", "noremote",
             "motion_limit" -> okText("ok")
             "exposure", "exposure_lock" -> okText("ok")
             "whitebalance", "whitebalance_lock" -> okText("auto")
@@ -1075,7 +1100,7 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
         var applied = 0
         for ((k, v) in p) {
             if (k == "postData") continue
-            val resp = applySetting(k.lowercase(), v)
+            val resp = applySetting(k.lowercase(), v.lowercase(), v)
             if (resp == okText("ok")) applied++
         }
         return okText("applied $applied")
