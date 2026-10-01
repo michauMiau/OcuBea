@@ -50,6 +50,16 @@ android {
         viewBinding = true
     }
 
+    // android.util.Log throws in a JVM unit test ("Method w in android.util.Log
+    // not mocked"), so any test that reaches a code path which logs fails for a
+    // reason that has nothing to do with what it is checking. The stop/teardown
+    // path logs on purpose -- it warns when it deliberately keeps a codec alive
+    // rather than risk a native crash -- and that warning is exactly the
+    // behaviour worth testing.
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     // minSdk is 23, and the app is expected to run on Android 6. An API
     // introduced after 23 throws NoSuchMethodError at runtime on that device —
     // an Error, so `catch (_: Exception)` does not catch it and the process

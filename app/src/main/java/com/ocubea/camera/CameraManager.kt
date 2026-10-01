@@ -1046,6 +1046,38 @@ class CameraManager(
             "frames_encoded" to (s?.framesEncoded ?: 0L),
             "frames_queued" to (s?.framesQueued ?: 0L),
             "frames_dropped" to (s?.framesDropped ?: 0L),
+            // Encoder stop/teardown handshake. encoder_stops counts the stops
+            // that reached the native object, encoder_stops_deferred the ones
+            // that found the analyzer still inside the codec and kept the codec
+            // alive rather than risk a native SIGSEGV. The second number being
+            // 0 is the thing to watch: it cannot be distinguished from "the
+            // window never opened" without a counter, and only a counter tells
+            // the two apart on a device.
+            "encoder_stops" to (s?.stopsCompleted ?: 0L),
+            "encoder_stops_deferred" to (s?.stopsDeferred ?: 0L),
+            // Average time an encode held the codec, in microseconds. This is the
+            // width of the window stop() has to win: encode() blocks in
+            // dequeueInputBuffer for up to TIMEOUT_US while holding the handle,
+            // and a stop() landing in there is a use-after-free.
+            "encoder_held_ns" to (s?.encodeHeldNanos ?: 0L),
+            "encoder_calls" to (s?.encodeCalls ?: 0L),
+            // Both drains are reported because together with copy+dequeue they
+            // must account for the whole hold: 684ms measured against 378ms of
+            // named steps left 306ms unaccounted, and a breakdown that does not
+            // sum to the total is not a breakdown.
+            "encoder_step_drain1_ns" to (s?.tDrain1 ?: 0L),
+            "encoder_step_dequeue_ns" to (s?.tDequeue ?: 0L),
+            "encoder_step_copy_ns" to (s?.tCopy ?: 0L),
+            "encoder_step_drain2_ns" to (s?.tDrain2 ?: 0L),
+            // pixelStride 1 = the bulk path ran. 2 = it did not, and the
+            // copy cost is unchanged no matter what the fix claims.
+            // Rendered by hand: Map.toString() gives {1=2}, which is not JSON and
+            // made status.json unparseable -- the whole phone looked dead to
+            // every client. Same shape as the audio codec list above.
+            "encoder_strides" to (s?.strideSeen()
+                ?.entries?.sortedBy { it.key }
+                ?.joinToString(",") { "${it.key}=${it.value}" }
+                ?: ""),
             "segments" to (s?.segmentsWritten ?: 0L),
             "bytes" to (s?.bytesEncoded ?: 0L),
             "measured_fps" to (s?.measuredFps ?: 0.0),
