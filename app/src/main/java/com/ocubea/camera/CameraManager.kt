@@ -1064,6 +1064,10 @@ class CameraManager(
             // the two apart on a device.
             "encoder_stops" to (s?.stopsCompleted ?: 0L),
             "encoder_stops_deferred" to (s?.stopsDeferred ?: 0L),
+            // Must equal stops + deferred. A release that never happens is a
+            // leaked native MediaCodec, and nothing else in the status page would
+            // show it: the stream keeps working and the heap looks flat.
+            "encoder_codecs_released" to (s?.codecsReleased ?: 0L),
             // Average time an encode held the codec, in microseconds. This is the
             // width of the window stop() has to win: encode() blocks in
             // dequeueInputBuffer for up to TIMEOUT_US while holding the handle,

@@ -350,12 +350,20 @@ class H264Encoder(
             Thread.sleep(1)
         }
         if (encodeInFlight.get()) {
-            // The analyzer is wedged mid-drain. Releasing the codec now would
-            // crash, so keep it: a leaked encoder is recoverable, a SIGSEGV is
-            // not. Record it rather than failing silently.
+            // The analyzer is still inside the codec after the full budget.
+            // Releasing it now would be a use-after-free, so hand it to a thread
+            // that waits for the analyzer to finish and then tears down.
+            //
+            // It used to `return` here, which did NOT keep the codec alive -- it
+            // dropped `mc` on the floor. Nothing released it, and HlsSession kept
+            // the dead instance, so every deferral leaked a native MediaCodec.
+            // The guard traded a crash for a leak and called the leak
+            // recoverable; on a profile switch it happens routinely.
             Log.w(TAG, "stop: analyzer still inside the codec after " +
-                "${STOP_DRAIN_TIMEOUT_NS / 1_000_000}ms, keeping it alive")
+                "${STOP_DRAIN_TIMEOUT_NS / 1_000_000}ms, " +
+                "handing off to a drain thread")
             stopsDeferred.incrementAndGet()
+            releaseWhenIdle(mc)
             return
         }
         // Counter, not just the warning: "it never fired" and "it cannot fire"
@@ -365,6 +373,38 @@ class H264Encoder(
         if (mc != null) {
             runCatching { mc.stop() }
             runCatching { mc.release() }
+            released.incrementAndGet()
+        }
+    }
+
+    /**
+     * Finishes a teardown that could not wait for the analyzer in time.
+     *
+     * Waits for encodeInFlight to clear and then does what stop() would have
+     * done, on its own thread, so the release is never lost. The wait is
+     * unbounded on purpose: the alternative is a leaked native object per
+     * deferral, and an analyzer that never clears its flag is a bug that should
+     * surface as a stuck thread rather than as a slowly growing leak.
+     */
+    private fun releaseWhenIdle(mc: MediaCodec?) {
+        if (mc == null) return
+        val t = Thread({
+            while (encodeInFlight.get()) Thread.sleep(2)
+            runCatching { mc.stop() }
+            runCatching { mc.release() }
+            released.incrementAndGet()
+        }, "ocubea-release")
+        t.isDaemon = true
+        try {
+            t.start()
+        } catch (e: Exception) {
+            // Thread creation can fail under memory pressure. Fall back to
+            // releasing immediately -- worse than leaking, but this is a
+            // best-effort cleanup path either way.
+            Log.w(TAG, "could not start release thread, releasing now", e)
+            runCatching { mc.stop() }
+            runCatching { mc.release() }
+            released.incrementAndGet()
         }
     }
 
@@ -657,6 +697,9 @@ class H264Encoder(
          * only meaningful next to stopsCompleted.
          */
         val stopsDeferred = AtomicLong(0)
+
+    /** Codecs actually handed back to the driver. Deferred ones must land here. */
+    val released = AtomicLong(0)
 
         /**
          * How long each encode held the codec, summed.

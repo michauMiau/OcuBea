@@ -54,6 +54,17 @@ print('%s %s' % (h.get('encoder_stops') or 0, h.get('encoder_stops_deferred') or
 "
 }
 
+# stops, deferred, released -- the leak identity needs all three.
+counters_all() {
+  api "$HOST:8080/status.json" | python3 -c "
+import json,sys
+h=json.load(sys.stdin).get('hls') or {}
+print('%s %s %s' % (h.get('encoder_stops') or 0,
+                    h.get('encoder_stops_deferred') or 0,
+                    h.get('encoder_codecs_released') or 0))
+"
+}
+
 wait_up() {
   i=0
   while [ "$i" -lt 12 ]; do
@@ -130,6 +141,31 @@ after=$(counters | cut -d' ' -f2)
 
 telemetry 0 >/dev/null     # always switch the probe back off
 echo "  deferred przed=$before po=$after"
+
+# ── the leak check ──────────────────────────────────────────────────────────
+# Every stop must release its codec exactly once, inline or handed off. The old
+# deferred branch bumped the counter and returned, dropping the handle with no
+# stop() and no release(): a leaked native MediaCodec per deferral, invisible in
+# every other number on the page -- the stream keeps working and the heap looks
+# flat. So stops + deferred has to equal released, and it does not need the probe
+# at all; it needs the wait for the handoff threads to land.
+echo
+echo "=== WYCIEK: stops + deferred musi rowac sie z released ==="
+i=0
+while [ "$i" -lt 12 ]; do
+  set -- $(counters_all)
+  if [ "$(( $1 + $2 ))" = "$3" ]; then break; fi
+  sleep 1; i=$((i + 1))
+done
+set -- $(counters_all)
+stops=$1; def=$2; rel=$3
+echo "  stops=$stops deferred=$def released=$rel  (suma=$((stops + def)))"
+if [ "$((stops + def))" != "$rel" ]; then
+  echo "  FAIL -- $((stops + def - rel)) zwolnien gubione. Deferred stop upuscil uchwyt"
+  echo "         zamiast przekazac go do watku zwalniajacego."
+  exit 1
+fi
+echo "  OK -- kazdy stop zwolnil dokladnie jeden kodek"
 
 echo
 echo "=== wynik ==="
