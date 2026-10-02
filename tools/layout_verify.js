@@ -34,9 +34,27 @@ const LANGS = ['en', 'pl'];
 
       const bad = await page.evaluate(vw => {
         const out = [];
+        /* A screen-reader-only element is clipped to 1px on purpose, so its
+         * content is *supposed* to be bigger than its box. Measuring it is
+         * measuring the technique, not the page -- and a gate that goes red on
+         * it sends whoever is fixing it to "fix" the clipping, which is the one
+         * change that would hide the text from the accessibility tree and
+         * defeat the reason the element exists.
+         *
+         * Checked by computed style rather than by class name, so it still
+         * holds for any element hidden this way, including ones added later.
+         * A genuinely clipped visible label is still reported: the test is
+         * whether the browser is already hiding it from sighted users, not
+         * whether the text is long. */
+        const srOnly = e => {
+          const s = getComputedStyle(e);
+          return s.position === 'absolute' && (s.clip === 'rect(0px, 0px, 0px, 0px)'
+            || s.clipPath === 'inset(50%)');
+        };
         document.querySelectorAll('button,label,dt,dd,h1,h2,p,span,a,div').forEach(e => {
           const r = e.getBoundingClientRect();
           if (r.width === 0 || r.height === 0) return;
+          if (srOnly(e)) return;
           // scrollWidth > clientWidth means the text does not fit its own box.
           if (e.scrollWidth > e.clientWidth + 2) {
             out.push('overflow  ' + e.tagName + ' "' + e.textContent.trim().slice(0, 30) +

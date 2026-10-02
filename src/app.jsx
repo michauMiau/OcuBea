@@ -11,6 +11,7 @@ import Hls from 'hls.js';
 import {
   bytes, get, setSetting, ptz, deleteRecording, setToken, getToken,
   clipOnFile, recordNow, stopClipRecording, clipRecordingState, focus, setAudioCodec,
+  withToken,
   hlsProfile, setHlsProfile,
   clearClips, pruneClips, deleteAllRecordings,
   t, uptime, LANG as T_LANG,
@@ -286,10 +287,84 @@ function LiveAudio({ codec, enabled, running }) {
     </div>`;
 }
 
-function Stream({ mode, running, lowLatency }) {
+// ── fullscreen + external player ────────────────────────────────────────────
+// Two buttons that live on the picture itself, because both act on the picture
+// and a control the user has to scroll to is a control they will not find.
+//
+// Fullscreen goes through requestFullscreen rather than a CSS "cover the page"
+// fake, for one reason: only the real API resizes the viewport, which is what
+// makes a 4:3 MJPEG fill a landscape monitor instead of being letterboxed by
+// the browser chrome. Safari on iOS only has the prefixed variants and its
+// element has no allow attribute, so the fallback matters rather than being
+// defensive noise. If neither API exists, the button says so instead of
+// silently doing nothing.
+//
+// "Open externally" hands the stream to whatever the OS registered -- VLC,
+// ffplay, an MPV instance, a second browser tab. The URL carries the token:
+// with auth on, a player outside this page runs none of its JavaScript, so a
+// bare /video would come back 401 and the user would blame the phone. The
+// audio stream is offered too, because a player that can do both is the whole
+// point of leaving the page.
+function StreamControls({ boxRef, codec, enabled, running }) {
+  const [msg, setMsg] = useState(null);
+
+  const fs = async () => {
+    const el = boxRef.current;
+    // A null here means the caller forgot to bind the ref, and returning quietly
+    // would make that indistinguishable from a browser refusing fullscreen. It
+    // is the same class of bug this repo keeps finding: a control that does
+    // nothing and reports nothing.
+    if (!el) { setMsg(t('fullscreenNoTarget')); return; }
+    const req = el.requestFullscreen || el.webkitRequestFullscreen
+      || el.webkitEnterFullscreen || el.msRequestFullscreen;
+    if (!req) {
+      setMsg(t('noFullscreen'));
+      return;
+    }
+    try {
+      await req.call(el);
+      setMsg(null);
+    } catch {
+      // A refusal here is usually a permissions-policy or a missing user
+      // activation, and it is invisible otherwise.
+      setMsg(t('noFullscreen'));
+    }
+  };
+
+  const ext = (path, label) => {
+    const url = withToken(path);
+    // A blank tab is opened first so the click is not lost to a popup blocker
+    // while the URL is being assembled -- the navigation that follows is
+    // same-tab-safe, but window.open(null) is not, on some engines.
+    const w = window.open(url, '_blank', 'noopener');
+    if (!w) setMsg(t('popupBlocked') + ' ' + label);
+    else setMsg(null);
+  };
+
+  const haveAudio = running && enabled && codec && codec !== 'none';
+
+  return html`
+    <div class="streamctl">
+      <button id="bFull" class="ico" onClick=${fs}
+        title=${t('fullscreen')}><span aria-hidden="true">⛶</span
+        ><span class="sr">${t('fullscreen')}</span></button>
+      <button id="bExtV" class="ico" disabled=${!running}
+        onClick=${() => ext('/video', 'video')}
+        title=${t('openVideo')}><span aria-hidden="true">▶</span
+        ><span class="sr">${t('openVideo')}</span></button>
+      <button id="bExtA" class="ico" disabled=${!haveAudio}
+        onClick=${() => ext('/audio.' + codec, 'audio')}
+        title=${t('openAudio')}><span aria-hidden="true">♪</span
+        ><span class="sr">${t('openAudio')}</span></button>
+      ${msg && html`<span class="dim">${msg}</span>`}
+    </div>`;
+}
+
+function Stream({ mode, running, lowLatency, audioCodec, audioEnabled }) {
   const imgRef = useRef(null);
   const vidRef = useRef(null);
   const hlsRef = useRef(null);
+  const boxRef = useRef(null);
   const [hlsError, setHlsError] = useState(null);
 
   // A demuxer that cannot parse our fMP4 init segment cannot be talked out of
@@ -449,10 +524,12 @@ function Stream({ mode, running, lowLatency }) {
   }, [mode, running, lowLatency, fellBack]);
 
   return html`
-    <div class="stream">
+    <div class="stream" ref=${boxRef}>
       <img ref=${imgRef} alt="Live stream" style=${useMjpeg ? '' : 'display:none'} />
       <video ref=${vidRef} playsinline muted autoplay
         style=${mode === 'hls' && !fellBack ? '' : 'display:none'}></video>
+      <${StreamControls} boxRef=${boxRef} codec=${audioCodec}
+        enabled=${audioEnabled} running=${running} />
       ${!running && html`<div class="off">${t('streamOffline')}</div>`}
       ${fellBack && html`<div class="badge">HLS unsupported here — MJPEG</div>`}
       ${hlsError === 'hls_warming' && html`<div class="off">${t('hlsWarming')}</div>`}
@@ -574,7 +651,8 @@ function App() {
     </header>
 
     <main>
-      <${Stream} mode=${mode} running=${running} lowLatency=${lowLatency} />
+      <${Stream} mode=${mode} running=${running} lowLatency=${lowLatency}
+        audioCodec=${audio.codec} audioEnabled=${!!audio.enabled} />
       <${LiveAudio} codec=${audio.codec} enabled=${!!audio.enabled} running=${running} />
 
       ${flash && html`<div class="flash">${flash}</div>`}
