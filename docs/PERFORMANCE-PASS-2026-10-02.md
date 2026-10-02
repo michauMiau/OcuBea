@@ -1,144 +1,197 @@
 # Performance pass — Sony F3311, measured 2026-10-02
 
-Every number below came from the phone, not from reading the code. Where a
-conclusion needed the HAL, logcat settled it. Commands are reproducible.
+Every number came from the phone. Where a conclusion needed the HAL, logcat
+settled it. **The first version of this document reported a bug that does not
+exist; the refutation is recorded in full at the end, and it is the more
+useful half.**
 
-## Verdict first
+## Verdict
 
-The app is **not CPU-bound** and the frame-rate ceiling is **not** the one this
-repo has been chasing for several passes. Measured, per thread, with nothing
-attached and with three MJPEG viewers attached:
+The app is **not CPU-bound**, and the frame rate is **not** limited by the work
+the app does.
+
+Per-thread CPU, `top -t`, idle and with three MJPEG viewers:
 
 | | sum of threads | dominant thread |
 |---|---|---|
 | idle, 0 viewers | 28% | `CameraDeviceGLT` 27.1% |
 | 3 MJPEG viewers | 26% | `CameraDeviceGLT` 25.5% |
 
-`ocubea-analysis`, `ocubea-http`, `ocubea-encode-*` and `ocubea-audio` all read
-**0.0%**. The only hot thread is the camera HAL's GL thread, which is the
-sensor read path. The encode pool that a previous pass added is not carrying
-this device, and neither is motion analysis — the thing that was 91% of a thread
-in an earlier pass is now invisible.
+`ocubea-analysis`, `ocubea-http`, `ocubea-encode-*`, `ocubea-audio` all read
+**0.0%**. The only hot thread is the camera HAL's GL thread — the sensor read
+path. The encode pool added in an earlier pass is not carrying this device, and
+motion analysis, which was 91% of a thread in an earlier pass, is now invisible.
 
-**So the pipeline has headroom, and the adaptive governor is spending it.**
-`pipeline.rung` sits at `480x270` while `user_rung` is `1280x720`, and the
-delivered frame is 864x480. The governor stepped the resolution down because it
-believes fps is short — but fps is short because the governor stepped it down,
-or because of the defect below, and 26% CPU is not evidence of pressure.
-
-## What the phone actually delivers
-
-HAL, from `ImageReader-864x480f23m4` in logcat, immediately after a rebind:
+Delivered rate, one viewer, 20 s, counted from the published-frame counter:
 
 ```
-queueBuffer: fps=24.13 ... fps=23.99 ... fps=23.99 ... fps=21.69
+frames  1177 -> 1398   = 11.1/s      <- the real delivered rate
 ```
 
-**24 fps from the sensor.** The app's own numbers, 10 s apart, same session:
+against a HAL offering **24 fps** (`ImageReader-864x480f23m4`,
+`queueBuffer: fps=24.13`). So roughly half the sensor's frames are not
+reaching the encoder, while the process sits at 26% of 8 cores with every
+application thread at zero.
 
-| counter | delta over 10 s | rate |
+**The bottleneck is between the HAL and the analyzer, and the app's own
+telemetry cannot show you where.** See "What the telemetry cannot see".
+
+## Finding 1 — `fps` and `fps_requested` do not report the frame rate
+
+Three fields in one `/status.json` response, three different meanings:
+
+| field | what it actually is | source |
 |---|---|---|
-| `null_bitmaps` | +120 | 12/s |
-| `dropped` | +30 | 3/s |
-| `frames` (published) | **+0** | **0/s** |
-| `overlay.frames` | +0 | 0/s |
+| `frames` | **published** frames, cumulative — the only honest counter | `frameCounter`, at `CameraManager.kt:1048`, *before* `publish` |
+| `fps` | `frameHub.fps`, a 1-second rolling count inside `publish()` | `FrameHub.kt:68-72` |
+| `fps_requested` | **also** `frameHub.fps` — the same delivered value | `TelemetryHandler.kt:145` reads `cfg["fps"]` |
 
-## Three findings, in the order they should be fixed
+Measured with `target_fps=30`: `fps_requested=16`. The field says *requested*
+and reports delivery. Any sweep that trusts it is reading the wrong number.
 
-### 1. `toBitmap()` returns null on roughly half the frames, and the frame is discarded
+`fps` also stalls: four consecutive viewer sessions reported `fps=11` while
+`frames` moved 899 → 953. `FrameHub.fps` only advances when a frame passes
+`publish()`, so it cannot distinguish "slow" from "stopped", and it went stale
+across sessions rather than tracking them.
 
-`null_bitmaps` grows at 12/s against a 24 fps HAL — one null per two frames,
-consistently, with `pipeline_errors: 0`, `null_bitmaps` never counted as an
-exception, and no throwable anywhere in logcat. `CameraManager.kt:1010` does
-`imageProxy.toBitmap()`, then line 1015 discards the frame on null.
+## Finding 2 — the adaptive governor is holding a rung it has no reason to
 
-`frames` — the counter of *published* frames — sits frozen at 458 for the whole
-session. Not slow: **zero**. The camera is running and every frame it produces
-is thrown away.
+`pipeline.rung` sits at `480x270` while `user_rung` is `1280x720`, and the
+delivered frame is 864x480. Meanwhile:
 
-This is the ceiling. Everything else is downstream of it.
+```
+fps_relief_steps=0  sticky=False  oscillations=0  measured_fps=10  fps_effective=0
+```
 
-The skill's rule applies directly: *a zero drop counter is only evidence once
-you have counted exceptions*. Here the opposite holds — `null_bitmaps` is
-non-zero and is being treated as a curiosity. It is the bug.
+The governor sees ~10 fps against a requested 15 and steps the resolution down
+— while the CPU it would be relieving sits at 26% with every app thread at
+0.0%. **There was no pressure to step down from.** Headroom is an input to the
+governor's decision, not a justification for it.
 
-### 2. `frames` never moves, which means the app cannot report its own frame rate
+`fps_effective=0` is the tell: the *relief* path the governor uses to answer a
+shortfall has never fired, so the shortfall is being answered with resolution
+instead. That is the mechanism to look at first.
 
-`frameCounter` is incremented at `CameraManager.kt:1048`, inside the encoder
-task, *after* `toBitmap()` succeeds. So with every frame lost to a null
-bitmap, the published counter is pinned. `fps` in `/status.json` reads 12-15
-because it comes from `frameHub.fps`, a different counter that counts something
-else entirely — and `fps_requested` is wired to the same field
-(`TelemetryHandler.kt:145` reads `cfg["fps"]`, which is `frameHub.fps`), so
-`fps_requested` reports the delivered rate and not the requested one. Measured:
-`target_fps=30` with `fps_requested=16`. A field named `fps_requested` that
-reports the delivered rate will make every future sweep lie, including this one.
-
-### 3. The `dropped` counter is the fps limiter, not a loss
+## Finding 3 — `dropped` is the fps limiter, named as if it were a loss
 
 `dropDecisions++` at `CameraManager.kt:917` fires inside the fps limiter, before
-any consumer work. Reported as `"dropped"`, it reads as frames lost to overload.
-It is the app choosing to skip. Measured: target 15 fps against a 24 fps HAL
-means the limiter must reject ~9 frames/s and indeed rejects 3/s at target 30 —
-the counter moves with the setting and nothing else. Naming it `dropped` is
-what sent this pass looking for a saturation problem that is not there.
+any consumer work. It moves with `target_fps` and with nothing else. Measured
+over 10 s with a viewer attached:
 
-## The sweep that looked like proof and was not
+| `target_fps` | `dropped`/s | expected if limiter, HAL=24 |
+|---|---|---|
+| 15 | 3.5 | 9 |
+| 10 | 0.0 | 14 |
+| 24 | 0.0 | 0 |
 
-`/settings/fps?set=5|15|24|30` produced **identical** delivered fps and an
-unchanged `null_bitmaps` on every arm:
+Only the middle case is even close, and it is well under. Read as `dropped`,
+this field sends you looking for a saturation problem that is not there — which
+is exactly where the first version of this pass went.
 
-```
- set  delivered  req  rung      src
-   5        14   16  480x270   864x480
-  15        14   16  480x270   864x480
-  24        14   16  480x270   864x480
-  30        14   16  480x270   864x480
-```
+## What the telemetry cannot see
 
-A flat sweep means the limiter is not the constraint — which is right, and it
-was a useful step. What it did **not** mean is that the setting is broken: the
-setting *did* land (`target_fps` tracked 30 and held), and it could not change
-the outcome because the frames were being discarded downstream of it. This is
-the skill's flat-sweep trap in a new place: the sweep moved the right knob and
-still proved nothing, because the defect sits behind the knob.
+The gap between 24 fps at the HAL and 11 fps published is real, and **no field
+in `/status.json` locates it**. `frames` counts the frames that made it out;
+`dropped` counts the limiter's skips; `null_bitmaps` counts frames where
+`jpegNeeded` was false; `pipeline_errors` is 0. Nothing counts frames that
+arrived at `analyzeFrame` and were lost between the FPS check and the encoder.
 
-## Also seen, not yet diagnosed
+That gap is where the missing ~13 fps/s are, and it is the thing to instrument
+next: a counter incremented at entry to `analyzeFrame` and again at
+`frameCounter++`, with the difference as an explicit `frames_lost` field. The
+existing per-stage `Metrics.timer(FRAME_ANALYZE)` spans the whole method, so it
+cannot separate "never arrived" from "arrived and died".
 
-- `No frames for 30s — restarting camera` fires repeatedly. Consistent with
-  finding 1: the watchdog's heartbeat is upstream of the discard, so this needs
-  its own look rather than being assumed to be a consequence.
+## Also seen, not diagnosed
+
+- `No frames for 30s — restarting camera` fires repeatedly, and during those
+  windows **every** counter freezes — `null_bitmaps`, `dropped` and `frames`
+  all stop dead while `fps` keeps reporting 11-17. The logcat at that moment is
+  hundreds of `ImageReader ... dequeueBuffer() in a disconnected state` per
+  second from the HAL. The counters freezing is the observable fact; the cause
+  is not established.
 - `GraphicBufferMapper::unlock: (overtime > 1 ms)` from `MtkCam` — HAL-side,
   consistent with `CameraDeviceGLT` being the hot thread.
 
 ## Reproducing
 
 ```bash
-# per-thread CPU; note -t and the column layout on Android 5.1 toybox top
-adb shell top -t -n 2 -d 4 -s cpu    # PID TID PR CPU% S VSS RSS PCY UID Thread Proc
-adb shell top -t -n 1 -s cpu | grep com.ocubea
+# per-thread CPU. This toybox has no -H and no -b; -t is the flag, and CPU%
+# is column 4, not the first one top prints.
+adb shell top -t -n 2 -d 4 -s cpu | grep com.ocubea
 
 # what the HAL really delivers
 adb logcat -d | grep 'ImageReader.*queueBuffer'
 
-# the counters that disagree
-curl -s http://192.168.1.184:8080/status.json | python3 -m json.tool | grep -A14 pipeline
+# the only honest rate: two status reads 20 s apart
+curl -s http://192.168.1.184:8080/status.json   # frames
 ```
 
-`top -H` and `top -b` do not exist on this device's toybox; `-t` is the flag,
-and CPU% is column 4, not the one `top` prints first. A first attempt parsed
-the UID column and reported every thread at 3500%.
+`fps` is not a measurement. Use `frames` sampled twice.
 
-## Skill corrections this pass produced
+## Refutation — the first diagnosis, and why it was wrong
 
-- `references/frame-rate-diagnosis.md` says the fix is "fewer pixels and/or
-  parallel encoding" on a CPU-bound device. On this phone 26% of 8 cores is not
-  bound, and the largest single cost is a null return that costs no CPU at all.
-  Add: **check `null_bitmaps` before any CPU conclusion** — a per-frame
-  `toBitmap()` returning null is invisible to every CPU measurement, and it
-  presents as a frame-rate ceiling with an empty cause.
-- The ladder step 1 ("if delivered fps is identical at every target, the ceiling
-  is upstream of your code") gave the wrong answer here. It should be qualified:
-  a flat sweep means the *limiter* is not the constraint. If `null_bitmaps` is
-  growing, the ceiling is your own discard path and no fps setting will ever
-  move the number.
+The first version of this document claimed `toBitmap()` was returning null on
+half the frames and that this was the ceiling. The evidence looked strong:
+
+```
+null_bitmaps  +120 over 10 s (12/s)
+frames        +0  over 10 s
+pipeline_errors 0
+```
+
+It was **wrong**, and the error is worth more than the finding was.
+
+**The counter is misnamed.** `CameraManager.kt:1009-1015`:
+
+```kotlin
+val bitmap = if (jpegNeeded) {
+    val raw = imageProxy.toBitmap()
+    ...
+} else null                 // <- null by construction
+imageProxy.close()
+// A null here after an intentional skip is expected, not a failure.
+if (bitmap == null) { ...; nullBitmaps++; return }
+```
+
+When no viewer is attached and motion, HLS and recording are off, `jpegNeeded`
+is false, the bitmap is null **by design**, and that is counted as
+`null_bitmaps`. The code says so in a comment directly above the counter. It is
+a skip counter wearing the name of a failure.
+
+**The decisive test.** With a viewer attached for 20 s:
+
+```
+A  no viewer:   viewers=0  frames+  0  null+126  dropped+24   /10s
+B  one viewer:  viewers=1  frames+116  null+  0  dropped+34   /10s
+```
+
+Frames published, zero nulls. `toBitmap()` works. Under a viewer the counter
+does not merely stay low, it goes to **exactly zero**, because the skip path is
+no longer taken. A genuinely failing `toBitmap()` would not care how many
+people were watching.
+
+**Where the reasoning failed.** The evidence was consistent with two
+hypotheses — a null return, or a skip — and I picked one without a test that
+separates them. The tell was in plain sight and I read past it: `frames` frozen
+at *exactly* 0 is not what a partial failure looks like, because a real
+`toBitmap()` failure would still let some frames through. And the earlier
+observation that the app "publishes nothing" was itself the correct behaviour:
+with nobody connected there is nothing to publish.
+
+The general lesson, now in the skill: **a counter named after a failure will
+count the non-failure case too, and its rate will scale with whatever drives
+the skip.** `null_bitmaps` grew at 12/s against a 24 fps HAL — a ratio that
+looked like "half the frames fail" and was in fact "every frame is skipped,
+because no one wants one". Check what the counter increments *on*, at the line,
+before reading its rate as a failure rate.
+
+## Where the first pass also mis-stated the sweep
+
+The flat sweep (`?set=5|15|24|30`, identical results on every arm) was read as
+"the setting landed but the frames died downstream, therefore the defect is
+downstream". The correct reading is narrower: **a flat sweep of `fps` proves
+nothing here, because `fps` is not the measurement.** Once `frames` is used
+instead, the sweep does move — one viewer at target 15 delivered 11.1/s, and
+`dropped` tracked the limiter. The sweep was flat because the instrument was
+broken, not because the system was.
