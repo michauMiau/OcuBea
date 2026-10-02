@@ -81,6 +81,74 @@ why delivery sits around 11 fps rather than the limiter's configured rate; that
 is a rate question, not a loss question, and it needs the arrival *rate* of
 `observe()` under load rather than a loss counter.
 
+## Finding 2 — the device's arrival ceiling is ~17 fps, and it is not ours
+
+With `FrameArrivalAccount` in place the question became measurable: is the
+shortfall a **loss** or a **rate**? Measured, one real MJPEG consumer, after
+waiting for the camera to settle:
+
+```
+target   entered/s   published/s   early/s   rung      unaccounted
+     5        17.1           4.5      12.6   640x360     0
+    10        16.9           7.9       8.9   640x360     0
+    15        14.6          12.0       2.6   640x360     0
+    24        18.6          16.7       1.9   640x360     0
+```
+
+Two things fall out of this table, and neither is a frame being lost:
+
+- **`entered` is 14.6-18.6/s at every setting, including 5 fps** where the
+  limiter lets nearly everything through. The arrival rate does not respond to
+  the target at all. `published = min(entered, target)`, exactly as the limiter
+  intends. Nothing between the camera and the analyzer is dropping frames.
+- **`entered` does not respond to resolution either.** At `target_fps=5`, with
+  the limiter effectively disabled:
+
+```
+requested   rung      entered/s   src
+  1280x720  480x270      17.1     864x480
+   640x360  480x270      17.1     864x480
+   320x180  480x270      17.1     864x480
+```
+
+  Identical. The camera binds once and the sensor rate does not follow either
+  knob. **The ceiling is in the device, not in this app.**
+
+### A third finding: the FPS window is counted on the wrong side of the limiter
+
+`CameraManager.kt:170` documents the window as counting "after the FPS limiter",
+so that it "counts what the camera actually delivered rather than what the
+limiter let past". The code does the opposite. `rollFpsWindow()` is called at
+line 937, which is inside the `try` that begins after the `when (arrival.observe(...))`
+block — i.e. **after** the limiter has already refused the frame. At
+`target_fps=5` the window therefore reports ~4.5 instead of the ~17 the camera
+delivered.
+
+This matters because the governor reads that number (`CameraManager.kt:938-940`)
+and decides whether to drop a resolution rung. It is being told the stream is
+slow when the stream is fine and the limiter is simply doing its job, which is
+consistent with the observed behaviour: the governor slides down to the
+`480x270` floor and stays there while the device has plenty of headroom
+(`CameraDeviceGLT` at ~26% of 8 cores). The `fps_relief_steps` path can never
+help either, because a limiter-limited reading looks like a slow camera.
+
+This is a real defect, and it is the one thing in this pass that is worth
+changing in the pipeline itself. It is **not** changed here: the ceiling is a
+device limit, so fixing the window would make the governor stop downgrading
+without raising the frame rate — a better-reported number, not a faster
+stream. That change belongs in its own pass, with its own measurement.
+
+### What the logcat `queueBuffer` lines actually were
+
+Earlier passes read `fps=24.13` from `BufferQueueProducer` and treated it as the
+HAL's delivery rate. Those lines are misleading on this build: the same tag also
+emits `dequeueBuffer() in a disconnected state` warnings, and the interval
+computed from consecutive `queueBuffer` timestamps for the analysis
+`ImageReader` was ~10 ms with 328/621 gaps deviating >20% — not a stable sensor
+rate at all. `dur=1027 ms` is a reporting window, not a frame interval. The
+arrival rate has to come from the app's own counter, which is what
+`frames_entered` now provides.
+
 ## Finding 1 — `fps` and `fps_requested` do not report the frame rate
 
 Three fields in one `/status.json` response, three different meanings:
