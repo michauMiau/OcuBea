@@ -36,6 +36,51 @@ application thread at zero.
 **The bottleneck is between the HAL and the analyzer, and the app's own
 telemetry cannot show you where.** See "What the telemetry cannot see".
 
+## Resolved — the missing frames are accounted for (added after measurement)
+
+The statement above was written while the app had no way to tell "never
+arrived" from "arrived and died". `FrameArrivalAccount` now closes that gap, and
+the phone answered:
+
+**One real MJPEG consumer, 24 s:**
+
+```
+frames_entered         +402
+frames_returned_early  +0
+frames_published       +403      (the -1 is a torn read across the poll)
+frames_lost            -1
+frames_unaccounted     -1
+null_bitmaps           +0
+dropped_saturated      +0
+```
+
+```
+entered == published + returnedEarly + skipped + saturated + unaccounted
+  402 == 403 + 0 + 0 + 0 - 1                        exact
+```
+
+**No viewer, 20 s:**
+
+```
+frames_entered    +341
+null_bitmaps      +341      (every frame)
+frames_published  +0
+frames_unaccounted +0
+```
+
+So `frames_unaccounted` returns to **0** in both states, and the identity holds
+to the frame. **Nothing is being lost inside the analyzer.** The frames that do
+not become output are accounted for by `dropped` (the limiter's own decision),
+and with no consumer every frame takes the deliberate `null_bitmaps` skip, which
+is the business condition working as intended — not a failure.
+
+That settles the question the earlier pass could not: the ~24 fps the HAL offers
+is not being lost on the way to the encoder. The apparent shortfall was the
+**limiter**, by design, plus the no-consumer skip. What is still unexplained is
+why delivery sits around 11 fps rather than the limiter's configured rate; that
+is a rate question, not a loss question, and it needs the arrival *rate* of
+`observe()` under load rather than a loss counter.
+
 ## Finding 1 — `fps` and `fps_requested` do not report the frame rate
 
 Three fields in one `/status.json` response, three different meanings:
