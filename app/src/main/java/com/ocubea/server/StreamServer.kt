@@ -2276,7 +2276,19 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
      */
     private fun serveAsset(name: String, mime: String): Response = try {
         val bytes = context.assets.open(name).readBytes()
-        newFixedLengthResponse(Status.OK, mime, ByteArrayInputStream(bytes), bytes.size.toLong())
+        val res = newFixedLengthResponse(Status.OK, mime, ByteArrayInputStream(bytes), bytes.size.toLong())
+        // The favicon was the one asset a browser refused to pick up after it
+        // changed: with no Cache-Control at all, Chrome and Firefox keep the
+        // old icon for the life of the profile and revalidate only on a hard
+        // reload, so a new build kept showing the previous logo. One hour is
+        // long enough that a page load does not refetch it, short enough that
+        // a changed asset shows up on its own. index.html is served by
+        // serveWebpage and must NOT get this -- it is the page itself, and a
+        // cached copy of it is a stale UI, not a stale icon.
+        if (name != "index.html") {
+            res.addHeader("Cache-Control", "public, max-age=3600")
+        }
+        res
     } catch (_: Exception) {
         newFixedLengthResponse(Status.NOT_FOUND, "text/plain", "Asset $name not found")
     }

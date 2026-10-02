@@ -210,6 +210,82 @@ const Toggle = ({ on, onChange, label, id }) => html`
 // does not run document scripts (Camoufox 152 headless does not, and it fires
 // onload anyway, so the failure looks like a file problem). Bundled inline,
 // there is no second file to load and nothing to go wrong.
+// ── live audio ──────────────────────────────────────────────────────────────
+// The phone has always produced audio: /audio.aac and /audio.wav carry real
+// samples (measured: WAV RMS 304.9, peak 5113), and RTSP carries L16 PCM in
+// h264_pcm.sdp. None of it reached the browser, because <img> cannot play a
+// sound and the HLS <video> is muted and has no audio track to unmute.
+//
+// So the audio is a separate element fed by a separate stream, not something
+// muxed into the picture. That is also why it works identically in MJPEG and in
+// HLS mode: the two are independent, and adding audio to fMP4 would mean
+// rewriting segments, not adding a tag.
+//
+// A bare <audio autoplay> is refused by every current browser unless it is
+// muted, and unmuting without a gesture is refused too. So it starts muted,
+// the user unmutes with a click, and that click is what satisfies the policy.
+// A stream that cannot start is reported rather than left silent: autoplay
+// rejection and a 4xx are different faults and the message says which.
+function LiveAudio({ codec, enabled, running }) {
+  const ref = useRef(null);
+  const [on, setOn] = useState(false);
+  const [err, setErr] = useState(null);
+
+  // Refuse to open a stream the server is not offering, instead of requesting
+  // one and rendering a dead player. `none` is the server's own word for it.
+  const have = running && enabled && codec && codec !== 'none';
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (!have) {
+      // Dropping src is what actually stops the request; a paused element with
+      // a src still holds the connection open on the phone's audio client.
+      el.pause();
+      el.src = '';
+      el.load();
+      setErr(null);
+      return;
+    }
+    // The cache-buster is once, not per state change: /audio.aac is a live
+    // stream, and re-requesting it restarts the encoder's client list.
+    el.src = '/audio.' + codec + '?nocache=' + Date.now();
+    el.load();
+    // The gesture that matters is the click on the toggle, and by the time this
+    // effect runs that gesture is over, so play() is called and its rejection
+    // is read. Autoplay policy shows up here as NotAllowedError.
+    const p = el.play();
+    if (p && p.catch) {
+      p.catch((e) => {
+        setErr(e && e.name === 'NotAllowedError'
+          ? 'audio: the browser blocked autoplay — press the speaker button'
+          : 'audio: ' + (e && e.name ? e.name : 'the stream did not start'));
+      });
+    }
+  }, [have, codec]);
+
+  // Keep the element's own state in step with the button, so a stream that
+  // died on its own does not leave the button claiming it is on.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (on && el.paused) el.play().catch(() => setOn(false));
+    if (!on && !el.paused) el.pause();
+  }, [on]);
+
+  return html`
+    <div class="audio-row">
+      <audio ref=${ref} preload="none"></audio>
+      <button id="bAud" class=${'tgl' + (on ? ' on' : '')}
+        aria-label=${t('audio')} aria-pressed=${on}
+        title=${t('audio')}
+        onClick=${() => setOn(!on)}></button>
+      <span class="dim" id="audioState">
+        ${err ? err : have ? (on ? t('audioOn') : t('audioMuted')) : t('audioOff')}
+      </span>
+    </div>`;
+}
+
 function Stream({ mode, running, lowLatency }) {
   const imgRef = useRef(null);
   const vidRef = useRef(null);
@@ -499,6 +575,7 @@ function App() {
 
     <main>
       <${Stream} mode=${mode} running=${running} lowLatency=${lowLatency} />
+      <${LiveAudio} codec=${audio.codec} enabled=${!!audio.enabled} running=${running} />
 
       ${flash && html`<div class="flash">${flash}</div>`}
 
@@ -667,6 +744,11 @@ function App() {
 
       <section>
         <h2>${t('audio')}</h2>
+        <${Row} label=${t('audioEnabled')}>
+          <${Toggle} id="bAudOn" on=${!!audio.enabled} label=${t('audioEnabled')}
+            onChange=${(v) => act(setSetting, 'audio_enabled', v ? 'on' : 'off', poll)} />
+          <span class="dim">${audio.enabled ? t('audioOn') : t('audioOff')}</span>
+        <//>
         ${AudioCodecs(audio.available).map(([id, key]) => html`
           <${Row} label=${t(key)}>
             <input id=${'ac_' + id} type="radio" name="acodec" value=${id}

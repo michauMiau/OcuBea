@@ -10,6 +10,7 @@
 //   node build.mjs --watch  rebuild on change
 import { build, context } from 'esbuild';
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -17,14 +18,24 @@ const root = dirname(fileURLToPath(import.meta.url));
 const outFile = resolve(root, 'app/src/main/assets/index.html');
 const cssFile = resolve(root, 'src/ui.css');
 
-const shell = (css, js) => `<!DOCTYPE html>
+// A short id of the content actually shipped. Used as the favicon's query
+// string so a changed build asks for a URL the browser has never cached,
+// rather than relying on it noticing that the bytes behind one URL moved.
+const buildId = (css, js) =>
+  createHash('sha256').update(css).update(js).digest('hex').slice(0, 8);
+
+const shell = (css, js, v) => `<!DOCTYPE html>
 <html lang="en" data-default-lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0d1117">
 <title>OcuBea</title>
-<link rel="icon" type="image/png" href="/favicon.ico">
+<link rel="icon" type="image/png" href="/favicon.ico?v=${v}">
+<!-- The query is the build id: a browser that cached the old icon under
+     the bare path never sees this URL again, so a changed favicon lands
+     without asking the user to hard-reload. Cache-Control alone only
+     bounds how long the stale copy survives, this retires it. -->
 <style>
 ${css}
 </style>
@@ -55,7 +66,7 @@ const options = {
 async function emit(result) {
   const js = result.outputFiles[0].text;
   const css = readFileSync(cssFile, 'utf8');
-  writeFileSync(outFile, shell(css, js));
+  writeFileSync(outFile, shell(css, js, buildId(css, js)));
   const kb = (statSync(outFile).size / 1024).toFixed(1);
   console.log(`index.html  ${kb} kB  (js ${(js.length / 1024).toFixed(1)} kB)`);
 }
@@ -70,7 +81,8 @@ if (process.argv.includes('--watch')) {
     clearTimeout(cssTimer);
     cssTimer = setTimeout(async () => {
       const js = (await ctx.rebuild()).outputFiles[0].text;
-      writeFileSync(outFile, shell(readFileSync(cssFile, 'utf8'), js));
+      const c2 = readFileSync(cssFile, 'utf8');
+          writeFileSync(outFile, shell(c2, js, buildId(c2, js)));
     }, 60);
   });
   console.log('watching src/ …');

@@ -207,3 +207,13 @@
          border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:11px;color:var(--txt)}
   footer{text-align:center;color:var(--dim);font-size:11px;padding:20px}
   @media(max-width:520px){.row>*{min-width:64px}button{padding:11px 8px;font-size:12px}}
+
+/* live audio: the speaker toggle and its state line sit under the picture.
+   The <audio> element itself is never displayed -- it is a stream source, not
+   a player, and giving it a visible control would put a second, browser-drawn
+   transport next to the app's own. `display:none` on a media element that is
+   actually playing is safe; it is the *element* that is hidden, not the audio
+   pipeline, and every engine keeps decoding a display:none media element. */
+.audio-row{display:flex;align-items:center;gap:10px;margin:-4px 0 16px}
+.audio-row audio{display:none}
+.audio-row .tgl{flex:0 0 auto}
