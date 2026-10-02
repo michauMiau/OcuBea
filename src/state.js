@@ -20,7 +20,11 @@ export const setToken = (v) => {
   else localStorage.removeItem('ocubea_token');
 };
 
-const withToken = (p) =>
+// Exported because "open in an external player" has to build a URL that a
+// player outside this page will follow without any of this page's JS running.
+// If auth is on, a bare /video returns 401 to that player, so the token has to
+// travel in the query exactly as it does for the in-page requests.
+export const withToken = (p) =>
   (TOKEN ? p + (p.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : p);
 
 // ── requests ────────────────────────────────────────────────────────────────
