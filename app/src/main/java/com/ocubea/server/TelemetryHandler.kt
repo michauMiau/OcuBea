@@ -282,27 +282,27 @@ class TelemetryHandler(
         val sb = StringBuilder()
         sb.append("{")
         sb.append("\"overlay\":{")
-        sb.append("\"requested\":${boolStr(config.overlayEnabled)},")
-        sb.append("\"applied\":${boolStr(overlay["enabled"] == true)},")
+        sb.append("\"requested\":${boolJson(config.overlayEnabled)},")
+        sb.append("\"applied\":${boolJson(overlay["enabled"] == true)},")
         sb.append("\"frames\":${overlay["frames"] ?: 0}},")
         // awake: requested vs applied. There is no counter for a window flag, so
         // `applied` IS the observable -- it is read from the window, not from the
         // preference that was stored.
         sb.append("\"awake\":{")
-        sb.append("\"requested\":${boolStr(config.keepScreenOn)},")
-        sb.append("\"applied\":${boolStr(com.ocubea.ui.KeepScreenOn.isWindowPresent() && config.keepScreenOn)},")
-        sb.append("\"window_present\":${boolStr(com.ocubea.ui.KeepScreenOn.isWindowPresent())}},")
+        sb.append("\"requested\":${boolJson(config.keepScreenOn)},")
+        sb.append("\"applied\":${boolJson(com.ocubea.ui.KeepScreenOn.isWindowPresent() && config.keepScreenOn)},")
+        sb.append("\"window_present\":${boolJson(com.ocubea.ui.KeepScreenOn.isWindowPresent())}},")
         // idle is the power-saving policy, and both halves are the same field,
         // so this one is a single value rather than a requested/applied pair.
-        sb.append("\"idle\":{\"requested\":${boolStr(config.powerSaving)}},")
+        sb.append("\"idle\":{\"requested\":${boolJson(config.powerSaving)}},")
         // sound carries the tone player's own counters, or an explicit null-ish
         // marker when no player exists -- an empty object would read as "armed
         // and nothing has happened", which is a different claim from "there is
         // no player to emit one".
         if (tone.isEmpty()) {
-            sb.append("\"sound\":{\"requested\":${boolStr(config.soundEnabled)},\"player\":false},")
+            sb.append("\"sound\":{\"requested\":${boolJson(config.soundEnabled)},\"player\":false},")
         } else {
-            sb.append("\"sound\":{\"requested\":${boolStr(config.soundEnabled)},\"player\":true,")
+            sb.append("\"sound\":{\"requested\":${boolJson(config.soundEnabled)},\"player\":true,")
             sb.append(tone.removePrefix("{").removeSuffix("}"))
             sb.append("},")
         }
@@ -313,10 +313,10 @@ class TelemetryHandler(
         // motion_event / motion_active: the same armed flag under two names,
         // with motion_active marked read-only so the refusal in the handler is
         // discoverable from telemetry alone.
-        sb.append("\"motion_event\":{\"requested\":${boolStr(config.motionEventEnabled)},")
-        sb.append("\"applied\":${boolStr(motionDetector.enabled)},\"detected\":${motionDetector.motionDetected}},")
+        sb.append("\"motion_event\":{\"requested\":${boolJson(config.motionEventEnabled)},")
+        sb.append("\"applied\":${boolJson(motionDetector.enabled)},\"detected\":${motionDetector.motionDetected}},")
         sb.append("\"motion_active\":{\"writable\":false,")
-        sb.append("\"detected\":${boolStr(motionDetector.motionDetected)}},")
+        sb.append("\"detected\":${boolJson(motionDetector.motionDetected)}},")
         // gps_active: never applied in either direction, and the reason travels
         // with it so a client that reads this block knows the 400 was about the
         // device and not a typo in its own request. The wording matches
@@ -433,6 +433,16 @@ class TelemetryHandler(
     }
 
     private fun boolStr(on: Boolean) = if (on) "on" else "off"
+
+/**
+ * [boolStr] but quoted, for a JSON body.
+ *
+ * status.json is parsed by clients, and a bare `on` is not a JSON value --
+ * json.loads rejects the whole document, so one unquoted field silently
+ * costs the client every other field too. Measured on the device: 10 such
+ * values in the behaviors block made the entire response unparseable.
+ */
+private fun boolJson(on: Boolean) = "\"" + boolStr(on) + "\""
 
     /**
      * GET /sensors.json                 — full nested telemetry (OcuBea extra)
