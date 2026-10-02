@@ -127,6 +127,12 @@ dependencies {
     
     // Testing
     testImplementation("junit:junit:4.13.2")
+    // StreamServer takes five collaborators by type, and three of them
+    // (CameraManager, MotionRecorder, OnvifDiscovery) are final Kotlin classes
+    // with no interface to stand in for. Mockito 5's inline mock maker is the
+    // default there, so a final class can be mocked without any production
+    // seam; mockito-inline is not needed on top of it.
+    testImplementation("org.mockito:mockito-core:5.11.0")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
 }
