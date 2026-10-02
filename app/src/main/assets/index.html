@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0d1117">
 <title>OcuBea</title>
-<link rel="icon" type="image/png" href="/favicon.ico?v=f0a7d5bc">
+<link rel="icon" type="image/png" href="/favicon.ico?v=d7fa31ed">
 <!-- The query is the build id: a browser that cached the old icon under
      the bare path never sees this URL again, so a changed favicon lands
      without asking the user to hard-reload. Cache-Control alone only
@@ -253,6 +253,16 @@
 .stream:fullscreen{background:#000;border-radius:0;border:0}
 .stream:fullscreen img,.stream:fullscreen video{width:100%;height:100%;object-fit:contain}
 
+/* Screen-reader-only label. The button glyphs (⛶ ▶ ♪) carry the meaning to a
+   sighted user and nothing at all to a screen reader, and the i18n gate counts
+   every DOM text node -- which is how it caught that the glyphs were the only
+   text in the control. Putting the translated word here gives the control a
+   real accessible name, and it is what makes the glyph decoration rather than
+   the label. clip-path rather than display:none, because display:none removes
+   the element from the accessibility tree, which would defeat the purpose. */
+.sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
+
 </style>
 </head>
 <body>
@@ -341,13 +351,16 @@ Schedule: ${c.map(m=>Ye(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
     </div>`}function Ep({boxRef:n,codec:e,enabled:t,running:s}){let[i,r]=Le(null),a=async()=>{let l=n.current;if(!l){r(P("fullscreenNoTarget"));return}let u=l.requestFullscreen||l.webkitRequestFullscreen||l.webkitEnterFullscreen||l.msRequestFullscreen;if(!u){r(P("noFullscreen"));return}try{await u.call(l),r(null)}catch(d){r(P("noFullscreen"))}},o=(l,u)=>{let d=Ba(l),h=window.open(d,"_blank","noopener");r(h?null:P("popupBlocked")+" "+u)},c=s&&t&&e&&e!=="none";return ue`
     <div class="streamctl">
       <button id="bFull" class="ico" onClick=${a}
-        aria-label=${P("fullscreen")} title=${P("fullscreen")}>⛶</button>
+        title=${P("fullscreen")}><span aria-hidden="true">⛶</span
+        ><span class="sr">${P("fullscreen")}</span></button>
       <button id="bExtV" class="ico" disabled=${!s}
         onClick=${()=>o("/video","video")}
-        aria-label=${P("openVideo")} title=${P("openVideo")}>▶</button>
+        title=${P("openVideo")}><span aria-hidden="true">▶</span
+        ><span class="sr">${P("openVideo")}</span></button>
       <button id="bExtA" class="ico" disabled=${!c}
         onClick=${()=>o("/audio."+e,"audio")}
-        aria-label=${P("openAudio")} title=${P("openAudio")}>♪</button>
+        title=${P("openAudio")}><span aria-hidden="true">♪</span
+        ><span class="sr">${P("openAudio")}</span></button>
       ${i&&ue`<span class="dim">${i}</span>`}
     </div>`}function vp({mode:n,running:e,lowLatency:t,audioCodec:s,audioEnabled:i}){let r=Yt(null),a=Yt(null),o=Yt(null),c=Yt(null),[l,u]=Le(null),d=l==="hls_unplayable_mjpeg",h=n==="mjpeg"||d;return Ft(()=>{let f=r.current,g=a.current;if(!f||!g)return;let m=!1,p=null;return(async()=>{if(m)return;if(h&&e)return f.naturalWidth||(f.src="/video?nocache="+Date.now()),()=>{f.src=""};if(f.src="",n!=="hls"||!e)return;if(o.current&&(o.current.destroy(),o.current=null),u(null),g.removeAttribute("src"),g.load(),!_t.isSupported()){g.canPlayType("application/vnd.apple.mpegurl")?g.src="/hls.m3u8":u("hls_unsupported_mse");return}let v=new _t({lowLatencyMode:t,maxBufferLength:t?2:6,backBufferLength:t?4:30,liveSyncDurationCount:t?2:3,liveDurationInfinity:!0,enableWorker:!0,manifestLoadingMaxRetry:2,manifestLoadingRetryDelay:200,levelLoadingMaxRetry:4,fragLoadingMaxRetry:6});o.current=v,window.__hls=v,v.on(_t.Events.ERROR,(S,T)=>{if(T.fatal){if(T.details===_t.ErrorDetails.MEDIA_SOURCE_REQUIRES_RESET||T.details===_t.ErrorDetails.OTHER_MEDIA_ERROR){Qu("HLS: recreating MediaSource after "+T.details),u(null),v.recoverMediaError();return}u(T.details||"hls_error")}}),o.current||u("hls_warming"),!m&&(v.loadSource("/hls.m3u8"),v.attachMedia(g),p=setTimeout(()=>{o.current===v&&(g.readyState>2||g.currentTime>0||(Qu("HLS: no frames after 8s, falling back to MJPEG"),v.destroy(),o.current=null,u("hls_unplayable_mjpeg")))},8e3),g.muted=!0,g.play().catch(()=>{}))})(),()=>{m=!0,p&&clearTimeout(p),o.current&&(o.current.destroy(),o.current=null)}},[n,e,t,d]),ue`
     <div class="stream" ref=${c}>

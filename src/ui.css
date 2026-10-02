@@ -239,3 +239,13 @@
    they are; nothing else has to move. */
 .stream:fullscreen{background:#000;border-radius:0;border:0}
 .stream:fullscreen img,.stream:fullscreen video{width:100%;height:100%;object-fit:contain}
+
+/* Screen-reader-only label. The button glyphs (⛶ ▶ ♪) carry the meaning to a
+   sighted user and nothing at all to a screen reader, and the i18n gate counts
+   every DOM text node -- which is how it caught that the glyphs were the only
+   text in the control. Putting the translated word here gives the control a
+   real accessible name, and it is what makes the glyph decoration rather than
+   the label. clip-path rather than display:none, because display:none removes
+   the element from the accessibility tree, which would defeat the purpose. */
+.sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;
+  clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}

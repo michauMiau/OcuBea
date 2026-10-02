@@ -48,6 +48,26 @@ function isNumberLike(s) {
   return /^\d+×\d+\s*\([A-Za-z0-9]+\)$/.test(t);
 }
 
+/* A lone symbol used as an icon: ⛶ ▶ ♪, and the arrow and dot rows. A
+ * single code point carrying no letter and no digit has no word in it, so
+ * there is nothing for the Polish render to differ on -- and demanding one
+ * would mean either mistranslating a glyph or hard-coding three glyphs into
+ * the allow-list above, which is the list that has to stay about *words*.
+ *
+ * This is deliberately narrower than "any single character": a lone letter
+ * or digit is excluded, so a real one-word string in the wrong language is
+ * still reported. Kept shape-based for the same reason isNumberLike is --
+ * a list of which symbols the UI happens to use goes stale on the next icon.
+ *
+ * This is not a loophole for visible English. Marking a string aria-hidden is
+ * not an escape either: aria-hidden hides a string from the screen reader
+ * while leaving it on screen, which is the opposite case, so the walker below
+ * still visits it and still compares it. */
+function isGlyph(s) {
+  const t = s.trim();
+  return Array.from(t).length === 1 && !/[\p{L}\p{N}]/u.test(t);
+}
+
 (async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1000, height: 1200 } });
@@ -97,7 +117,8 @@ function isNumberLike(s) {
    * already failed above, and reading past it would report noise. */
   const n = Math.min(en.length, pl.length);
   for (let i = 0; i < n; i++) {
-    if (en[i] === pl[i] && !STAYS_ENGLISH.has(en[i]) && !isNumberLike(en[i]) && !seen.has(en[i])) {
+    if (en[i] === pl[i] && !STAYS_ENGLISH.has(en[i]) && !isNumberLike(en[i])
+        && !isGlyph(en[i]) && !seen.has(en[i])) {
       seen.add(en[i]);
       untranslated.push(en[i]);
     }

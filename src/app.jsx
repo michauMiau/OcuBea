@@ -346,13 +346,16 @@ function StreamControls({ boxRef, codec, enabled, running }) {
   return html`
     <div class="streamctl">
       <button id="bFull" class="ico" onClick=${fs}
-        aria-label=${t('fullscreen')} title=${t('fullscreen')}>⛶</button>
+        title=${t('fullscreen')}><span aria-hidden="true">⛶</span
+        ><span class="sr">${t('fullscreen')}</span></button>
       <button id="bExtV" class="ico" disabled=${!running}
         onClick=${() => ext('/video', 'video')}
-        aria-label=${t('openVideo')} title=${t('openVideo')}>▶</button>
+        title=${t('openVideo')}><span aria-hidden="true">▶</span
+        ><span class="sr">${t('openVideo')}</span></button>
       <button id="bExtA" class="ico" disabled=${!haveAudio}
         onClick=${() => ext('/audio.' + codec, 'audio')}
-        aria-label=${t('openAudio')} title=${t('openAudio')}>♪</button>
+        title=${t('openAudio')}><span aria-hidden="true">♪</span
+        ><span class="sr">${t('openAudio')}</span></button>
       ${msg && html`<span class="dim">${msg}</span>`}
     </div>`;
 }
