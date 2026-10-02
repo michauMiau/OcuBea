@@ -20,6 +20,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Observer
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
+import com.ocubea.server.ImageControlAction
+import com.ocubea.server.ImageControlCaps
+import com.ocubea.server.ImageControlPlan
 import com.ocubea.stream.FrameHub
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
@@ -42,6 +45,16 @@ class CameraManager(
 ) {
 
     val frameHub = FrameHub()
+
+    /**
+     * The `overlay` drawing pass.
+     *
+     * Exposed so the settings layer can read the flag and the counter without
+     * reaching into the capture path: `/settings/overlay` has to answer from the
+     * painter's own state, and a second boolean in StreamServer would be free to
+     * disagree with the one the frame path reads.
+     */
+    val overlay = FrameOverlayPainter()
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var cameraRef: androidx.camera.core.Camera? = null
@@ -527,6 +540,10 @@ class CameraManager(
         adaptive.onRebind(System.currentTimeMillis())
         resetFpsWindow()
         applyFrameRate(camera)
+        // Every interop option died with the previous session. Pushed back here so
+        // a rebind does not silently revert a white balance / lock the client set
+        // while /status.json still reports it.
+        reapplyLatchedImageOptions(camera)
         val observer = CameraStateObserver(generation)
         stateObserver = observer
         camera.cameraInfo.getCameraState().observeForever(observer)
@@ -1012,6 +1029,13 @@ class CameraManager(
                         val ownsProcessed = processed !== bitmap
                         if (ownsProcessed) bitmap.recycle()
                         try {
+                            // Overlay last, after the effects: applyEffects
+                            // rewrites every pixel for mono/sepia/nightvision, so
+                            // text drawn before it would come out grey on grey and
+                            // indistinguishable from the noise the effect creates.
+                            // The painter draws onto the final bitmap in place, so
+                            // ownership is unchanged.
+                            overlay.paint(processed, config.deviceName, System.currentTimeMillis())
                             val quality = jpegQualityOverride.coerceIn(40, 100)
                             val bos = jpegPool.acquire()
                             val jpeg: ByteArray
@@ -1161,6 +1185,19 @@ class CameraManager(
     /** Frames deliberately skipped by the FPS limiter — surfaced in /status.json. */
     fun droppedFrames(): Int = dropDecisions
 
+    /**
+     * Overlay state for /status.json.
+     *
+     * `enabled` is the request and `frames` is what it has actually done, side
+     * by side, because a flag that reads true while nothing has been drawn is
+     * exactly the lie this file was written to remove: with frames=0 after a
+     * request, the answer is visibly not-yet-applied rather than asserted to be.
+     */
+    fun overlayStatus(): Map<String, Any> = mapOf(
+        "enabled" to overlay.enabled,
+        "frames" to overlay.stampedFrames(),
+    )
+
     // ─── Effects ────────────────────────────────────────────────
 
     private fun applyEffects(source: Bitmap): Bitmap {
@@ -1303,6 +1340,9 @@ class CameraManager(
         // the governor has added on the way down the ladder. The ceiling is
         // unchanged, so a user who asked for 30 still gets 30.
         val want = adaptive.effectiveFps(targetFps).coerceIn(5, 30)
+        // Remembered so a later white-balance write can re-send this range instead
+        // of clearing it. See pushOptions.
+        interopTargetFps = want
         try {
             val options = androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
                 .setCaptureRequestOption(
@@ -1657,7 +1697,320 @@ class CameraManager(
 
     private var focusLocked = false
 
-    fun isUsingFrontCamera(): Boolean = cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA
+    // ── exposure / white balance / antibanding ────────────────────────────────
+    //
+    // /settings/exposure, exposure_lock, whitebalance, whitebalance_lock and
+    // antibanding answered "Ok" and "auto" for every value with nothing behind
+    // them. What follows is the first version that touches hardware, and the
+    // rules it obeys:
+    //
+    //   1. CameraX 1.3.0's CameraControl has exactly six methods (verified with
+    //      javap against the AAR): torch, focus start/cancel, zoom ratio, linear
+    //      zoom and setExposureCompensationIndex. There is NO setExposureCompensation
+    //      (int) -- writing that call gives "cannot find symbol" -- and no white
+    //      balance, no tone mode and no antibanding anywhere in camera-core 1.3.0
+    //      (ToneMode arrived in 1.4). So WB and antibanding can only be reached
+    //      through the camera2 interop, and the only honest way to answer for them
+    //      is to report what the session actually accepted.
+    //   2. The interop's setCaptureRequestOptions CLEARS every previously set
+    //      option before adding the new ones (bytecode of
+    //      Camera2CameraControlImpl.setCaptureRequestOptions: clearCaptureRequestOptionsInternal()
+    //      then addCaptureRequestOptionsInternal()). applyFrameRate() uses it for
+    //      CONTROL_AE_TARGET_FPS_RANGE, so calling it here for WB would wipe the
+    //      frame rate the governor negotiated -- a bug visible only as a quietly
+    //      wrong fps. pushCaptureOptions() below therefore MERGES (add...) and
+    //      re-sends the fps range on every write, so neither order loses a key.
+    //   3. Both the AE index and the request keys go through a bounded wait, so
+    //      the reply reflects a request the camera accepted. An unaccepted
+    //      request is an error string, which the settings layer turns into a 400.
+
+    /** The fps last pushed to the session, so option writes can preserve it. */
+    private var interopTargetFps: Int = -1
+
+    /**
+     * The AWB mode last requested, so locking white balance keeps the mode the
+     * client chose instead of dropping it back to auto.
+     *
+     * CameraX rewrites CONTROL_AWB_MODE to auto whenever the torch turns on, which
+     * would silently undo a daylight setting the moment someone locked WB. The
+     * handler re-applies the latch after the request instead, which is also why
+     * this is a latch and not a read of the last result.
+     */
+    private var latchedAwbMode: Int = com.ocubea.server.AwbModes.AUTO
+
+    /**
+     * Re-applies a latched white balance / lock state to a freshly bound camera.
+     *
+     * bindToLifecycle builds a NEW session, so every interop option is gone after
+     * any rebind -- the adaptive governor rebinds on resolution and fps changes,
+     * which are not rare. Without this a WB the client set silently reverts to
+     * auto on the next rebind, while /status.json still reports the mode it was
+     * given. That is the same class of lie as the five literals, so the latch is
+     * pushed back after each bind instead of being assumed to persist.
+     */
+    @Suppress("UnsafeOptInUsageError")
+    private fun reapplyLatchedImageOptions(camera: androidx.camera.core.Camera) {
+        val latch = imageOptionLatch ?: return
+        val result = pushOptions(
+            camera,
+            buildMap {
+                put(
+                    android.hardware.camera2.CaptureRequest.CONTROL_AWB_MODE,
+                    latch.awbMode
+                )
+                if (latch.awbLock) {
+                    put(android.hardware.camera2.CaptureRequest.CONTROL_AWB_LOCK, true)
+                }
+                if (latch.aeLock) {
+                    put(android.hardware.camera2.CaptureRequest.CONTROL_AE_LOCK, true)
+                }
+                latch.antibandingMode?.let {
+                    put(android.hardware.camera2.CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, it)
+                }
+            }
+        )
+        if (result != null) {
+            android.util.Log.w("OcuBeaCam", "image options lost on rebind: $result")
+        }
+    }
+
+    /** What survives a rebind, so a client's choices are not silently dropped. */
+    private data class ImageOptionLatch(
+        val awbMode: Int,
+        val awbLock: Boolean,
+        val aeLock: Boolean,
+        val antibandingMode: Int?,
+    )
+
+    private var imageOptionLatch: ImageOptionLatch? = null
+
+    /**
+     * The camera's own capabilities, read from the driver.
+     *
+     * Reported, never assumed. A camera that cannot compensate exposure, or that
+     * does not list fluorescent, gets a 400 naming what it does offer -- which is
+     * the only difference between this and the five literals it replaced.
+     */
+    @Suppress("UnsafeOptInUsageError")
+    internal fun imageControlCaps(): ImageControlCaps = try {
+        val cam = cameraRef
+        if (cam == null) {
+            ImageControlCaps.NONE
+        } else {
+            val state = cam.cameraInfo.exposureState
+            val range = runCatching { state.exposureCompensationRange }.getOrNull()
+            val step = runCatching {
+                state.exposureCompensationStep?.toDouble() ?: 0.0
+            }.getOrDefault(0.0)
+            val chars = runCatching {
+                androidx.camera.camera2.interop.Camera2CameraInfo.from(cam.cameraInfo)
+            }.getOrNull()
+            val awb = runCatching {
+                chars?.getCameraCharacteristic(
+                    android.hardware.camera2.CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES
+                )?.toSet()
+            }.getOrNull() ?: emptySet()
+            val anti = runCatching {
+                chars?.getCameraCharacteristic(
+                    android.hardware.camera2.CameraCharacteristics
+                        .CONTROL_AE_AVAILABLE_ANTIBANDING_MODES
+                )?.toSet()
+            }.getOrNull() ?: emptySet()
+            ImageControlCaps(
+                exposureSupported = runCatching {
+                    state.isExposureCompensationSupported
+                }.getOrDefault(false),
+                exposureIndexMin = range?.lower ?: 0,
+                exposureIndexMax = range?.upper ?: 0,
+                exposureEvStep = step,
+                awbModes = awb,
+                antibandingModes = anti,
+            )
+        }
+    } catch (_: Exception) { ImageControlCaps.NONE }
+
+    /**
+     * Applies one planned image control and waits briefly for the camera to take it.
+     *
+     * Returns null when the request was accepted, or a reason to become a 400.
+     * Nothing here is optimistic: both the AE index and the interop keys return
+     * futures, and a request that fails or times out is reported as a failure
+     * rather than left for the client to discover from an unchanged picture.
+     */
+    @Suppress("UnsafeOptInUsageError")
+    internal fun applyImageControl(plan: ImageControlPlan): String? {
+        val cam = cameraRef ?: return "camera is not running"
+        return try {
+            val failure: String?
+            when (plan.action) {
+                ImageControlAction.SET_EXPOSURE_COMPENSATION ->
+                    failure = if (await(cam.cameraControl.setExposureCompensationIndex(plan.index))) {
+                        null
+                    } else {
+                        "the camera rejected exposure index ${plan.index}"
+                    }
+
+                // Each branch pushes its own keys, then records the latch ONLY after
+                // the camera took them. Updating the latch first would re-apply a
+                // setting the next rebind never managed to set.
+                ImageControlAction.SET_EXPOSURE_LOCK -> {
+                    failure = pushOptions(
+                        cam,
+                        mapOf(
+                            android.hardware.camera2.CaptureRequest.CONTROL_AE_LOCK to
+                                plan.enabled
+                        )
+                    )
+                    if (failure == null) {
+                        imageOptionLatch = latchWith(aeLock = plan.enabled)
+                    }
+                }
+
+                ImageControlAction.SET_WHITE_BALANCE -> {
+                    failure = pushOptions(
+                        cam,
+                        mapOf(
+                            android.hardware.camera2.CaptureRequest.CONTROL_AWB_MODE to
+                                plan.mode
+                        )
+                    )
+                    if (failure == null) {
+                        latchedAwbMode = plan.mode
+                        imageOptionLatch = latchWith(awbMode = plan.mode)
+                    }
+                }
+
+                ImageControlAction.SET_WHITE_BALANCE_LOCK -> {
+                    failure = pushOptions(
+                        cam,
+                        mapOf(
+                            // The mode travels with the lock on purpose: CameraX
+                            // rewrites CONTROL_AWB_MODE to auto while the torch is on,
+                            // so locking without it would freeze the wrong decision.
+                            android.hardware.camera2.CaptureRequest.CONTROL_AWB_MODE to
+                                latchedAwbMode,
+                            android.hardware.camera2.CaptureRequest.CONTROL_AWB_LOCK to
+                                plan.enabled,
+                        )
+                    )
+                    if (failure == null) {
+                        imageOptionLatch = latchWith(awbLock = plan.enabled)
+                    }
+                }
+
+                ImageControlAction.SET_ANTIBANDING -> {
+                    failure = pushOptions(
+                        cam,
+                        mapOf(
+                            android.hardware.camera2.CaptureRequest
+                                .CONTROL_AE_ANTIBANDING_MODE to plan.mode
+                        )
+                    )
+                    if (failure == null) {
+                        imageOptionLatch = latchWith(antibandingMode = plan.mode)
+                    }
+                }
+
+                ImageControlAction.UNSUPPORTED ->
+                    return plan.refusal ?: "this setting cannot be applied on this camera"
+            }
+            failure
+        } catch (e: Exception) {
+            // camera2 throws IllegalArgumentException for a mode the session does
+            // not accept, leaving the previous mode in place. That is a refusal,
+            // not a success.
+            "${plan.key} failed: ${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    /** Copies the latch with one field changed, so each branch states its intent. */
+    private fun latchWith(
+        awbMode: Int = latchedAwbMode,
+        awbLock: Boolean = imageOptionLatch?.awbLock ?: false,
+        aeLock: Boolean = imageOptionLatch?.aeLock ?: false,
+        antibandingMode: Int? = imageOptionLatch?.antibandingMode,
+    ): ImageOptionLatch =
+        ImageOptionLatch(
+            awbMode = awbMode,
+            awbLock = awbLock,
+            aeLock = aeLock,
+            antibandingMode = antibandingMode,
+        )
+
+    /**
+     * Writes request keys into the session and waits for acceptance.
+     *
+     * addCaptureRequestOptions MERGES into what is already set, which is why this
+     * is not setCaptureRequestOptions: that one clears every existing option first,
+     * so using it here would drop the frame rate applyFrameRate negotiated.
+     */
+    @Suppress("UnsafeOptInUsageError")
+    private fun pushOptions(
+        cam: androidx.camera.core.Camera,
+        opts: Map<android.hardware.camera2.CaptureRequest.Key<*>, Any>,
+    ): String? {
+        val builder = androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
+        opts.forEach { (k, v) -> setCaptureOption(builder, k, v) }
+        val fps = interopTargetFps
+        if (fps > 0) {
+            // Re-sent on every write. addCaptureRequestOptions merges, so this is
+            // belt-and-braces against the frame rate the governor negotiated
+            // being lost when a rebind or a torch change rebuilds the request.
+            builder.setCaptureRequestOption(
+                android.hardware.camera2.CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                android.util.Range(fps, fps)
+            )
+        }
+        val interop = runCatching {
+            androidx.camera.camera2.interop.Camera2CameraControl.from(cam.cameraControl)
+        }.getOrNull() ?: return "the camera2 interop is unavailable in this build"
+        val accepted = runCatching {
+            await(interop.addCaptureRequestOptions(builder.build()))
+        }.getOrDefault(false)
+        if (!accepted) return "the camera did not accept the request"
+        return null
+    }
+
+    /**
+     * Writes one key/value into the interop options builder.
+     *
+     * The builder is `setCaptureRequestOption(Key<ValueT>, ValueT)`, and the keys
+     * reaching here come out of a heterogeneous map, so the value cannot be proven
+     * to match the key's type parameter at the call site. The check is what keeps
+     * that sound: a mismatched pair would otherwise reach the HAL as a
+     * ClassCastException inside the session, which is exactly the kind of failure
+     * that turns into a silent "Ok" if the reply does not carry this exception.
+     */
+    @Suppress("UnsafeOptInUsageError")
+    private fun <T> setCaptureOption(
+        builder: androidx.camera.camera2.interop.CaptureRequestOptions.Builder,
+        key: android.hardware.camera2.CaptureRequest.Key<T>,
+        value: Any,
+    ) {
+        @Suppress("UNCHECKED_CAST")
+        val typed = value as (T & Any)
+        builder.setCaptureRequestOption(key, typed)
+    }
+
+    /**
+     * Waits a bounded time for a camera future.
+     *
+     * CameraX answers with a ListenableFuture and the HTTP handler must not hold
+     * a thread on it. 250ms is long enough for the session to acknowledge on this
+     * device and short enough not to stall the server. A timeout counts as a
+     * failure on purpose: an unacknowledged request is not a success, and
+     * answering "Ok" for one is the lie this code exists to remove.
+     */
+    private fun <T> await(
+        future: com.google.common.util.concurrent.ListenableFuture<T>
+    ): Boolean = try {
+        future.get(IMAGE_CONTROL_ACK_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        true
+    } catch (_: Exception) {
+        false
+    }
+
+        fun isUsingFrontCamera(): Boolean = cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA
 
     fun hasFrontCamera(): Boolean = try {
         cameraProvider?.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) == true
@@ -1691,6 +2044,25 @@ class CameraManager(
     )
 
     companion object {
+
+    /**
+
+     * How long a camera request may take to be acknowledged.
+
+     *
+
+     * Long enough for the session to answer on this device, short enough that a
+
+     * wedged camera turns into a 400 instead of a hung HTTP handler. Exceeding it is
+
+     * reported as a failure on purpose: a request the camera never acknowledged is
+
+     * not a request that was applied.
+
+     */
+
+    private const val IMAGE_CONTROL_ACK_TIMEOUT_MS = 250L
+
         const val DEFAULT_PORT = 8080
 
         // Night-vision tone curve, hoisted to constants so the LUT is built once.

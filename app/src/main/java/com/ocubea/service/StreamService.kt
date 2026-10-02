@@ -16,6 +16,7 @@ import com.ocubea.model.OcuBeaConfig
 import com.ocubea.onvif.OnvifDiscovery
 import com.ocubea.security.MotionDetector
 import com.ocubea.security.MotionRecorder
+import com.ocubea.security.MotionTonePlayer
 import com.ocubea.server.StreamServer
 import java.io.File
 import java.net.NetworkInterface
@@ -73,6 +74,21 @@ class StreamService : LifecycleService() {
     private lateinit var cameraManager: CameraManager
     private lateinit var motionDetector: MotionDetector
     private lateinit var motionRecorder: MotionRecorder
+
+    /**
+     * The audible motion notification.
+     *
+     * Created here rather than in StreamServer because the trigger is a motion
+     * edge in this service's frame callback: a tone played from the HTTP handler
+     * would sound once per *request* instead of once per *event*, which is a
+     * different feature wearing the same name.
+     *
+     * Reachable from the HTTP layer through [instance], and /status.json reads
+     * it there -- one player, one set of counters.
+     */
+    @Volatile var motionTone: MotionTonePlayer? = null
+        private set
+
     private var streamServer: StreamServer? = null
 
     /**
@@ -98,6 +114,7 @@ class StreamService : LifecycleService() {
 
         val recordDir = File(getExternalFilesDir(null) ?: filesDir, "recordings")
         motionRecorder = MotionRecorder(recordDir)
+        motionTone = MotionTonePlayer(OcuBeaConfig(applicationContext))
         motionDetector = MotionDetector(config.motionSensitivity)
         cameraManager = CameraManager(applicationContext, config).also {
             it.lifecycleOwner = this
@@ -237,6 +254,14 @@ class StreamService : LifecycleService() {
             // frame is never expanded to two megapixels just to be shrunk to a
             // 32x24 grid. It owns recycling whatever it allocates.
             val motion = if (motionDetector.enabled) motionDetector.processJpeg(jpeg) else false
+            // The tone fires on the RISING EDGE only, which is what
+            // `sound_event` names in the API. It is checked against the detector's
+            // own state rather than `motion`, because `motion` stays true for
+            // MotionDetector's 2s grace period after the movement has stopped --
+            // a tone on every frame of that grace would be a burst of beeps
+            // where the client asked for one notification.
+            if (motion && !motionWasActive) motionTone?.onMotionEvent(System.currentTimeMillis())
+            motionWasActive = motion
             motionRecorder.onFrame(
                 jpeg,
                 isMotion = motion,
@@ -276,6 +301,17 @@ class StreamService : LifecycleService() {
     }
 
     private var motionIdleFrames = 0
+
+    /**
+     * Whether motion was active on the previous analysed frame.
+     *
+     * The edge detector's own state, kept here rather than read back from the
+     * detector: `motionDetected` is cleared after a 2s grace, so it already
+     * tracks edges -- but a reset when the detector is switched off has to
+     * re-arm it, and doing that from the same field that fires the tone keeps
+     * the two in step by construction.
+     */
+    @Volatile private var motionWasActive = false
 
     private var clipRetention: com.ocubea.security.ClipRetentionScheduler? = null
 
@@ -327,6 +363,12 @@ class StreamService : LifecycleService() {
         try { onvifDiscovery.stop() } catch (_: Exception) {}
         try { cameraManager.stop() } catch (_: Exception) {}
         try { motionRecorder.finishClip() } catch (_: Exception) {}
+        // The native audio handle a ToneGenerator holds. Not releasing it leaks
+        // an audio resource per stop, and a phone that has been started and
+        // stopped a few times by the watchdog starts failing to open one --
+        // which would then be reported as `sound unavailable`, a lie caused by
+        // this class rather than by the device.
+        try { motionTone?.release() } catch (_: Exception) {}
         releaseWakeLock()
     }
 
