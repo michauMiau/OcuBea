@@ -907,19 +907,23 @@ class CameraManager(
         val t = if (Metrics.enabled) Metrics.timer(Metrics.FRAME_ANALYZE) else null
         val t0 = if (t != null) t.begin() else 0L
         try {
-            if (!isStreaming) { imageProxy.close(); return }
-
             // FPS limit. Skipping is nearly free: the buffer goes straight back.
             val now = System.nanoTime()
-            if (lastFrameNanos != 0L) {
-                val minInterval = 1_000_000_000L / targetFps.coerceAtLeast(1)
-                if (now - lastFrameNanos < minInterval) {
+            // The account owns the decision *and* the counting, so "entered",
+            // "returned early" and "published" cannot drift apart the way bare
+            // counter++ statements did. See FrameArrivalAccount.
+            when (arrival.observe(isStreaming, now, lastFrameNanos, targetFps)) {
+                FrameArrivalAccount.Outcome.NOT_STREAMING -> {
+                    imageProxy.close()
+                    return
+                }
+                FrameArrivalAccount.Outcome.LIMITED_BY_FPS -> {
                     dropDecisions++
                     imageProxy.close()
                     return
                 }
+                FrameArrivalAccount.Outcome.ACCEPTED -> lastFrameNanos = now
             }
-            lastFrameNanos = now
 
             // Liveness heartbeat before any expensive work, so the watchdog sees
             // the camera as alive whether the frame goes to MJPEG, to HLS, or is
@@ -1012,12 +1016,22 @@ class CameraManager(
             } else null
             imageProxy.close()
             // A null here after an intentional skip is expected, not a failure.
-            if (bitmap == null) { if (hlsFed && !motionNeedsJpeg()) return; nullBitmaps++; return }
+            if (bitmap == null) {
+                if (hlsFed && !motionNeedsJpeg()) return
+                nullBitmaps++
+                arrival.recordSkippedNoConsumer()
+                return
+            }
 
             // Saturation guard: if encoders are already behind, drop this frame
             // rather than queueing it. A queued frame is a stale frame, and the
             // whole point of this pipeline is low latency.
-            if (pendingEncodes >= MAX_PENDING_ENCODES) { droppedSaturated++; bitmap.recycle(); return }
+            if (pendingEncodes >= MAX_PENDING_ENCODES) {
+                droppedSaturated++
+                arrival.recordSaturated()
+                bitmap.recycle()
+                return
+            }
 
             pendingEncodes++
             try {
@@ -1046,6 +1060,7 @@ class CameraManager(
                                 jpegPool.release(bos)
                             }
                             frameCounter++
+                            arrival.recordPublished()
                             frameHub.publish(jpeg)
                             onFrameCaptured?.invoke(jpeg, frameCounter)
                         } finally {
@@ -1084,11 +1099,45 @@ class CameraManager(
     @Volatile var pipelineErrors = 0L; private set
     @Volatile var lastPipelineError: String? = null; private set
 
+    /* ── Arrival accounting ────────────────────────────────────────────────
+     *
+     * The app could not account for roughly half the frames the HAL delivers:
+     * `frames` counts published output, `dropped` counts the fps limiter's
+     * skips, `null_bitmaps` counts frames where jpegNeeded was false, and
+     * nothing counted a frame that reached analyzeFrame and then died on the
+     * way to the encoder. Metrics.timer(FRAME_ANALYZE) spans the whole method,
+     * so it cannot separate "never arrived" from "arrived and died" either.
+     *
+     * `framesEntered` closes that gap by counting arrivals at the top of the
+     * method. It is deliberately *before* the isStreaming check, because a
+     * frame delivered while the camera is winding down is exactly the case
+     * that used to be invisible.
+     *
+     * Read it against `frames`, not against `fps`: fps is FrameHub's rolling
+     * count and goes stale when frames stop, so a comparison against it
+     * measures the wrong thing.
+     */
+    private val arrival = FrameArrivalAccount()
+
+    /** Arrival counters, read by the status snapshot. */
+    val framesEntered: Long get() = arrival.entered
+    val framesReturnedEarly: Long get() = arrival.returnedEarly
+
 
 
     /** Full pipeline timing breakdown, for diagnosing a frame-rate ceiling. */
     fun pipelineTiming(): Map<String, Any> = mapOf(
         "null_bitmaps" to nullBitmaps,
+        // Arrival accounting. frames_lost is framesEntered minus published
+        // frames: everything the analyzer saw and did not hand on, which is
+        // the number that had no name at all before this field existed.
+        "frames_entered" to framesEntered,
+        "frames_returned_early" to framesReturnedEarly,
+        "frames_published" to frameCounter,
+        "frames_lost" to (framesEntered - frameCounter),
+        // Must be 0. Non-zero means frames die between the limiter and
+        // publish, which is the gap the 2026-10-02 pass could not see.
+        "frames_unaccounted" to arrival.unaccounted(),
         "pipeline_errors" to pipelineErrors,
         "last_error" to (lastPipelineError ?: "none"),
         "dropped_saturated" to droppedSaturated,
