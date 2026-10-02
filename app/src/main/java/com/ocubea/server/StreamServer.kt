@@ -3,6 +3,7 @@ package com.ocubea.server
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import androidx.core.content.ContextCompat
 import com.ocubea.camera.CameraManager
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
@@ -15,6 +16,7 @@ import com.ocubea.security.MotionDetector
 import com.ocubea.security.MotionRecorder
 import com.ocubea.sensors.DeviceSensors
 import com.ocubea.security.MotionLimits
+import com.ocubea.ui.KeepScreenOn
 import com.ocubea.stream.FrameHub
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.Response.Status as Status
@@ -82,6 +84,11 @@ class StreamServer(
         // "enabled: true" can trust something is listening -- and after a failed
         // bind, where the setting was rolled back, it will see false.
         rtspJson = { rtspJson() },
+        // The tone player's own counters, rendered through the same map-to-JSON
+        // helper as every other block here. Empty before the service creates the
+        // player, which /status.json renders as `"player": false` rather than as
+        // a sound setting that is armed and has emitted nothing.
+        motionToneJson = { motionToneJson() },
     )
 
     init {
@@ -984,11 +991,23 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
                 }
             }
 
-            "autostart", "noremote",
-            "motion_limit" -> okText("ok")
-            "exposure", "exposure_lock" -> okText("ok")
-            "whitebalance", "whitebalance_lock" -> okText("auto")
-            "antibanding" -> okText("auto")
+            "autostart", "noremote" -> okText("ok")
+            // exposure / exposure_lock / whitebalance / whitebalance_lock /
+            // antibanding answered "ok"/"auto" for EVERY value with nothing behind
+            // any of them -- five keys, unconditional 200. They are real now, and
+            // routed through ImageControlsPlan so the decision is testable outside
+            // this handler: the plan refuses on a capability the camera does not
+            // report, and applyImageControl() returns a reason when the camera
+            // itself declines the request.
+            //
+            // The exposure number matters: the API sends EV ("-2", "0", "2") while
+            // the camera counts indices, so the plan converts using the driver's own
+            // reported step and clamps to the reported range, saying so when it
+            // clamps. Guessing 1 step == 1 EV would make exposure=1 mean a sixth
+            // of a stop on this camera.
+            "exposure", "exposure_lock",
+            "whitebalance", "whitebalance_lock",
+            "antibanding" -> imageControl(name, value)
             // "rotation" is handled by the real implementation above. "rotate"
             // is the name IP Webcam itself uses for the same thing, and
             // "mirror_flip" mirrors the image. Both are real now, so neither
@@ -1013,7 +1032,18 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
                 cameraManager.setMirror(on)
                 ipWebcamOk()
             }
-            "overlay" -> okText("ok")
+            // overlay used to answer okText("ok") here, with no overlay code
+            // anywhere in the app: grep for "overlay" over the main source set
+            // returned this line, two hardcoded strings in /status.json and a
+            // sensor stub answering "false". Both telemetry numbers were wrong
+            // and inconsistent with each other at the same time.
+            //
+            // It is now FrameOverlayPainter, drawing time/date/device name onto
+            // the bitmap before the JPEG encode, so the setting is visible in the
+            // picture itself. applyOverlay() returns a reason when the camera is
+            // not producing frames -- there is nothing to draw on, and an "Ok"
+            // would be a claim about a frame nobody receives.
+            "overlay" -> applyOverlay(value)
             "norecord" -> {
                 motionRecorder.enabled = value in OFF_VALUES
                 okText("ok")
@@ -1022,19 +1052,46 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
                 config.audioEnabled = value in OFF_VALUES
                 okText("ok")
             }
-            "sound", "sound_event", "sound_timeout" -> okText("ok")
-            "awake" -> okText("ok")
-            "idle" -> okText("ok")
+            // These three answered okText("ok") for every value and there was no
+            // ToneGenerator, RingtoneManager or SoundPool anywhere in the app --
+            // a confirmation of nothing. The tone is now MotionTonePlayer, played
+            // by the service on the motion edge, and applySound() answers from the
+            // player's own availability rather than from an assumption.
+            "sound", "sound_event", "sound_timeout" -> applySound(name, value)
+            // awake answered okText("ok") and touched nothing. The only primitive
+            // that can honour it is FLAG_KEEP_SCREEN_ON on a window, and this
+            // server runs in a service -- see applyAwake() for why that is a 400
+            // with a reason rather than a second silent success.
+            "awake" -> applyAwake(value)
+            // idle is the power-saving policy: OcuBea's one control with that
+            // meaning, and the one the adaptive resolution governor reads.
+            "idle" -> applyIdle(value)
             "power_saving" -> {
                 config.powerSaving = value !in OFF_VALUES
                 okText("ok")
             }
-            "motion_active", "motion_event" -> okText("ok")
+            // Two different things under two names that read alike:
+            //   motion_event  -- arm the pipeline. A real change, applied below.
+            //   motion_active -- a SENSOR ("is motion happening now"). No value
+            //     written to it can make motion appear, so it is refused with a
+            //     pointer at motion_event rather than answered.
+            // Both used to answer okText("ok") here for every value.
+            "motion_active", "motion_event" -> applyMotion(name, value)
+            // motion_limit answered okText("ok") for every number, including
+            // "banana", and the clip length never changed. It is the same number
+            // /sensors.json?sense=motion_limit reports, so setting and reading it
+            // now describe one value rather than two unrelated ones.
+            "motion_limit" -> applyMotionLimit(value)
             "video_recording" -> {
                 motionRecorder.enabled = value !in OFF_VALUES
                 okText("ok")
             }
-            "gps_active" -> okText("false")
+            // Answered the bare string "false": not an "Ok" pydroid reads as
+            // success, not a 400 a client can act on, and not a state anything
+            // could have switched off. OcuBea holds no location permission and
+            // reads no position, so applyGpsActive() refuses with that reason --
+            // see it for why the capability is probed rather than assumed.
+            "gps_active" -> applyGpsActive(value)
             "port" -> {
                 val p = value.toIntOrNull()
                 if (p != null && p in 1024..65535) {
@@ -1924,6 +1981,263 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
         }
         return if (err == null) okText(plan.reply) else badRequest(err)
     }
+
+    /**
+     * exposure / exposure_lock / whitebalance / whitebalance_lock / antibanding.
+     *
+     * All five were literals in `applySetting`:
+     *
+     *     "exposure", "exposure_lock" -> okText("ok")
+     *     "whitebalance", "whitebalance_lock" -> okText("auto")
+     *     "antibanding" -> okText("auto")
+     *
+     * Measured on the phone: every value, HTTP 200, nothing behind any of them.
+     * The decision now lives in [ImageControlsPlan], which is a pure function of
+     * (key, value, what the camera reports) — so a test can reach the cases a
+     * device reaches only by accident, such as "this camera lists no fluorescent
+     * mode". A 200 now means the camera took the request:
+     *
+     *   - the value is in the API's own vocabulary,
+     *   - the camera reports the capability behind it,
+     *   - and CameraManager got an acknowledgement rather than an exception.
+     *
+     * Anything else is a 400 carrying the reason, which is what a client needs in
+     * order to do something about it.
+     *
+     * Deliberately returns the plan's reply rather than a bare "Ok" for the values
+     * that were approximated (clamped exposure), so a client that reads the body
+     * sees what it actually got. withOkBody() still normalises the success token.
+     */
+    private fun imageControl(name: String, value: String): Response {
+        val caps = cameraManager.imageControlCaps()
+        val plan = ImageControlsPlan.resolve(name, value, caps)
+            ?: return notFound("unknown setting: $name")
+        if (plan.action == ImageControlAction.UNSUPPORTED) {
+            return badRequest(plan.refusal ?: "$name cannot be applied on this camera")
+        }
+        val reason = cameraManager.applyImageControl(plan)
+        return if (reason == null) okText(plan.reply) else badRequest(reason)
+    }
+
+    // ── Behaviour settings ─────────────────────────────────────────────
+    //
+    // overlay, awake, idle, sound*, motion_limit, motion_event, motion_active
+    // and gps_active answered HTTP 200 for every value and changed nothing.
+    // Measured on a Sony F3311: nine keys, eleven values, eleven successes, no
+    // effect on any of them. gps_active answered the bare string "false", which
+    // is not a success a client recognises and not a refusal either.
+    //
+    // Every method below has the same shape, and the shape is the point:
+    //
+    //   1. ask BehaviorSettingsPlan for a plan (pure, unit-tested, refuses
+    //      anything the value or the device cannot honour),
+    //   2. apply it to the real collaborator,
+    //   3. answer 200 only when the collaborator accepted it, else 400 with the
+    //      reason the collaborator gave.
+    //
+    // Step 3 is what was missing. Every one of these used to stop at a literal.
+
+    /**
+     * `overlay` -- the time/date/device name drawn onto each frame.
+     *
+     * Refused while the camera produces no frames: there is nothing to draw on,
+     * so "Ok" would describe a picture nobody is receiving. The preference is
+     * still stored, so the overlay appears on the next frame -- which is what
+     * the refusal says.
+     */
+    private fun applyOverlay(value: String): Response {
+        val plan = BehaviorSettingsPlan.overlay(
+            value, painterReady = cameraManager.isStreaming && cameraManager.frameHub.hasFrame(),
+        )
+        // Stored before the refusal is checked, and that ordering is load-bearing
+        // rather than incidental: the refusal text says "the preference was
+        // stored and takes effect on the next frame", so a refusal returned
+        // without this write would be a body describing something that did not
+        // happen -- the same class of claim as the unconditional ok it replaced.
+        val on = plan.value == true
+        config.overlayEnabled = on
+        if (plan.isRefusal) return badRequest(plan.refusal ?: "overlay cannot be applied")
+        // Live now, so the painter is switched immediately rather than waiting
+        // for a config reload that would never come.
+        cameraManager.overlay.enabled = on
+        return ipWebcamOk("; ${plan.reply} frames=${cameraManager.overlay.stampedFrames()}")
+    }
+
+    /**
+     * `awake` -- FLAG_KEEP_SCREEN_ON on a real window.
+     *
+     * The check is on the window, not on the platform: the flag is a window
+     * attribute, and this server runs inside a foreground service, which has
+     * none. So a request that arrives with the Activity closed stores the
+     * preference and answers 400 saying the window was not there -- rather than
+     * the unconditional "Ok" that meant nothing had been kept awake.
+     *
+     * [KeepScreenOn.apply] is the authority on whether it landed: it reports
+     * false when there is no registered, showing window, and it is checked
+     * *after* the flag is set so a window that vanished mid-request is caught.
+     */
+    private fun applyAwake(value: String): Response {
+        val plan = BehaviorSettingsPlan.awake(value, windowPresent = KeepScreenOn.isWindowPresent())
+        // Stored before the refusal is returned, and that is deliberate: the
+        // preference is what gets applied on the next onResume, and a client
+        // asking for awake=on while the screen is locked wants it on when the
+        // screen comes back, not an error and a shrug.
+        plan.value?.let { config.keepScreenOn = it }
+        if (plan.isRefusal) return badRequest(plan.refusal ?: "awake cannot be applied")
+        val applied = KeepScreenOn.apply(plan.value == true)
+        if (!applied) {
+            return badRequest(
+                "awake was stored but not applied: no OcuBea window was showing when " +
+                    "the flag was set. It will be applied the next time the OcuBea " +
+                    "window opens (/status.json reports awake.requested and " +
+                    "awake.applied separately)."
+            )
+        }
+        return ipWebcamOk("; ${plan.reply}")
+    }
+
+    /** `idle` -- the power-saving policy. Both directions are real. */
+    private fun applyIdle(value: String): Response {
+        val plan = BehaviorSettingsPlan.idle(value)
+        if (plan.isRefusal) return badRequest(plan.refusal ?: "idle cannot be applied")
+        config.powerSaving = plan.value == true
+        return ipWebcamOk("; ${plan.reply}")
+    }
+
+    /**
+     * `sound`, `sound_event`, `sound_timeout` -- the audible motion notification.
+     *
+     * Availability comes from [MotionTonePlayer.unavailableReason], which opens
+     * a real ToneGenerator to find out. A device that cannot make the tone is
+     * refused with that reason, so "Ok" means a sound this phone can actually
+     * produce is now armed.
+     */
+    private fun applySound(name: String, value: String): Response {
+        val player = com.ocubea.service.StreamService.instance?.motionTone
+        val plan = BehaviorSettingsPlan.resolve(
+            key = name,
+            value = value,
+            soundDeviceReady = player?.unavailableReason() == null,
+            soundMasterOn = config.soundEnabled,
+            soundEventOn = config.soundEventEnabled,
+        ) ?: return notFound("unknown setting: $name")
+
+        // Nothing is written on a refusal, which is what keeps /status.json
+        // honest: a `sound=on` refused on a silent device leaves enabled=false,
+        // because there is no store in this block that could have set it true.
+        if (plan.isRefusal) return badRequest(plan.refusal ?: "$name cannot be applied")
+
+        when (name) {
+            "sound" -> config.soundEnabled = plan.value == true
+            "sound_event" -> config.soundEventEnabled = plan.value == true
+            "sound_timeout" -> config.soundTimeoutSeconds = plan.seconds ?: 0
+        }
+        return ipWebcamOk("; ${plan.reply}")
+    }
+
+    /**
+     * `motion_limit` -- how long one motion clip may run, in seconds.
+     *
+     * Written to both the recorder and the config, and it is the same number
+     * `/sensors.json?sense=motion_limit` reports, so a client can read its own
+     * write back. Out of range is a 400 with the range in the body: silently
+     * clamping would be indistinguishable from the value being accepted, and the
+     * IP Webcam success body is a bare "Ok" with nowhere to say "I clamped that".
+     */
+    private fun applyMotionLimit(value: String): Response {
+        val plan = BehaviorSettingsPlan.motionLimit(value)
+        if (plan.isRefusal) return badRequest(plan.refusal ?: "motion_limit cannot be applied")
+        val secs = plan.seconds ?: return badRequest("motion_limit did not parse")
+        motionRecorder.maxClipSeconds = secs
+        config.maxClipSeconds = secs
+        // The number the client will read back from the sensor, named as such:
+        // /sensors.json?sense=motion_limit returns this recorder's value, so a
+        // client can verify the write instead of trusting the reply.
+        return ipWebcamOk("; ${plan.reply} sensor=${motionRecorder.maxClipSeconds}")
+    }
+
+    /**
+     * `motion_event` -- arm the pipeline. `motion_active` -- refused.
+     *
+     * The two are handled by the same `when` because they read alike and mean
+     * opposite things: one is a switch, the other is a sensor. motion_active
+     * gets a 400 naming motion_event, so a client that guessed wrong is sent
+     * somewhere it can go.
+     */
+    private fun applyMotion(name: String, value: String): Response {
+        val plan = if (name == "motion_active") {
+            BehaviorSettingsPlan.motionActive(value)
+        } else {
+            BehaviorSettingsPlan.motionEvent(value)
+        }
+        if (plan.isRefusal) return badRequest(plan.refusal ?: "$name cannot be applied")
+        val on = plan.value == true
+        config.motionEventEnabled = on
+        motionDetector.enabled = on
+        // The recorder follows the user's own motion-record preference, not the
+        // request: `motion_event=on` means "detect", and recording is a separate
+        // decision the user already made.
+        motionRecorder.enabled = on && config.motionRecord
+        if (!on) motionRecorder.stopAllIfIdle()
+        return ipWebcamOk("; ${plan.reply} recording=" +
+            if (motionRecorder.enabled) "on" else "off")
+    }
+
+    /**
+     * `gps_active` -- refused in both directions, unconditionally.
+     *
+     * There is no capability probe here, and the removal of one is deliberate.
+     * An earlier version asked the platform whether a location provider existed
+     * and answered 200 on a phone that did. That was the same defect one level
+     * down: the app declares no location permission in its manifest and nothing
+     * in the frame path reads a position, so even perfect location hardware
+     * cannot produce a coordinate to stamp. What has to exist for this key to
+     * answer 200 is an *implementation*, and there is none.
+     *
+     * Both directions are refused, and `off` is not the exception: there is
+     * nothing to switch off, and a 200 there would be the same bare "Ok" the
+     * old "false" body was -- a client reading it as success would believe it
+     * had disabled something that was never there.
+     *
+     * If someone implements a real GPS overlay, this function and the
+     * `gpsActive` plan both have to change, and the test asserting that no value
+     * of this key can be applied is what will stop them skipping the question.
+     */
+    private fun applyGpsActive(value: String): Response {
+        val plan = BehaviorSettingsPlan.gpsActive(value)
+        return badRequest(plan.refusal ?: "gps_active cannot be applied")
+    }
+
+    /**
+     * The motion tone player's counters as a JSON object body, or "" when there
+     * is no player.
+     *
+     * Hand-built for the same reason the other blocks are: Map.toString() gives
+     * `{enabled=true}`, which is not JSON and made /status.json unparseable for
+     * the whole phone once already -- see the rtsp/encoder_strides comments.
+     *
+     * The strings are quoted explicitly. Every value here is a Boolean, Int or
+     * String, and a String without quotes would produce `unavailable_reason=`
+     * followed by bare text, which parses as nothing at all.
+     */
+    private fun motionToneJson(): String {
+        val p = com.ocubea.service.StreamService.instance?.motionTone ?: return ""
+        val s = p.status()
+        return buildString {
+            append("{")
+            s.entries.forEachIndexed { i, (k, v) ->
+                if (i > 0) append(",")
+                append('"').append(k).append("\":")
+                when (v) {
+                    is Boolean -> append(v)
+                    is Int, is Long -> append(v)
+                    else -> append('"').append(v.toString().replace("\\", "\\\\").replace("\"", "\\\"")).append('"')
+                }
+            }
+            append("}")
+        }
+    }
+
     private fun notFound(t: String) = newFixedLengthResponse(Status.NOT_FOUND, "text/plain", "Not found: $t")
 
     private fun parseParams(session: IHTTPSession): Map<String, String> =

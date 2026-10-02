@@ -49,6 +49,17 @@ class TelemetryHandler(
      * the socket rather than the preference.
      */
     private val rtspJson: () -> String,
+    /**
+     * The motion-notification tone player's live counters, or an empty string
+     * when the service has not created one yet.
+     *
+     * A lambda rather than the object, for the same reason as torchOn and
+     * rtspJson: this class cannot reach into the service, and a null
+     * MotionTonePlayer here must render as "no player" rather than throw inside
+     * the status endpoint -- the one endpoint that has to keep answering when
+     * everything else is broken.
+     */
+    private val motionToneJson: () -> String = { "" },
 ) {
 
     private val startedAt = System.currentTimeMillis()
@@ -138,6 +149,16 @@ class TelemetryHandler(
             append("\"pipeline\":" + pipelineJson() + ",")
             append("\"hls\":" + hlsJson() + ",")
               append("\"rtsp\":" + rtspJson() + ",")
+            // The settings that used to answer "Ok" and change nothing. Nine
+            // keys, one block, and each one reports REQUESTED next to APPLIED
+            // or next to the counter that proves the effect -- so a client can
+            // tell "stored" from "happened" without trusting a reply body.
+            //
+            // `overlay.frames` and `sound.played` are the two that matter: they
+            // are the number of frames stamped and tones emitted, so an armed
+            // setting with 0 behind it is visibly not yet doing anything rather
+            // than asserting that it is.
+            append("\"behaviors\":" + behaviorsJson() + ",")
             append("\"viewers\":${cfg["viewers"]},")
             // Refused connections are the visible half of BoundedAsyncRunner:
             // without them a device hammering the camera looks like a healthy
@@ -236,6 +257,78 @@ class TelemetryHandler(
      * on another. Strings keep every setter on the same path.
      */
     /**
+     * The nine behaviour keys, as one JSON object.
+     *
+     * Built by hand for the same reason the rest of this file is: every value
+     * here is a string or a number and the block is one level deep, so a
+     * formatter would be longer than the loop.
+     *
+     * Deliberately three-part for the two settings that can be stored without
+     * taking effect:
+     *
+     *   overlay.requested  what was asked for
+     *   overlay.applied    the painter's own flag
+     *   overlay.frames     frames actually stamped
+     *
+     * awake is the same shape without a counter, because the primitive is a
+     * window flag with nothing to count: `requested` is the preference,
+     * `applied` is whether a live window carries FLAG_KEEP_SCREEN_ON right now.
+     * The two differ exactly when the request arrived with the Activity closed,
+     * which is the case the 400 names.
+     */
+    private fun behaviorsJson(): String {
+        val overlay = cameraManager.overlayStatus()
+        val tone = motionToneJson()
+        val sb = StringBuilder()
+        sb.append("{")
+        sb.append("\"overlay\":{")
+        sb.append("\"requested\":${boolStr(config.overlayEnabled)},")
+        sb.append("\"applied\":${boolStr(overlay["enabled"] == true)},")
+        sb.append("\"frames\":${overlay["frames"] ?: 0}},")
+        // awake: requested vs applied. There is no counter for a window flag, so
+        // `applied` IS the observable -- it is read from the window, not from the
+        // preference that was stored.
+        sb.append("\"awake\":{")
+        sb.append("\"requested\":${boolStr(config.keepScreenOn)},")
+        sb.append("\"applied\":${boolStr(com.ocubea.ui.KeepScreenOn.isWindowPresent() && config.keepScreenOn)},")
+        sb.append("\"window_present\":${boolStr(com.ocubea.ui.KeepScreenOn.isWindowPresent())}},")
+        // idle is the power-saving policy, and both halves are the same field,
+        // so this one is a single value rather than a requested/applied pair.
+        sb.append("\"idle\":{\"requested\":${boolStr(config.powerSaving)}},")
+        // sound carries the tone player's own counters, or an explicit null-ish
+        // marker when no player exists -- an empty object would read as "armed
+        // and nothing has happened", which is a different claim from "there is
+        // no player to emit one".
+        if (tone.isEmpty()) {
+            sb.append("\"sound\":{\"requested\":${boolStr(config.soundEnabled)},\"player\":false},")
+        } else {
+            sb.append("\"sound\":{\"requested\":${boolStr(config.soundEnabled)},\"player\":true,")
+            sb.append(tone.removePrefix("{").removeSuffix("}"))
+            sb.append("},")
+        }
+        // motion_limit: the requested value and the recorder's, because they can
+        // differ if a clip is in flight and the recorder clamps on its own path.
+        sb.append("\"motion_limit\":{\"requested_s\":${config.maxClipSeconds},")
+        sb.append("\"recorder_s\":${motionRecorder.maxClipSeconds}},")
+        // motion_event / motion_active: the same armed flag under two names,
+        // with motion_active marked read-only so the refusal in the handler is
+        // discoverable from telemetry alone.
+        sb.append("\"motion_event\":{\"requested\":${boolStr(config.motionEventEnabled)},")
+        sb.append("\"applied\":${boolStr(motionDetector.enabled)},\"detected\":${motionDetector.motionDetected}},")
+        sb.append("\"motion_active\":{\"writable\":false,")
+        sb.append("\"detected\":${boolStr(motionDetector.motionDetected)}},")
+        // gps_active: never applied in either direction, and the reason travels
+        // with it so a client that reads this block knows the 400 was about the
+        // device and not a typo in its own request. The wording matches
+        // BehaviorSettingsPlan.gpsActive's refusal -- two different strings for
+        // one fact is how the two drift apart and both become wrong.
+        sb.append("\"gps_active\":{\"writable\":false,\"applied\":false,")
+        sb.append("\"reason\":\"${GPS_UNWRITABLE.escapeIt()}\"}")
+        sb.append("}")
+        return sb.toString()
+    }
+
+    /**
      * Appends `curvals` and `avail` to the status JSON.
      *
      * Takes no StringBuilder because it is always called from inside a
@@ -256,15 +349,33 @@ class TelemetryHandler(
             "exposure" to "auto",
             "whitebalance" to "auto",
             "night_vision" to boolStr(cameraManager.nightVisionEnabled),
-            "overlay" to "on",
+            // These two were literals: `overlay` claimed "on" while the sensor
+            // answered "false" for the same key on the same device, and
+            // `gps_active` claimed "off" for a setting whose handler answered a
+            // bare "false" -- neither of them read anything. Both are now the
+            // stored value, so a client that writes one and reads it back sees
+            // its own write instead of a constant.
+            "overlay" to boolStr(config.overlayEnabled),
             "ffc" to boolStr(cameraManager.isUsingFrontCamera()),
-            "gps_active" to "off",
+            "gps_active" to boolStr(false),
             "motion_detect" to boolStr(motionDetector.enabled),
             "scenemode" to "auto",
             "orientation" to cameraManager.requestedOrientation,
             "mirror_flip" to boolStr(cameraManager.mirrored),
             "led_torch" to "auto",
             "norecord" to "off",
+            // Present because a client that restores settings reads these back
+            // and then writes them; a key it cannot read is a key it will set
+            // blind. The nine this handler now really honours are listed here so
+            // "which of my settings survive a round trip" is answerable from
+            // /status.json alone.
+            "awake" to boolStr(config.keepScreenOn),
+            "idle" to boolStr(config.powerSaving),
+            "sound" to boolStr(config.soundEnabled),
+            "sound_event" to boolStr(config.soundEventEnabled),
+            "sound_timeout" to config.soundTimeoutSeconds.toString(),
+            "motion_event" to boolStr(config.motionEventEnabled),
+            "motion_limit" to motionRecorder.maxClipSeconds.toString(),
             "audio" to boolStr(config.audioEnabled),
             // The chosen codec, under the name pydroid looks for. Without it in
             // curvals a client restoring settings has nothing to read the codec
@@ -368,8 +479,16 @@ class TelemetryHandler(
         "video_chunk_len" -> (cameraManager.frameHub.getLatest()?.size ?: 0).toString()
         "audio_only" -> (!config.audioEnabled).toString()
         "ivideon_streaming" -> "false"
-        "idle" -> (!cameraManager.isStreaming).toString()
+        // Was derived from the camera, which is a different question: `idle` in
+        // the API is the power-saving mode a client switches, not "is the camera
+        // producing frames". Reading the control is what makes the sensor match
+        // what /settings/idle changed.
+        "idle" -> boolStr(config.powerSaving)
         "light" -> (if (torchOn()) 255 else 0).toString()
+        // False because nothing in this app can make it true -- there is no
+        // location permission and no position in the frame path. The reason is in
+        // /status.json under behaviors.gps_active, and /settings/gps_active
+        // refuses with the same one.
         "gps_active" -> "false"
         "antibanding" -> "\"auto\""
         "scenemode" -> "\"${if (cameraManager.nightVisionEnabled) "night" else "auto"}\""
@@ -379,15 +498,24 @@ class TelemetryHandler(
             .let { "\"$it\"" }
         "focus_distance" -> "0.0"
         "motion_limit" -> motionRecorder.maxClipSeconds.toString()
-        "sound", "sound_event" -> "false"
-        "sound_timeout" -> "0"
+        // These three answered the constants "false", "false" and "0" while
+        // /settings/sound, sound_event and sound_timeout answered "ok" for every
+        // value -- a client could read a state that no write had ever produced.
+        // Read the stored value now, so a write is visible from the sensor side.
+        "sound" -> boolStr(config.soundEnabled)
+        "sound_event" -> boolStr(config.soundEventEnabled)
+        "sound_timeout" -> config.soundTimeoutSeconds.toString()
         "battery_temp" -> "0.0"
         "battery_voltage" -> "0"
         "night_vision_gain" -> "0"
         "night_vision_average" -> "0"
         "focus_homing", "focus_region" -> "false"
         "orientation" -> "\"${cameraManager.requestedOrientation}\""
-        "overlay" -> "false"
+        // The painter's own flag, not a literal. `overlay` reported "false" here
+        // and "on" in curvals while /settings/overlay answered "ok" for both
+        // directions -- three surfaces, three different answers, none of them
+        // reading the setting that supposedly existed.
+        "overlay" -> boolStr(cameraManager.overlayStatus()["enabled"] == true)
         "proximity", "pressure" -> "false"
         "mirror_flip" -> boolStr(cameraManager.mirrored)
         "adet_limit" -> motionDetector.sensitivity.toString()

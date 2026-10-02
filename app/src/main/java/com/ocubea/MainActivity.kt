@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import com.ocubea.model.OcuBeaConfig
 import com.ocubea.service.StreamService
 import com.ocubea.ui.ClipActivity
+import com.ocubea.ui.KeepScreenOn
 import com.ocubea.ui.LivePreviewView
 import java.net.NetworkInterface
 import java.net.URL
@@ -80,6 +81,12 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         config = OcuBeaConfig(this)
+        // The `awake` setting can only be honoured on a real window, and this is
+        // the one window this app owns. Registering here is what lets
+        // /settings/awake answer from a window instead of from a service that
+        // has none; see KeepScreenOn for why it is a registry rather than a
+        // reference passed through.
+        KeepScreenOn.attach(window)
 
         btnToggle = findViewById(R.id.btnToggleStream)
         tvStatus = findViewById(R.id.tvStatus)
@@ -332,8 +339,18 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Re-register rather than trusting onCreate to still be the truth: this
+        // Activity may be resuming after a window recreation, and the flag has
+        // to go back onto the new window.
+        KeepScreenOn.attach(window)
         // Settings may have changed while we were in SettingsActivity
         config = OcuBeaConfig(this)
+        // The manifest sets android:keepScreenOn="true", which is a View flag and
+        // not the same thing as FLAG_KEEP_SCREEN_ON. This is where the user's
+        // own `awake` choice is put onto the window, so an awake=off request
+        // actually clears it. After the config reload, because the request may
+        // have arrived over HTTP while this Activity was in the background.
+        KeepScreenOn.applyTo(config.keepScreenOn, window)
         nightOn = config.nightVision
         motionOn = config.securityEnabled
         torchOn = config.torchOn
@@ -348,12 +365,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        // The window is still registered but off screen, so `awake` reports
+        // applied=false from here on -- which is the truth, and the reason a
+        // request arriving with the app in the background gets a 400 rather than
+        // an "Ok" for a flag on a window nobody can see.
+        KeepScreenOn.setVisible(window, false)
         handler.removeCallbacks(pollTask)
         // Keep streaming, but stop burning CPU and radio on the on-screen preview
         preview.stop()
     }
 
     override fun onDestroy() {
+        // Identity-checked inside, so an Activity being replaced does not clear
+        // the registration of the one replacing it.
+        KeepScreenOn.detach(window)
         handler.removeCallbacksAndMessages(null)
         // The executor is per-Activity, so every recreation without this left
         // another daemon thread behind holding an Activity and a Handler. As a

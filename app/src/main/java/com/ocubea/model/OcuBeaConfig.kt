@@ -3,6 +3,7 @@ package com.ocubea.model
 import android.content.Context
 import android.content.SharedPreferences
 import com.ocubea.model.CameraConfig.Resolution
+import com.ocubea.security.MotionSoundPolicy
 
 /**
  * Single source of truth for every tunable setting. SettingsActivity writes,
@@ -166,6 +167,41 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         get() = prefs.getInt(KEY_MAX_CLIP, 300).coerceIn(10, 3600)
         set(v) = prefs.edit().putInt(KEY_MAX_CLIP, v.coerceIn(10, 3600)).apply()
 
+    // ── Motion notification sound ────────────────────────────────────
+    //
+    // Persisted because the tone is played by StreamService from a motion edge,
+    // and a flag that lives only in the HTTP handler would be gone the moment
+    // the process restarts -- a setting that reverts on its own is the same
+    // defect as one that never applied.
+    //
+    // Default false: a phone that starts chirping on every footstep after an
+    // upgrade is a worse outcome than one that stays silent until asked, and
+    // the API's own default has always been silent.
+
+    /** Master switch for the audible motion notification (`sound`). */
+    var soundEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SOUND, false)
+        set(v) = prefs.edit().putBoolean(KEY_SOUND, v).apply()
+
+    /** Whether a motion *edge* emits a tone (`sound_event`). */
+    var soundEventEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SOUND_EVENT, true)
+        set(v) = prefs.edit().putBoolean(KEY_SOUND_EVENT, v).apply()
+
+    /**
+     * Shortest gap between two notifications, in seconds (`sound_timeout`).
+     *
+     * 0 = every event. Bounded by [MotionSoundPolicy] rather than here, so the
+     * HTTP layer and this getter cannot accept different ranges.
+     */
+    var soundTimeoutSeconds: Int
+        get() = prefs.getInt(KEY_SOUND_TIMEOUT, 0)
+            .coerceIn(MotionSoundPolicy.MIN_TIMEOUT_SECONDS, MotionSoundPolicy.MAX_TIMEOUT_SECONDS)
+        set(v) = prefs.edit().putInt(
+            KEY_SOUND_TIMEOUT,
+            v.coerceIn(MotionSoundPolicy.MIN_TIMEOUT_SECONDS, MotionSoundPolicy.MAX_TIMEOUT_SECONDS),
+        ).apply()
+
     // ── Clip retention ─────────────────────────────────────────
     //
     // Three independent limits, any of which can evict. See ClipRetention for
@@ -201,6 +237,43 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean(KEY_POWER_SAVING, true)
         set(v) = prefs.edit().putBoolean(KEY_POWER_SAVING, v).apply()
 
+    // ── Behaviour toggles that used to have no storage at all ──────────
+    //
+    // Each of these answered HTTP 200 and wrote nothing anywhere. There was no
+    // field to write to, which is the mechanical reason the setting could not
+    // take effect -- and the reason it could not even be reported afterwards,
+    // since /config.json had no entry to read.
+
+    /**
+     * `awake`: keep the screen on (FLAG_KEEP_SCREEN_ON).
+     *
+     * Default true, matching the manifest's `android:keepScreenOn="true"` on
+     * MainActivity, so a fresh install behaves as it always has. The window flag
+     * and this preference are applied together in onResume; the preference alone
+     * is what survives a process restart.
+     */
+    var keepScreenOn: Boolean
+        get() = prefs.getBoolean(KEY_KEEP_SCREEN_ON, true)
+        set(v) = prefs.edit().putBoolean(KEY_KEEP_SCREEN_ON, v).apply()
+
+    /** `overlay`: draw time/date/device name onto each video frame. */
+    var overlayEnabled: Boolean
+        get() = prefs.getBoolean(KEY_OVERLAY, false)
+        set(v) = prefs.edit().putBoolean(KEY_OVERLAY, v).apply()
+
+    /**
+     * `motion_event`: the motion pipeline armed -- detection, and recording when
+     * the user has motion recording on.
+     *
+     * Default true, because `securityEnabled` defaults false and a false here
+     * would make `motion_event=on` a no-op on a fresh install: the setting would
+     * store true, report true, and detect nothing, which is the same class of
+     * lie this field exists to end.
+     */
+    var motionEventEnabled: Boolean
+        get() = prefs.getBoolean(KEY_MOTION_EVENT, true)
+        set(v) = prefs.edit().putBoolean(KEY_MOTION_EVENT, v).apply()
+
     // ── Live (non-persisted) toggles ────────────────────────────
 
     var torchOn: Boolean
@@ -225,11 +298,23 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         "motion_record" to motionRecord,
         "pre_record_seconds" to preRecordSeconds,
         "max_clip_seconds" to maxClipSeconds,
+        // /config.json is where a client reads back what it wrote. These three
+        // were absent, so sound=on was applied to nothing and then could not be
+        // confirmed from outside -- the same class of lie as device_name.
+        "sound" to soundEnabled,
+        "sound_event" to soundEventEnabled,
+        "sound_timeout" to soundTimeoutSeconds,
         "device_name" to deviceName,
         "rtsp_enabled" to rtspEnabled,
         "rtsp_port" to rtspPort,
         "autostart" to autostart,
         "power_saving" to powerSaving,
+        // Read back by /config.json so a client can confirm what it wrote.
+        // Before this, `sound=on` applied to a field that did not exist and
+        // then could not be read back from anywhere.
+        "awake" to keepScreenOn,
+        "overlay" to overlayEnabled,
+        "motion_event" to motionEventEnabled,
         "auth_required" to accessToken.isNotEmpty()
     )
 
@@ -262,12 +347,18 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         const val KEY_MOTION_RECORD = "motion_record"
         const val KEY_PRE_RECORD = "pre_record_seconds"
         const val KEY_MAX_CLIP = "max_clip_seconds"
+        const val KEY_SOUND = "motion_sound"
+        const val KEY_SOUND_EVENT = "motion_sound_event"
+        const val KEY_SOUND_TIMEOUT = "motion_sound_timeout"
         const val KEY_CLIP_MAX_MB = "clip_max_space_mb"
         const val KEY_CLIP_MAX_AGE_H = "clip_max_age_hours"
         const val KEY_CLIP_MAX_FILES = "clip_max_files"
         const val KEY_DEVICE_NAME = "device_name"
         const val KEY_AUTOSTART = "autostart"
         const val KEY_POWER_SAVING = "power_saving"
+        const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
+        const val KEY_OVERLAY = "video_overlay"
+        const val KEY_MOTION_EVENT = "motion_event"
         const val KEY_TORCH = "torch_on"
 
     /**
