@@ -3,25 +3,24 @@ package com.ocubea.server
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import androidx.core.content.ContextCompat
 import com.ocubea.camera.CameraManager
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
-import com.ocubea.perf.Metrics
 import com.ocubea.onvif.OnvifDiscovery
 import com.ocubea.onvif.OnvifSoap
+import com.ocubea.perf.Metrics
 import com.ocubea.security.ClipRetention
 import com.ocubea.security.ClipStorage
 import com.ocubea.security.MotionDetector
+import com.ocubea.security.MotionLimits
 import com.ocubea.security.MotionRecorder
 import com.ocubea.sensors.DeviceSensors
-import com.ocubea.security.MotionLimits
-import com.ocubea.ui.KeepScreenOn
 import com.ocubea.stream.FrameHub
+import com.ocubea.ui.KeepScreenOn
 import fi.iki.elonen.NanoHTTPD
-import fi.iki.elonen.NanoHTTPD.Response.Status as Status
 import java.io.ByteArrayInputStream
 import java.io.File
+import fi.iki.elonen.NanoHTTPD.Response.Status as Status
 
 /**
  * OcuBea HTTP server.
@@ -106,6 +105,19 @@ class StreamServer(
         config,
         { openRtspAudio() },
         { tap -> cameraManager.setRtspFrameTap(tap) },
+        // RTSP shares the one hardware encoder with HLS and clip recording, rather
+        // than claiming a second MediaCodec. So starting RTSP video means ensuring
+        // that shared encoder is running, and the answer has to say "is it actually
+        // producing frames now", not merely "did the call return".
+        {
+            cameraManager.ensureSharedEncoder() &&
+                cameraManager.rtspVideoAvailable
+        },
+        // Same encoder, same SPS/PPS. The SDP needs these before a client can
+        // decode anything, so it is read at DESCRIBE time rather than captured at
+        // construction -- the buffer does not exist until the first frame is
+        // encoded, and a client may DESCRIBE before that.
+        { cameraManager.rtspCodecConfig() },
     )
 
     /**
@@ -272,7 +284,6 @@ class StreamServer(
         uri == "/disabletorch" -> ipWebcamTorch(false)
         uri == "/diagnostic/encoder_hold" -> handleEncoderHold(session)
     uri == "/hls/profile" -> handleHlsProfile(session)
-
 
         // ── IP Webcam API: settings ──
         uri == "/settings" && method == Method.POST -> handleSettingsBulk(session)
@@ -690,11 +701,13 @@ class StreamServer(
 
     private fun localIpFallback(): String {
         try {
-            for (nif in java.net.NetworkInterface.getNetworkInterfaces())
-                for (addr in nif.inetAddresses)
+            for (nif in java.net.NetworkInterface.getNetworkInterfaces()) {
+                for (addr in nif.inetAddresses) {
                     if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
                         return addr.hostAddress ?: "127.0.0.1"
                     }
+                }
+            }
         } catch (_: Exception) {}
         return "127.0.0.1"
     }
@@ -1303,7 +1316,6 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
         return okText("applied $applied")
     }
 
-
     /**
      * GET /hls/index.m3u8 — the live playlist.
      *
@@ -1744,7 +1756,7 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
     private fun handleListVideos(): Response {
         val files = motionRecorder.listRecordings()
         val items = files.joinToString(",") {
-            """"{"name":"${it.name}","url":"/v/${it.name}","size":${it.length()},"modified":${it.lastModified()}}""" 
+            """"{"name":"${it.name}","url":"/v/${it.name}","size":${it.length()},"modified":${it.lastModified()}}"""
         }
         return newFixedLengthResponse(Status.OK, "application/json", """{"videos":[$items]}""")
     }
@@ -1887,11 +1899,13 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
     }
 
     private fun jsonEscapeString(value: String): String = buildString {
-        for (c in value) when (c) {
+        for (c in value) {
+            when (c) {
             '"' -> append("\\\"")
             '\\' -> append("\\\\")
             '\n' -> append("\\n")
             else -> if (c.code < 0x20) append("\\u%04x".format(c.code)) else append(c)
+        }
         }
     }
 
