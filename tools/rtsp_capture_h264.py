@@ -38,6 +38,12 @@ import subprocess
 import sys
 import time
 
+# decode_gate holds the pass/fail decision that used to be inline below, so it can
+# be run against a saved file without a phone. The import goes through an explicit
+# path insert because this file is run directly from tools/, not as a package.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import decode_gate
+
 
 def parse_status(blob: bytes):
     for line in blob.split(b"\r\n"):
@@ -122,6 +128,18 @@ def next_interleaved(sock, buf, stop):
 
 
 def next_udp(rtp_sock):
+    """One RTP packet from a UDP socket, or None if nothing arrives.
+
+    The socket must carry a timeout. Measured: called on a bound-but-empty socket
+    with no timeout set, this blocks in recvfrom forever and never returns. It has
+    no deadline parameter, unlike next_interleaved, so the timeout has to come from
+    the socket itself -- a caller that forgets leaves the capture hanging rather
+    than failing, and CI cannot tell a hang from a slow test.
+
+    UDP is the default only in the sense that it was first; the capture over TCP
+    is the one that works, because interleaving keeps ordering and the server does
+    not drop datagrams it has already queued. See main()'s --udp handling.
+    """
     try:
         pkt, _ = rtp_sock.recvfrom(65536)
     except (socket.timeout, OSError):

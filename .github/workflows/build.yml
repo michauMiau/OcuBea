@@ -186,6 +186,23 @@ jobs:
       - name: Verify the decode gate measures a damaged stream
         run: python3 tools/verify_decode_gate.py
 
+      # The capture tool went green in CI while being broken. It called
+      # decode_gate.passes with no import for it, so every real run died with a
+      # NameError on the last step, after the minutes spent talking to the camera.
+      # Committed as 4afe530, and the decode gate suite did not notice because it
+      # tests decode_gate.py and never touches the file that calls it.
+      #
+      # Import checking would not have caught it either, and that was measured
+      # rather than assumed: importing the committed file succeeds with or without
+      # the import, because the name resolves only when main() runs and importing
+      # a module executes none of its body. So this calls what main() calls and
+      # requires a verdict instead of an exception.
+      #
+      # Confirmed by running it against the committed version: red with "capture
+      # does not have decode_gate", green after the one-line fix.
+      - name: Verify the capture tool can reach every gate it runs
+        run: python3 tools/verify_capture_gate.py
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
