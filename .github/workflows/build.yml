@@ -90,6 +90,21 @@ jobs:
       - name: Verify the mutation harness restore guard
         run: python3 tools/verify_restore_guard.py
 
+      # check_mjpeg.py is the tool that tells "the camera sent nothing" apart from
+      # "the consumer wrote nothing", so it is trusted precisely when something is
+      # wrong. It could not be trusted at all: main() returned 0 unconditionally,
+      # so a 100x garbage buffer, an empty file and a nonexistent path all
+      # exited 0 while printing accurate verdicts. A correct verdict that cannot
+      # turn a build red reads as one that was acted on.
+      #
+      # It now exits 1 on an unusable stream and 2 on a usage error, and rejects
+      # frames that disagree on size -- a stream that renegotiated mid-capture, or
+      # one that spliced two sources, is not one a consumer can size buffers for.
+      #
+      # Verified here because the only other way to find out is a broken camera.
+      - name: Verify the MJPEG gate can fail
+        run: python3 tools/verify_mjpeg_gate.py
+
       # The WebUI is checked in a real browser because a translation gap, a
       # clipped label or a label that reverts to English after a click is
       # invisible in a JVM test and in a build log. All three checks exit
