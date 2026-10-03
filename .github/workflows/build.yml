@@ -123,6 +123,24 @@ jobs:
       - name: Verify the ONVIF gate rejects a fake device
         run: python3 tools/verify_onvif_gate.py
 
+      # rtsp_verify.py walks RTSP as a player does and checks the bytes that come
+      # back, which is the only way to catch the failure this app has already had:
+      # OPTIONS, DESCRIBE, SETUP and PLAY all answer 200, the SDP announces a
+      # track, and not one byte of RTP is ever sent. Status codes say the camera
+      # works. The NVR shows a stream that connects and then shows nothing.
+      #
+      # The decoy here does exactly that and is rejected: 7 checks failing, exit 1,
+      # while 5 pass because it genuinely does speak RTSP 1.0. The verdict comes
+      # from the payload checks, not from a connection having succeeded.
+      #
+      # Also pinned, because it cost a false green while writing it: the probe
+      # takes host and port as separate arguments. Handed a full URL it reads port
+      # 8554 regardless, finds nothing listening there, declares RTSP off and
+      # exits 0 with one check passed -- a green result about a port nobody asked
+      # about.
+      - name: Verify the RTSP gate rejects a silent server
+        run: python3 tools/verify_rtsp_gate.py
+
       # The WebUI is checked in a real browser because a translation gap, a
       # clipped label or a label that reverts to English after a click is
       # invisible in a JVM test and in a build log. All three checks exit
