@@ -2,6 +2,18 @@ root = true
 
 [*.{kt,kts}]
 ktlint_code_style = intellij_idea
+
+# prettier is pinned to an exact version in package.json, deliberately, and this
+# note is here because the pin looks like a mistake without it. 3.4.x and 3.9.x
+# disagree about how to wrap an html` template literal, so the caret version made
+# one commit pass on a laptop and fail in CI on a single file, with the only
+# evidence buried in a job log. A range on a formatter trades a green build for a
+# diff nobody asked for.
+
+[*.{js,jsx,css,json,mjs}]
+end_of_line = lf
+indent_style = space
+indent_size = 2
 # max_line_length stays off: this codebase has 153 lines over 100 chars and they
 # are almost all long string literals and comments in the RTSP/H264 paths, where
 # wrapping a byte sequence mid-literal would make it wrong rather than tidy.
