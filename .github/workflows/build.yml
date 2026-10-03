@@ -186,6 +186,21 @@ jobs:
       - name: Verify the decode gate measures a damaged stream
         run: python3 tools/verify_decode_gate.py
 
+      # mutate_ramp_guard.py is the harness that taught this repo what a mutation
+      # gate owes its reader: it forces --rerun-tasks after Gradle served a mutated
+      # source from cache, made a compile failure INCONCLUSIVE, and restores in a
+      # finally block after leaving mutated production code behind once. Every other
+      # gate here calls itself honest on this file's word, so its three guarantees
+      # are checked rather than read.
+      #
+      # Needs no phone and no Gradle build. The canaries were run against five
+      # weakened copies of the harness -- --rerun-tasks removed, finally turned into
+      # a dead branch, the Sentinel accepting every file, a compile error counted
+      # as caught, and the 'e: ' detector stubbed to False -- and the gate went red
+      # on all five.
+      - name: Verify the mutation harness enforces its own guards
+        run: python3 tools/verify_ramp_guard_gate.py
+
       # The capture tool went green in CI while being broken. It called
       # decode_gate.passes with no import for it, so every real run died with a
       # NameError on the last step, after the minutes spent talking to the camera.
