@@ -5,6 +5,7 @@ package com.ocubea.camera
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.os.SystemClock
 import android.os.Handler
 import android.os.Looper
 import androidx.camera.core.CameraSelector
@@ -28,7 +29,6 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 import com.ocubea.perf.Metrics
 import kotlin.math.roundToInt
 
@@ -142,53 +142,64 @@ class CameraManager(
     private var dropDecisions = 0
 
     /**
-     * Rolling one-second frame counter, and the measurement it produces.
+     * Rolling frame counters, and the measurements they produce.
      *
      * [measuredFps] used to be declared and never written: every read returned
      * null and /status.json fell through to the *requested* rate, so the page
-     * showed the setting rather than the device. The window is measured on the
-     * analyzer thread, after the FPS limiter, so it counts what the camera
-     * actually delivered rather than what the limiter let past.
+     * showed the setting rather than the device.
+     *
+     * There are now TWO windows, and keeping them apart is the point.
+     *
+     * [measuredFps] counts frames the limiter let past, so it is what a viewer
+     * sees and what the governor reasons about "is the stream meeting the
+     * request". [arrivedFps] counts every frame the camera handed to the
+     * analyzer, limiter or not, so it is what the device can actually produce.
+     *
+     * The 2026-10-02 pass had one window, counted after the limiter, and
+     * documented it as counting "what the camera actually delivered rather than
+     * what the limiter let past" -- which is the opposite of where the call site
+     * was. At `target_fps=5` it therefore reported ~4.5 while the camera
+     * delivered ~17, the governor read that as a slow device and walked the
+     * resolution down to the 480x270 floor with headroom to spare. A limiter
+     * doing its job looked like a slow camera.
+     *
+     * Two windows fix the reasoning and keep both numbers honest: the governor
+     * compares delivery against the request, and the status page shows arrival
+     * next to it so a ceiling in the device is visible rather than inferred.
      */
-    private val fpsWindowStartMs = AtomicLong(0L)
-    private val fpsWindowFrames = AtomicLong(0L)
-
-    /** Resets the window so a rebind cannot be read as a stall. */
-    private fun resetFpsWindow() {
-        fpsWindowStartMs.set(0L)
-        fpsWindowFrames.set(0L)
-    }
+    /**
+     * The two rolling rate windows. Delivery is what the limiter let past and
+     * is what the governor judges; arrival is what the camera produced and is
+     * what makes a device ceiling visible. See FrameRateWindows for why they
+     * cannot be one number.
+     */
+    private val rateWindows = FrameRateWindows()
 
     /**
-     * Folds one frame into the window; returns true when a window just closed.
-     *
-     * The return value is what keeps the governor off the per-frame path: the
-     * resolution decision is made at most once a second, from a settled
-     * measurement, instead of on every frame from a number that is still
-     * counting up.
+     * What the camera handed the analyzer, per second. Never limited, so this
+     * is the device's ceiling rather than a setting. Null until a window has
+     * closed, the same "not measured yet" convention as [measuredFps].
      */
-    private fun rollFpsWindow(nowMs: Long): Boolean {
-        val frames = fpsWindowFrames.incrementAndGet()
-        val start = fpsWindowStartMs.get()
-        if (start == 0L) {
-            fpsWindowStartMs.compareAndSet(0L, nowMs)
-            return false
-        }
-        val elapsed = nowMs - start
-        if (elapsed < FPS_WINDOW_MS) return false
-        // Losing this race just means another frame's window already rolled
-        // over; the next frame starts a new one either way.
-        if (!fpsWindowStartMs.compareAndSet(start, nowMs)) return false
-        fpsWindowFrames.set(0L)
-        // Never publish zero: a zero is indistinguishable from "not measured",
-        // and measuredFps already uses null for that.
-        if (frames <= 0L) return true
-        val fps = frames * 1000.0 / elapsed
-        if (fps.isFinite() && fps >= 1.0) {
-            measuredFps = fps.roundToInt().coerceIn(1, 240)
-        }
-        return true
-    }
+    val arrivedFps: Int? get() = rateWindows.arrivedFps
+
+    /**
+     * When the current delivery window opened, or 0 if none has.
+     *
+     * Handed to the governor so it can distinguish a full second of real frames
+     * from the tail of a rebind: both can report the same fps, and only the
+     * elapsed time tells them apart.
+     */
+    val deliveredWindowStartMs: Long get() = rateWindows.deliveredWindowStartMs
+
+    /**
+     * Resets both windows so a rebind cannot be read as a stall.
+     *
+     * Called from every path that closes and reopens the camera. Without it the
+     * first window after a rebind would span the gap in which the camera was
+     * closed, report about 0 fps, and the governor would immediately downgrade
+     * on the strength of its own restart -- the cascade this exists to prevent.
+     */
+    private fun resetFpsWindow() = rateWindows.reset()
 
     /**
      * The quality ladder, anchored to whatever the user asked for.
@@ -537,7 +548,7 @@ class CameraManager(
         // asked for by the user or triggered by the governor. Without this, the
         // first measurement window after any rebind spans the gap in which the
         // camera was closed.
-        adaptive.onRebind(System.currentTimeMillis())
+        adaptive.onRebind(SystemClock.elapsedRealtime())
         resetFpsWindow()
         applyFrameRate(camera)
         // Every interop option died with the previous session. Pushed back here so
@@ -909,6 +920,17 @@ class CameraManager(
         try {
             // FPS limit. Skipping is nearly free: the buffer goes straight back.
             val now = System.nanoTime()
+            // Arrival is counted here, ABOVE the limiter, so it sees every frame
+            // the camera handed the analyzer whether or not the limiter lets it
+            // through. That is what makes it the device's rate rather than a
+            // setting: below the limiter the number would just restate the
+            // request, and AdaptiveResolutionGovernor would read a limiter doing
+            // its job as a slow camera and walk the resolution down.
+            //
+            // delivered = false because reaching the delivery window is what
+            // "delivered" means; no frame has passed the limiter yet.
+            rateWindows.fold(now / 1_000_000, arrived = true, delivered = false)
+
             // The account owns the decision *and* the counting, so "entered",
             // "returned early" and "published" cannot drift apart the way bare
             // counter++ statements did. See FrameArrivalAccount.
@@ -919,6 +941,7 @@ class CameraManager(
                 }
                 FrameArrivalAccount.Outcome.LIMITED_BY_FPS -> {
                     dropDecisions++
+                    // Already counted as an arrival above, before the decision.
                     imageProxy.close()
                     return
                 }
@@ -931,14 +954,43 @@ class CameraManager(
             onFrameHeartbeat?.invoke()
 
             // Counted here, after the FPS limiter and before any consumer work,
-            // so the number is what the camera delivered rather than what
-            // downstream happened to want. Once per closed window, and the
+            // so it measures DELIVERY: frames the limiter let past. That is what
+            // a viewer sees and what "is the stream meeting the request" means,
+            // which is why the governor reads it.
+            //
+            // Arrival is folded at the top of this function, above the limiter, so
+            // that this line -- reached only by frames the limiter let past --
+            // counts delivery and nothing else. Once per closed window, and the
             // decision that follows is the only thing here that can rebind.
-            if (rollFpsWindow(now / 1_000_000)) {
+            // See FrameRateWindows.
+            if (rateWindows.fold(
+                    now / 1_000_000,
+                    arrived = false,
+                    delivered = true,
+                )
+            ) {
+                // The extracted window owns the sample; measuredFps stays the
+                // field the governor and the status page read, so nothing
+                // outside this class had to change.
+                measuredFps = rateWindows.deliveredFps
                 val m = measuredFps
                 if (m != null) {
+                    // Monotonic ms, deliberately: the windows were folded on
+                    // that clock (now / 1_000_000) and isSpanCredible() compares
+                    // the two. Handing this System.currentTimeMillis() put the
+                    // axes ~56 years apart, so the span test could never fire and
+                    // the guard was inert in production while its unit tests
+                    // stayed green -- they fed both arguments from one axis.
+                    val nowMs = now / 1_000_000
                     val decision = adaptive.observe(
-                        System.currentTimeMillis(), m.toDouble(), targetFps
+                        nowMs,
+                        m.toDouble(),
+                        targetFps,
+                        // The window this reading came from, so the governor can
+                        // refuse to judge a window that opened a moment ago and
+                        // therefore describes the camera's ramp rather than its
+                        // rate. See AdaptiveResolutionGovernor.isSpanCredible.
+                        windowStartMs = rateWindows.deliveredWindowStartMs,
                     )
                     if (decision.action != AdaptiveResolutionGovernor.Decision.Action.NONE) {
                         applyAdaptiveDecision(decision)
@@ -1151,6 +1203,16 @@ class CameraManager(
         // nothing indicating that they disagreed. Null until the first window
         // closes, which is the same "not known yet" the field has always used.
         "measured_fps" to (measuredFps ?: -1),
+        // The device ceiling: every frame the camera handed the analyzer,
+        // limiter or not. Read next to measured_fps -- when this sits at ~17
+        // while measured_fps tracks the target, the limiter is doing its job and
+        // the camera is the limit rather than the pipeline. Null until a window
+        // closes, on the same "not known yet" convention as measured_fps.
+        "arrived_fps" to (arrivedFps ?: -1),
+        // What the governor was shown when it last decided. Read with `rung`:
+        // a rung below user_rung with a ratio near 1.0 is a decision made on a
+        // window that spanned a rebind, not on a device that could not keep up.
+        "governor_ratio" to adaptive.lastRatio,
         // The ladder's current rung next to the user's own setting, so a
         // downgraded stream is visible as such rather than looking like the
         // camera quietly ignoring the resolution menu.
@@ -1342,7 +1404,7 @@ class CameraManager(
         val owner = lifecycleOwner ?: return
         config.frontCamera = front
         cameraSelector = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
-        rebind(owner)
+        rebindOnMainThread(owner)
     }
 
     fun setQuality(resolution: CameraConfig.Resolution) {
@@ -1354,7 +1416,34 @@ class CameraManager(
         // this, a pick of 640x480 would not take effect until the camera happened
         // to restart.
         adaptive.anchor(resolution.width, resolution.height)
-        rebind(lifecycleOwner ?: return)
+        rebindOnMainThread(lifecycleOwner ?: return)
+    }
+
+    /**
+     * Rebinds on the main thread, which is where CameraX requires it.
+     *
+     * `bindToLifecycle` throws "Not in application's main thread" from any other
+     * thread, and every settings change reaches this class on an HTTP worker. So
+     * a resolution or camera flip posted over the network did not just fail to
+     * take effect -- it threw, and the watchdog then retried the same failing
+     * rebind once a second for as long as the app ran. Measured on the F3311:
+     *
+     * ```
+     * W/OcuBea   : Rebind failed: Not in application's main thread
+     * W/OcuBeaCam: Reopening camera after 1000ms: Rebind failed: Not in ...
+     * W/MessageQueue: Handler (SurfaceTexture$1) sending message to a Handler on
+     *                 a dead thread
+     * ```
+     *
+     * The `wantStreaming` and provider checks stay in [rebind], not here, so a
+     * queued rebind still honours both once it runs.
+     */
+    private fun rebindOnMainThread(owner: androidx.lifecycle.LifecycleOwner) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            rebind(owner)
+            return
+        }
+        mainHandler.post { rebind(owner) }
     }
 
     /**
@@ -2128,15 +2217,6 @@ class CameraManager(
          */
         private const val MAX_PENDING_ENCODES = 3
 
-        /**
-         * Width of the frame-counting window behind [measuredFps].
-         *
-         * One second, so the number on the status page is the frame rate a
-         * person would count, and so the governor gets a decision at most once
-         * a second. Longer would make the response sluggish; shorter would let
-         * a single stalled frame read as a collapse.
-         */
-        private const val FPS_WINDOW_MS = 1_000L
 
         /** Why a clip is being recorded: the user asked, or motion did. */
         const val REASON_ON_DEMAND = "ondemand"
@@ -2311,6 +2391,54 @@ internal class AdaptiveResolutionGovernor(
     /** True while measurements are being ignored because the camera is settling. */
     fun isSettling(nowMs: Long): Boolean = nowMs < settleUntilMs
 
+    /**
+     * True when the span behind a reading can be believed.
+     *
+     * Two ways a span is not evidence:
+     *
+     *  - **Too short.** The window opened less than [steadyWindowMs] ago, so it
+     *    measured the camera coming up rather than its rate. Measured on the
+     *    F3311: a rebind leaves the camera dead ~2.6 s, `settleMs` was 3 s, and the
+     *    first judged window covered the ~400 ms tail -- 7 fps against a request of
+     *    15, so the ladder dropped 720p on a phone that then held 15 fps.
+     *
+     *  - **Impossibly long.** A span of years means the two values came from
+     *    different clocks, not that the camera is slow. This was live on
+     *    2026-10-03: the windows were folded on `elapsedRealtime()` while
+     *    `observe()` was handed `currentTimeMillis()`, putting the span at
+     *    ~1.79e12 ms. The test then said "steady", the guard never fired once, and
+     *    every unit test stayed green because they fed both arguments from one
+     *    axis. A guard that can be switched off by handing it a mismatched clock
+     *    is not a guard, so an implausible span is refused outright.
+     *
+     * Time-since-rebind alone cannot express any of this: a device that takes 8 s
+     * to reach its rate passes a 3 s timer and still hands over a ramp.
+     */
+    fun isSpanCredible(nowMs: Long, windowStartMs: Long): Boolean {
+        val span = nowMs - windowStartMs
+        return span in steadyWindowMs..maxSpanMs
+    }
+
+    /**
+     * The longest span still believable as a measurement.
+     *
+     * Generous on purpose: not a sanity check on frame rates, it exists only to
+     * catch a clock mismatch. An hour is far longer than any window will ever be
+     * and far shorter than the ~56 years between the two clocks at fault.
+     */
+    private val maxSpanMs: Long = 3_600_000L
+
+    /**
+     * One full second: the shortest window worth judging.
+     *
+     * Deliberately a fixed second rather than `1000L / target`: at a target of 30
+     * that would shorten the window to 33 ms, which is shorter than the span of a
+     * single slow frame, and a span that small measures the frame interval, not
+     * the camera's rate. One second is one measurement cycle at every target the
+     * ladder runs at, so it is the honest floor.
+     */
+    private var steadyWindowMs: Long = 1_000L
+
     /** The effective request after relief. This is what the camera is told. */
     fun effectiveFps(requestedFps: Int): Int =
         (requestedFps + reliefSteps * fpsReliefStep).coerceIn(1, MAX_EFFECTIVE_FPS)
@@ -2386,15 +2514,38 @@ internal class AdaptiveResolutionGovernor(
      * timers need a decision made on a *closed* window, and a window that is
      * still filling has no opinion.
      */
-    fun observe(nowMs: Long, measuredFps: Double, requestedFps: Int): Decision {
+    /**
+     * The ratio the governor last judged, as measured/requested.
+     *
+     * -1 until the first reading. Published in /status.json because a downgrade
+     * and a genuine shortfall look identical from `rung` alone: both show a
+     * smaller resolution. The ratio says which one happened -- a downgrade at a
+     * ratio comfortably above [downRatio] means the decision came from a window
+     * that spanned a rebind, not from a slow device.
+     */
+    @Volatile var lastRatio: Double = -1.0
+        private set
+
+    fun observe(
+        nowMs: Long,
+        measuredFps: Double,
+        requestedFps: Int,
+        windowStartMs: Long = 0L,
+    ): Decision {
         val want = requestedFps.coerceAtLeast(1)
         // A sub-1 fps reading is a device that is not streaming, not a device
         // that is slow. Degrading a broken camera makes it slower, not faster.
         if (measuredFps < 1.0 || !measuredFps.isFinite()) return Decision.NONE
         if (isSettling(nowMs)) return Decision.NONE
+        // A window that opened less than one target-second ago is measuring the
+        // camera coming up, not the camera's rate. Judging it is how a rebound
+        // read as a slow device. windowStartMs == 0 means the caller did not
+        // supply one, in which case the old behaviour applies.
+        if (windowStartMs > 0L && !isSpanCredible(nowMs, windowStartMs)) return Decision.NONE
 
         val measured = measuredFps.roundToInt()
         val ratio = measuredFps / want
+        lastRatio = ratio
 
         if (ratio < downRatio) {
             goodSinceMs = 0L

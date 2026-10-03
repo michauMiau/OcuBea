@@ -1,0 +1,51 @@
+# F-Droid build recipe for OcuBea.
+#
+# BuildType: gradle
+#
+# The release build is signed only when a key is supplied on the command line,
+# which F-Droid cannot do, so this recipe builds the signed-debug variant. It is
+# the same code: minify is on for release and off for debug, and debug.keystore is
+# committed precisely so a reproducible build works without any secret. The
+# release path is documented in README.md ("Building").
+#
+#   fdroid build --server https://f-droid.org --package com.ocubea
+#
+# AllowedAPKSigningKeys below is the fingerprint of the committed debug.keystore.
+# Verify it before trusting a published build:
+#   keytool -list -v -keystore debug.keystore | grep SHA256
+
+id: com.ocubea
+name: OcuBea
+summary: Android phone as an MJPEG, RTSP and ONVIF camera on your local network.
+
+categories:
+  - Camera
+  - Multimedia
+
+keywords:
+  - camera
+  - webcam
+  - mjpeg
+  - rtsp
+  - onvif
+  - surveillance
+  - ip camera
+
+license: GPL-3.0-or-later
+
+AllowedAPKSigningKeys:
+  - 54:FB:BF:B2:7F:8E:8E:AD:51:5E:7B:A2:6D:BC:15:DD:95:05:B0:94:82:9E:38:10:8E:D7:49:EE:C4:30:62:08
+
+repo:
+  url: https://github.com/michauMiau/OcuBea.git
+  branch: main
+  subdir: ""
+
+# No proprietary dependencies: CameraX, NanoHTTPD and Kotlin are Apache-2.0 or
+# MIT and all build from source.
+
+build:
+  - versionCode: 1
+    versionName: 0.1.0-alpha
+    gradle:
+      - assembleDebug
