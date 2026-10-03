@@ -99,10 +99,33 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Playwright
-        run: |
-          npm install --no-save playwright
-          npx playwright install --with-deps chromium
+      # npm ci, not npm install. Three of the WebUI gates load playwright from
+      # node_modules and playwright was never in package.json -- it was installed
+      # here with --no-save, which npm documents as "do not save to
+      # package.json", so the dependency lived only in this workflow file and in
+      # whatever node_modules happened to exist locally. package-lock.json did
+      # not mention it either: 117 packages, no playwright, no prettier.
+      #
+      # That works right up until someone runs npm ci locally, which deletes
+      # node_modules and reinstalls from the lockfile. Measured: npm ci left all
+      # three gates failing on MODULE_NOT_FOUND while prettier, eslint and the
+      # string check still passed, so it looked like three broken tests rather
+      # than an undeclared dependency.
+      #
+      # playwright is pinned exactly here for the same reason prettier is: a range
+      # resolves differently over time and the browser revision it wants moves
+      # with it, which turns "the gate fails" into "the gate fails next month".
+      - name: Install Node dependencies
+        run: npm ci
+        env:
+          NODE_ENV: development
+
+      # Separate step on purpose. npm ci installs the playwright package, which
+      # downloads nothing: the browser is a separate ~150MB download that lands
+      # outside node_modules. Put in one step, this reads as one action and gets
+      # collapsed into a single line that skips the browser step.
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
 
       - name: Check Polish strings are complete
         run: node tools/strings_verify.js

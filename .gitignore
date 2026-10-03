@@ -20,7 +20,18 @@ local.properties
 
 # Narzedzia do weryfikacji WebUI (jsdom/playwright)
 node_modules/
-package-lock.json
+
+# package-lock.json is NOT ignored, and the comment above used to sit on both
+# lines, which is how it ended up here. An ignored lockfile is a lockfile nobody
+# reads: it was 117 packages with no prettier and no playwright in it, while
+# package.json declared four devDependencies. The two disagreed and CI never
+# noticed, because CI did not read the lockfile either -- it installed
+# playwright with --no-save. So the file was decoration.
+#
+# It matters twice over now. npm ci deletes node_modules and reinstalls from this
+# file, so it is the only thing that makes the WebUI gates reproducible, and it
+# is what pins prettier to the exact version that formats html`...` the way the
+# checked-in bundle is formatted.
 
 # Signing keys.
 

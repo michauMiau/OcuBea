@@ -18,6 +18,7 @@
     "esbuild": "^0.24.0",
     "eslint": "^9.39.5",
     "globals": "^17.13.0",
+    "playwright": "1.60.0",
     "prettier": "3.4.2"
   },
   "//prettier": "Pinned exactly, no caret. A formatter version is not a library version: 3.9.x reformats html` template literals differently from 3.4.x, so a range made the same commit pass on a laptop and fail in CI, on one file, for reasons visible only in the job log. Pinning the version is the fix; a caret on a formatter trades a green build for a diff nobody asked for.",
