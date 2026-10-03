@@ -72,6 +72,24 @@ jobs:
           ls -la app/build/outputs/apk/release/
           test -f app/build/outputs/apk/release/app-release-unsigned.apk
 
+      # The restore guard in the mutation harness deleted work twice while
+      # reporting that the source was verified, and its own log was reassuring in
+      # both cases. It is cheap, it touches no Gradle state, and it is the only
+      # thing that keeps the harness honest about which writes were its own -- so
+      # it runs on every build rather than when someone remembers.
+      #
+      # No python step existed in this workflow before, so the interpreter is
+      # pinned rather than assumed from the runner image. Nothing here needs a
+      # third-party package -- stdlib only, deliberately, because a gate that
+      # can fail on a missing pip install is a gate that gets skipped.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify the mutation harness restore guard
+        run: python3 tools/verify_restore_guard.py
+
       # The WebUI is checked in a real browser because a translation gap, a
       # clipped label or a label that reverts to English after a click is
       # invisible in a JVM test and in a build log. All three checks exit
