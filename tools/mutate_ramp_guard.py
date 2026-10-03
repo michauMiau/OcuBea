@@ -133,7 +133,34 @@ def run_suite() -> tuple[bool, list[str], bool]:
     return ("FAILED" not in output), failed, compile_error
 
 
+REQUIRED = [
+    # (name, substring). The harness refuses to start unless the code it is about
+    # to mutate is actually present. Added after it backed up a tree with the
+    # guard already removed and then "restored" that broken state over the fix.
+    ("the span guard call", "if (windowStartMs > 0L && !isSpanCredible(nowMs, windowStartMs)) return Decision.NONE"),
+    ("isSpanCredible", "fun isSpanCredible(nowMs: Long, windowStartMs: Long): Boolean"),
+    ("the steady window floor", "private var steadyWindowMs: Long = 1_000L"),
+    ("the implausible-span ceiling", "private val maxSpanMs: Long = 3_600_000L"),
+]
+
+
 def main() -> int:
+    if len(sys.argv) > 1:
+        print(__doc__)
+        print("\nThis harness takes no arguments; it was run as:")
+        print("    python3 tools/mutate_ramp_guard.py")
+        return 0
+
+    preflight = TARGET.read_text()
+    missing = [name for name, needle in REQUIRED if needle not in preflight]
+    if missing:
+        print("REFUSING TO RUN -- the code under test is not present:")
+        for name in missing:
+            print(f"  missing: {name}")
+        print("\nRunning anyway would back up a broken tree and then restore it,")
+        print("overwriting whatever fix is missing. Fix the code first.")
+        return 2
+
     original = TARGET.read_text()
     original_sha = hashlib.sha256(original.encode()).hexdigest()
     shutil.copy2(TARGET, BACKUP)
@@ -170,30 +197,33 @@ def main() -> int:
             print(f"{label}\n  {verdict}")
             for name in failed:
                 print(f"    -> {name}")
+    finally:
         # If the file was edited from outside while this ran, do NOT restore: the
         # backup predates those edits and clobbering them is the exact failure this
         # class exists to catch.
-        if guard.started():
-            if BACKUP.exists():
-                shutil.copy2(BACKUP, TARGET)
-        else:
+        if not guard.started():
+            # Deliberately no restore, and deliberately no return: a return here
+            # would skip the SHA check below, which is the one thing that proves
+            # the tree is clean. Flag it and fall through instead.
             print("\nABORTED: the file under test was edited from outside this "
                   "harness while it ran. Restoring would revert that work, so "
                   "nothing was restored. Re-run the harness on a quiet tree.")
-            return 4
+            problems.append("file under test was edited from outside during the run")
+        elif BACKUP.exists():
+            shutil.copy2(BACKUP, TARGET)
         restored = hashlib.sha256(TARGET.read_bytes()).hexdigest()
-        restore_ok = restored == original_sha
-        if not restore_ok:
+        restore_ok = guard.started() and restored == original_sha
+        if not restore_ok and guard.started():
             problems.append("restore did not reproduce the original file")
         print(
             "\nsource restored, SHA-256 verified against the original"
             if restore_ok
-            else "\nFATAL: restore left the file different from the original"
+            else "\nsource NOT restored -- the tree is not in its starting state"
         )
 
-    if not restore_ok:
-        return 3
     if problems:
+        if any("edited from outside" in p for p in problems):
+            return 4
         print("\nNOT ALL MUTATIONS CAUGHT:")
         for problem in problems:
             print(" -", problem)

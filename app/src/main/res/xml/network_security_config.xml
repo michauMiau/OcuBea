@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+Cleartext policy for OcuBea.
+
+The app is a camera server, and a camera server speaks HTTP on the local
+network. That is the product. Turning cleartext off would not make it safer, it
+would make it useless. So cleartext is allowed deliberately, in the smallest
+possible shape: the loopback interface only.
+
+Why loopback is the whole story here. Nothing in the app talks to a remote host.
+Verified by reading every URL in the source, not by assuming:
+
+  - ClipAdapter, ClipThumbs, MainActivity, SettingsActivity all use
+    http://127.0.0.1:port for the app's own server.
+  - OnvifSoap and OnvifDiscovery carry XML namespace URIs (schemas.xmlsoap.org,
+    www.onvif.org, www.w3.org). Those are identifiers inside the SOAP envelope
+    and WSDL, not fetches. Nothing resolves or dials them.
+  - ONVIF discovery probes multicast on the LAN, which network security config
+    does not govern at all.
+
+So the only socket this app opens is its own server on 127.0.0.1. The remote
+peers are the LAN clients the user points a browser or a VMS at, and those are
+outside this app's control: the server binds a socket and serves them, which no
+manifest attribute can restrict. Scoping cleartext to loopback therefore costs
+nothing, and it stops the app itself ever sending anything in clear.
+
+Deliberately not set:
+
+  - A base config with cleartextTrafficPermitted="true" would be the lazy fix.
+    The base here is "false" and only loopback is carved out.
+  - No debug overrides block permitting cleartext "just for testing". That is the
+    most common way a release build ships permissive cleartext, and this is
+    exactly the kind of app where that matters.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- The app's own HTTP server, reached from inside the app. -->
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <!-- Android emulators reach the host's loopback through this alias. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
