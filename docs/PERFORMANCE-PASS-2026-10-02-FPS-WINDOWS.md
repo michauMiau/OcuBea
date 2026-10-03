@@ -256,6 +256,49 @@ Two separate mistakes had to be corrected to see this at all:
    `setQuality()` and `setFrontFacingCamera()` through `rebindOnMainThread`.
    After the fix the count of those errors is 0.
 
+### A wrong conclusion I recorded, and what corrected it
+
+Late in this pass I wrote that `1280x720` yields zero frames on the F3311,
+because `null_bitmaps` equalled `frames_entered` and logcat showed
+`ImageReader-1280x720 ... in a disconnected state`. I proposed a format ceiling
+and said the top rung was unusable on this device.
+
+**That was wrong, and the evidence for it was a measurement that never ran.**
+
+The consumer I meant to be reading from wrote **zero bytes** — `/tmp/consumer.mjpeg`
+did not exist. I read that as "the pipeline delivered nothing", when it meant "my
+capture produced no file". Every number quoted alongside it had been sampled with
+**no consumer attached**.
+
+Re-measured with a consumer actually attached (`viewers=1`):
+
+```
+/video at 1280x720, 20 s : http=200, 26 335 679 bytes
+  176 SOF headers, 176 multipart boundaries, every one 1280x720
+  40/40 frames unique, 256 distinct byte values   -> a moving picture
+```
+
+And the counters separate cleanly once there is somewhere for the frames to go:
+
+```
+entered=5677  null_bitmaps=4543  published=906   null/entered = 0.80
+viewers=1, 31 MB delivered
+```
+
+So `null_bitmaps` and `frames_published` describe the **analyzer**, not the client.
+80% of frames are discarded by the analysis path while the MJPEG consumer receives
+a correct, changing 1280x720 image. Two independent numbers that look like the same
+subject and are not.
+
+The lesson is not subtle but keeps costing time: *a reading taken without the
+consumer attached is not a reading about delivery.* It also matches the trap this
+class of bug keeps setting — a green result from something that did not execute
+(`queueBuffer: fps=`, an empty output file) looks exactly like a result.
+
+`tools/check_mjpeg.py` exists so the stream itself is checked — SOI, SOF
+dimensions, boundary count, and per-frame uniqueness — instead of inferring it
+from a counter.
+
 Also worth stating plainly: `/status.json` **blocks while a rebind is in flight**,
 so any external sampler reading across a rebind sees a stale snapshot. The
 governor's own decision has to be read from the app log, not from an outside
