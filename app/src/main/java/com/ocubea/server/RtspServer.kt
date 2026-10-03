@@ -40,6 +40,27 @@ class RtspServer(
     private val openAudio: () -> InputStream?,
     /** Installs (or with null clears) the per-frame tap on the encoder session. */
     private val setFrameTap: (((H264Encoder.Sample) -> Unit)?) -> Unit,
+    /**
+     * Asks the encoder to start, returning whether it is producing frames.
+     *
+     * RTSP is a separate switch from HLS, and HLS starts its encoder lazily on the
+     * first playlist request. Without this, enabling RTSP alone left no encoder
+     * running: DESCRIBE returned a correct SDP, SETUP returned interleaved
+     * channels, PLAY returned 200, and not one RTP packet followed -- measured 0 in
+     * 8 seconds. A client cannot distinguish that from a dead camera.
+     */
+    private val ensureEncoder: () -> Boolean,
+    /**
+     * The encoder's codec-config buffer (SPS/PPS), or null before it has one.
+     *
+     * Needed for sprop-parameter-sets. RTSP is the one consumer that has to hand
+     * a client the parameter sets in advance: fMP4 carries them in an init segment
+     * the client fetches before playback, and MJPEG has no codec to describe. RTSP
+     * gets an SDP and then raw NALs, so anything not in that SDP has to be inferred
+     * from the bitstream, and a client that infers wrongly plays nothing while
+     * reporting a healthy connection.
+     */
+    private val encoderCodecConfig: () -> ByteArray?,
 ) {
     private val sessions = AtomicInteger(0)
     private val clientsSeen = AtomicLong(0)
@@ -262,13 +283,24 @@ class RtspServer(
                                     "Session: $SESSION_ID;timeout=60",
                                 ))
                             }
+                            // Audio is refused here rather than promised and left
+                            // silent. Answering 200 for a track this build will not
+                            // deliver is the same lie as a silent video track: the
+                            // client is told it is subscribed, and there is no
+                            // RTSP signal that later tells it otherwise.
                             tracks.contains("audio") && audioChannel < 0 -> {
-                                audioChannel = AUDIO_CHANNEL
-                                response(output, cseq, 200, "OK", listOf(
-                                    "Transport: RTP/AVP/TCP;unicast;" +
-                                        "interleaved=$audioChannel-${audioChannel + 1}",
-                                    "Session: $SESSION_ID;timeout=60",
-                                ))
+                                val source = openAudio()
+                                if (source == null) {
+                                    response(output, cseq, 551, "Unsupported media", emptyList())
+                                } else {
+                                    audioSource = source
+                                    audioChannel = AUDIO_CHANNEL
+                                    response(output, cseq, 200, "OK", listOf(
+                                        "Transport: RTP/AVP/TCP;unicast;" +
+                                            "interleaved=$audioChannel-${audioChannel + 1}",
+                                        "Session: $SESSION_ID;timeout=60",
+                                    ))
+                                }
                             }
                             else -> {
                                 // Never answer 200 to a SETUP this build cannot
@@ -282,17 +314,34 @@ class RtspServer(
                     }
 
                     "PLAY" -> {
+                        // Install the tap BEFORE asking whether the encoder is up.
+                        // The availability check reads the tap, so asking first can
+                        // only ever answer "not available" -- which is exactly what it
+                        // did: startHls reported OK and isEncoding=true in the same
+                        // millisecond, and this guard still refused.
+                        if (videoChannel >= 0) setFrameTap(::offerSample)
+                        val encoderReady = videoChannel < 0 || ensureEncoder()
+
+                        if (!encoderReady) {
+                            // Refuse rather than answer 200 and send nothing. Same
+                            // reasoning as the SETUP 551 below: a client told
+                            // "playing" with a silent stream reports the camera as
+                            // broken, and nothing in RTSP lets it tell that apart
+                            // from a camera that genuinely has nothing to send.
+                            android.util.Log.w("OcuBeaRtsp", "PLAY refused: no encoder")
+                            setFrameTap(null)
+                            response(output, cseq, 503, "No encoder available", emptyList())
+                            continue
+                        }
                         response(output, cseq, 200, "OK", listOf(
                             "Session: $SESSION_ID",
                             "Range: npt=0.000-",
                             "RTP-Info: url=$uri;seq=1;rtptime=0",
                         ))
                         stopVideo = registerVideoSink(videoChannel, output)
-                        // One tap for all sessions: it fans out to every registered
-                        // sink and returns immediately, so a second client costs
-                        // nothing on the camera's frame path.
-                        if (videoChannel >= 0) setFrameTap(::offerSample)
-                        audioSource = if (audioChannel >= 0) openAudio() else null
+                        // The ring was opened at SETUP, so a client that subscribes
+                        // to audio and never sends PLAY still releases it in the
+                        // finally.
                         // Audio goes to its own thread. Pumping it inline blocked
                         // this request loop for as long as the stream ran, so
                         // TEARDOWN, GET_PARAMETER and a second PLAY were never
@@ -301,6 +350,10 @@ class RtspServer(
                         // stays stuck holding a client slot.
                         startAudioPump(
                             output, audioSource, audioChannel, audioSinkChannel, audioThreads,
+                        )
+                        android.util.Log.i(
+                            "OcuBeaRtsp",
+                            "PLAY ok videoChannel=$videoChannel audioChannel=$audioChannel",
                         )
                         // Control returns to the request loop immediately. A
                         // repeated PLAY is then answered like any other request.
@@ -352,8 +405,51 @@ class RtspServer(
         channel: Int, output: OutputStream,
     ): (() -> Unit)? {
         if (channel < 0) return null
+        // Per-session, so two clients cannot trip over each other's count.
+        var keyframesSent = 0
         val sink: (H264Encoder.Sample) -> Unit = { sample ->
-            writeRtp(output, channel, PTYPE_H264, sample.data, 0, sample.data.size)
+            // RFC 6184 packetization, not a raw copy of the access unit.
+            //
+            // SDP says packetization-mode=1, so every packet must carry a 1-byte
+            // NAL header: for a small NAL the original header, for a large one an
+            // FU-A indicator plus FU header. Writing the access unit straight into
+            // the payload skipped that entirely, so a decoder read the middle of a
+            // frame as a NAL header and found types 23, 21, 14 and 10 -- FU and
+            // reserved values in the wrong place. ffprobe then failed every frame
+            // with "non-existing PPS 0 referenced", while every protocol-level
+            // check still passed: 200s, valid RTP headers, payloads full of H264
+            // markers. A conformance probe written against this server could not
+            // have caught it, because the bytes it looked for were there.
+            // Every keyframe carries SPS/PPS in-band, the first one included.
+            //
+            // Skipping the first was the bug that left the captured stream starting
+            // with a bare IDR: a client cannot rely on sprop-parameter-sets (measured
+            // -- ffprobe still said "non-existing PPS 0" with them present), so the
+            // very first access unit has to carry them or nothing that follows can
+            // be decoded either. In that capture the SPS sat at offset 2782, after
+            // 2 kB of picture.
+            //
+            // 27 bytes on a 1400-byte packet, per RFC 6184 section 8.2.
+            //
+            // Once per session, on the FIRST keyframe only.
+            //
+            // Prepending to every keyframe was a change I made on the strength of a
+            // capture that appeared to show the parameter sets arriving 2782 bytes
+            // in. That capture was broken -- it wrote one start code per access
+            // unit, so the picture and the parameter sets looked merged. With the
+            // capture fixed, repeating them on every keyframe only confuses a
+            // decoder: ffmpeg reported `missing picture in access unit with size
+            // 27` (27 = SPS 15 + PPS 4 + two 4-byte start codes), i.e. the
+            // parameter sets arriving as a picture of their own, and 32 SPS for 15
+            // keyframes. The frames decoded to a green band and a near-black field.
+            //
+            // RFC 6184 section 8.2 describes repeating them in a periodic refresh,
+            // not on every keyframe, and a client's SDP already carries them.
+            val withParams =
+                if (sample.keyframe && keyframesSent == 0) prependParameterSets(sample.data)
+                else sample.data
+            if (sample.keyframe) keyframesSent++
+            writeH264Rtp(output, channel, withParams)
             // The sample's own PTS is what a player syncs against; a fixed
             // frame interval would drift from the encoder over any real session.
             videoTs.set((sample.ptsUs / 1000L) * 90L / 1000L)
@@ -485,6 +581,64 @@ class RtspServer(
      * frame callback -- and a call site that forgets it corrupts the stream in a
      * way no test catches unless that exact path happens to overlap.
      */
+    /**
+     * Sends one H264 access unit as RFC 6184 RTP payloads.
+     *
+     * The access unit is Annex-B: a sequence of start-code-delimited NAL units.
+     * Each is sent on its own, split into MTU-sized fragments when it does not
+     * fit:
+     *
+     *  - NAL of 1 byte or fewer, or within [singleNalMaxBytes]: sent whole, header
+     *    included, marker bit set on the last fragment.
+     *  - Larger NALs: FU-A. The indicator byte carries F=0, the original nal_unit_type
+     *    and NRI; the FU header carries S/E flags and the type. Without the
+     *    indicator a decoder cannot tell a fragment from a whole NAL, and the type
+     *    it recovers is the FU type (28), not the real one.
+     *
+     * The marker bit goes on the final fragment of an access unit, not per NAL:
+     * it means "a complete frame ends here", and a player uses it to decide when
+     * to present a picture.
+     */
+    /**
+     * The encoder's SPS/PPS as an Annex-B access unit, or an empty array when the
+     * encoder has not produced any yet.
+     *
+     * Empty rather than null, so a caller can prepend unconditionally and the only
+     * effect of "not ready yet" is that the frame goes out as it was.
+     */
+    /** The encoder's SPS/PPS as an Annex-B prefix, or empty before it has any. */
+    private fun parameterSetsAnnextB(): ByteArray =
+        com.ocubea.stream.H264Rtp.parameterSetsAnnextB(encoderCodecConfig() ?: ByteArray(0))
+
+    /** [prefix] followed by [accessUnit], without copying more than needed. */
+    private fun prependParameterSets(accessUnit: ByteArray): ByteArray {
+        val prefix = parameterSetsAnnextB()
+        if (prefix.isEmpty()) return accessUnit
+        val out = ByteArray(prefix.size + accessUnit.size)
+        System.arraycopy(prefix, 0, out, 0, prefix.size)
+        System.arraycopy(accessUnit, 0, out, prefix.size, accessUnit.size)
+        return out
+    }
+
+    /**
+     * Sends one H264 access unit as RFC 6184 RTP payloads.
+     *
+     * The packetization itself lives in [com.ocubea.stream.H264Rtp], where it is
+     * unit-tested against the bytes this device's encoder produces. It was inlined
+     * here first, and being untestable is how it stayed wrong for hours: it built
+     * every fragment as if it were a whole NAL, because the branch that decides
+     * "fragment or not" tested the recovered NAL type for FU_A, and a fragment's
+     * recovered type is never FU_A by construction.
+     */
+    private fun writeH264Rtp(output: OutputStream, channel: Int, accessUnit: ByteArray) {
+        for (packet in com.ocubea.stream.H264Rtp.packetize(accessUnit, MTU_BYTES)) {
+            val payload = packet.payload()
+            writeRtp(
+                output, channel, PTYPE_H264, payload, 0, payload.size, packet.marker,
+            )
+        }
+    }
+
     private fun writeRtp(
         output: OutputStream,
         channel: Int,
@@ -492,7 +646,10 @@ class RtspServer(
         payload: ByteArray,
         offset: Int,
         length: Int,
-    ) = synchronized(writeLock) { writeRtpLocked(output, channel, payloadType, payload, offset, length) }
+        marker: Boolean = false,
+    ) = synchronized(writeLock) {
+        writeRtpLocked(output, channel, payloadType, payload, offset, length, marker)
+    }
 
     private fun writeRtpLocked(
         output: OutputStream,
@@ -501,6 +658,7 @@ class RtspServer(
         payload: ByteArray,
         offset: Int,
         length: Int,
+        marker: Boolean = false,
     ) {
         if (length <= 0) return
 
@@ -513,7 +671,10 @@ class RtspServer(
 
         val hdr = ByteArray(12)
         hdr[0] = 0x80.toByte()                        // V=2
-        hdr[1] = (payloadType and 0x7F).toByte()      // M=0, 7-bit PT
+        // M marks the last packet of an access unit, not every packet of it. A
+        // player presents a picture when it sees M, so M on every packet means a
+        // frame appears once per fragment.
+        hdr[1] = ((if (marker) 0x80 else 0x00) or (payloadType and 0x7F)).toByte()
         val seq = seqCounter.getAndIncrement() and 0xFFFF
         hdr[2] = ((seq shr 8) and 0xFF).toByte()
         hdr[3] = (seq and 0xFF).toByte()
@@ -577,6 +738,24 @@ class RtspServer(
             return
         }
 
+        // Make sure the encoder is up BEFORE building the SDP.
+        //
+        // sprop-parameter-sets carries the SPS/PPS, and those only exist once the
+        // encoder has encoded its first frame. So without this, the very first
+        // DESCRIBE of a session -- which is always the first, since no client
+        // connects otherwise -- produced an SDP with no parameter sets, and the
+        // client had no chance to get them from anywhere else. Measured: the SDP
+        // came back with the fmtp line absent entirely and ffprobe failed every
+        // frame with "non-existing PPS 0 referenced".
+        //
+        // Starting the encoder here rather than at PLAY is what makes it work: by
+        // the time a client has read the SDP and sent SETUP and PLAY, frames exist
+        // and the parameter sets could be attached -- but they cannot be attached
+        // retroactively to an SDP already sent.
+        if (tracks.contains("video")) {
+            ensureEncoder()
+        }
+
         val body = StringBuilder()
         body.append("v=0\r\n")
         // The camera's own address. InetAddress.getLocalHost() returns loopback on
@@ -590,7 +769,31 @@ class RtspServer(
         body.append("a=range:npt=0-\r\n")
         body.append("m=video 0 RTP/AVP 96\r\n")
         body.append("a=rtpmap:96 H264/90000\r\n")
-        body.append("a=fmtp:96 packetization-mode=1\r\n")
+        // sprop-parameter-sets carries the SPS and PPS, base64, in the SDP.
+        //
+        // Without it a client is told "H264" and nothing about how to decode it,
+        // and it has to start guessing from NALs as they arrive. Measured with
+        // ffprobe on this server: it connected, reported codec_name=h264, and
+        // then failed every frame with "non-existing PPS 0 referenced" and
+        // "no frame!". The encoder had been producing SPS/PPS all along in
+        // codecConfig -- which this file never read, so they were encoded,
+        // available, and still not sent.
+        //
+        // So a client can now be handed the parameter sets up front instead of
+        // being made to scavenge them out of the first keyframe.
+        // packetization-mode is unconditional; only the parameter sets are
+        // conditional. Building the whole attribute inside the `if` once dropped
+        // packetization-mode as well, so a client that had been told how to
+        // packetize lost that on exactly the run where SPS/PPS were not ready --
+        // a regression shipped inside the fix for a regression.
+        val sprop = encoderCodecConfig()?.let {
+            com.ocubea.stream.H264Rtp.spsPpsBase64(it)
+        }
+        val fmtp = buildString {
+            append("packetization-mode=1")
+            if (sprop != null) append(";sprop-parameter-sets=$sprop")
+        }
+        body.append("a=fmtp:96 $fmtp\r\n")
         body.append("a=control:trackID=0\r\n")
         if (wantsAudio && audioLive) {
             body.append("m=audio 0 RTP/AVP 97\r\n")
@@ -689,10 +892,20 @@ class RtspServer(
         // Drop any query, then the track control, then the .sdp suffix.
         val stem = sdpStem(uri)
         val tracks = mutableListOf<String>()
-        if (stem.contains("h264") || stem.contains("video")) tracks.add("video")
-        if (stem.contains("pcm") || stem.contains("opus") || stem.contains("aac") ||
+        // Audio is decided FIRST, and the combined stem is why.
+        //
+        // The audio aggregate is published as `h264_pcm.sdp`, so its stem is
+        // "h264_pcm": it contains "h264" as well as "pcm". Testing video first put
+        // a SETUP for the audio track down the video branch, which answered 200
+        // with a video Transport even when audio was disabled and no source
+        // existed -- the client then waited on a track the server never fed.
+        //
+        // So: a stem naming an audio codec is an audio track, whatever else is in
+        // it. "h264_pcm" is audio, not video with a funny name.
+        val audio = stem.contains("pcm") || stem.contains("opus") || stem.contains("aac") ||
             stem.contains("ulaw") || stem.contains("alaw") || stem.contains("audio")
-        ) tracks.add("audio")
+        if (audio) tracks.add("audio")
+        if (!audio && (stem.contains("h264") || stem.contains("video"))) tracks.add("video")
         return proto to tracks
     }
 
@@ -725,6 +938,19 @@ class RtspServer(
         const val BYTES_PER_SAMPLE = 2
         /** RFC 3550: V=2, no padding, no extension, 12 bytes with no CSRC list. */
         const val RTP_HEADER_BYTES = 12
+
+        /**
+         * Whole-packet budget, under the 1500-byte Ethernet MTU.
+         *
+         * The transport is TCP-interleaved on the LAN, where oversizing a packet
+         * IP-fragments it and then stalls on a retransmit: video that would merely
+         * lose a frame over UDP instead stutters visibly over TCP. 1400 leaves
+         * room for IP and TCP headers inside a single MTU.
+         */
+        const val MTU_BYTES = 1400
+
+        /** 4-byte Annex-B start code. Every NAL unit needs its own. */
+        val START_CODE = byteArrayOf(0, 0, 0, 1)
     }
 }
 

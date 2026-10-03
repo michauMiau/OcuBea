@@ -1,6 +1,5 @@
 package com.ocubea.stream
 
-import android.media.MediaFormat
 import android.util.Log
 import androidx.camera.core.ImageProxy
 import com.ocubea.stream.Fmp4Writer.Segment
@@ -111,6 +110,17 @@ class HlsSession(
      * thread is mutating underneath it.
      */
     @Volatile var frameTap: ((H264Encoder.Sample) -> Unit)? = null
+
+    /**
+     * The encoder's codec-config buffer (SPS/PPS), or null before it has one.
+     *
+     * Exposed because RTSP has to put these in the SDP as sprop-parameter-sets,
+     * and it is the same encoder. The fMP4 init segment above already depends on
+     * this buffer, so it is not a second source of truth -- without a getter the
+     * RTSP path could only re-derive the parameter sets by scavenging them out of
+     * the first keyframe's NALs, which is the fragile path this avoids.
+     */
+    val codecConfig: ByteArray? get() = encoder.codecConfig
     @Volatile var mediaSequence = 0
         private set
     @Volatile var lastError: String = "none"

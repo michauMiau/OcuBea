@@ -5,15 +5,15 @@ package com.ocubea.camera
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.os.SystemClock
+import android.graphics.Matrix
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
+import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.CameraState
 import androidx.camera.core.FocusMeteringAction
-import android.graphics.Matrix
-import android.util.Log
-import android.view.Surface
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Observer
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
+import com.ocubea.perf.Metrics
 import com.ocubea.server.ImageControlAction
 import com.ocubea.server.ImageControlCaps
 import com.ocubea.server.ImageControlPlan
@@ -29,7 +30,6 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
-import com.ocubea.perf.Metrics
 import kotlin.math.roundToInt
 
 /**
@@ -308,12 +308,88 @@ class CameraManager(
      * Null clears it. Set to null on teardown so a stopped HLS session cannot
      * leave a dead client sink attached to whatever starts next.
      */
+    /**
+     * The current H264 codec config (SPS/PPS), or null before the encoder has
+     * produced one.
+     *
+     * RTSP needs it in the SDP as sprop-parameter-sets. The encoder has always
+     * had it and the fMP4 init segment has always used it, but the RTSP path read
+     * it nowhere: a client connecting over RTSP was told "H264" and given no way to
+     * decode it. ffprobe on this device said codec_name=h264 and then failed every
+     * single frame with "non-existing PPS 0 referenced".
+     */
+    fun rtspCodecConfig(): ByteArray? = synchronized(this) {
+        // No isEncoding gate: a session that has just been created has the config
+        // the moment its first frame is encoded, and gating on isEncoding made the
+        // lookup race the encoder's first frames -- which is precisely the window
+        // DESCRIBE lands in, being the first request of a session.
+        hlsSession?.codecConfig
+    }
+
+    /** Why the RTSP SDP had no sprop-parameter-sets, for diagnosis from outside. */
+    fun rtspCodecConfigState(): String = synchronized(this) {
+        val s = hlsSession
+        when {
+            s == null -> "no hls session"
+            !s.isEncoding -> "session exists, encoder not running"
+            s.codecConfig == null -> "encoder running, codec config not emitted yet"
+            else -> "config present: ${s.codecConfig!!.size} B"
+        }
+    }
+
     fun setRtspFrameTap(tap: ((com.ocubea.stream.H264Encoder.Sample) -> Unit)?) {
+        rtspFrameTap = tap
+        // Install on the HLS session too, but a session created *after* this call
+        // starts with a null frameTap and would swallow every sample. That is the
+        // order RTSP actually uses: PLAY installs the tap, then asks for the
+        // encoder, and startHls() creates the session in between. Measured with the
+        // install-before-ask order fixed: the encoder encoded 62 frames a second
+        // with last_error none, and the tap still never fired, because it was
+        // installed on a session that did not exist yet.
+        //
+        // So startHls() reinstalls it, and this assignment covers the case where a
+        // session is already running.
         hlsSession?.frameTap = tap
     }
 
+    /**
+     * The RTSP consumer of encoded frames.
+     *
+     * Held here rather than only on [hlsSession] because the HLS session exists
+     * only when HLS is enabled, and RTSP is a separate switch. Installing the tap
+     * solely on `hlsSession` meant `hlsSession?.frameTap = tap` was a silent
+     * no-op whenever HLS was off -- the default -- so RTSP answered DESCRIBE with
+     * a correct SDP, answered PLAY with 200, and then delivered nothing at all:
+     * measured 0 RTP packets in 8 seconds, with every protocol step passing.
+     *
+     * A client cannot tell that from a dead camera. It has to be fanned out to
+     * both consumers explicitly, because the alternative is RTSP working only
+     * when somebody else also happens to want HLS.
+     */
+    @Volatile private var rtspFrameTap: ((com.ocubea.stream.H264Encoder.Sample) -> Unit)? = null
+
+    /**
+     * Starts the shared encoder if it is not already running, and reports whether
+     * it is actually producing frames.
+     *
+     * HLS starts its encoder lazily on the first playlist request, so a client
+     * that never asks for HLS never pays for it. RTSP was left out of that and
+     * enabled nothing: the port bound, the protocol answered correctly, and PLAY
+     * delivered silence. RTSP now asks for the same encoder explicitly rather than
+     * relying on somebody else wanting HLS.
+     *
+     * Returns what was observed, not what the call returned. `startHls()` true
+     * means the session was created; whether frames are coming out of it is
+     * `rtspVideoAvailable`, which is the only part a client would notice.
+     */
+    fun ensureSharedEncoder(): Boolean {
+        if (hlsSession?.isEncoding == true) return true
+        return startHls()
+    }
+
     /** True when there is an encoder producing access units to tap. */
-    val rtspVideoAvailable: Boolean get() = hlsSession?.isEncoding == true
+    val rtspVideoAvailable: Boolean
+        get() = rtspFrameTap != null && hlsSession?.isEncoding == true
 
     @Volatile private var hlsLastError = "none"
 
@@ -689,9 +765,20 @@ class CameraManager(
         )
         if (!session.start()) {
             hlsLastError = session.lastError
+            android.util.Log.e(
+                "OcuBeaRtsp",
+                "startHls FAILED w=$w h=$h bitrate=${config.videoBitrateKbps} " +
+                    "profile=$profile error=${session.lastError}",
+            )
             return false
         }
+        android.util.Log.i("OcuBeaRtsp", "startHls OK w=$w h=$h isEncoding=${session.isEncoding}")
         hlsSession = session
+        // A session is created with a null frameTap. RTSP installs its tap before
+        // asking for the encoder, so without this the fresh session owns the
+        // encoder and nobody is listening: the encoder reports healthy and every
+        // sample goes to the muxer alone.
+        rtspFrameTap?.let { session.frameTap = { sample -> it(sample) } }
         hlsLastError = "none"
         return true
     }
@@ -1020,8 +1107,6 @@ class CameraManager(
                     .onFailure { hlsLastError = it.message ?: "h264 feed failed" }
             }
 
-
-
             // Clip path: a second hardware encoder reading the same YUV. Fed
             // before the JPEG work for the same reason as HLS — never let a
             // software compress delay a hardware encode.
@@ -1175,8 +1260,6 @@ class CameraManager(
     val framesEntered: Long get() = arrival.entered
     val framesReturnedEarly: Long get() = arrival.returnedEarly
 
-
-
     /** Full pipeline timing breakdown, for diagnosing a frame-rate ceiling. */
     fun pipelineTiming(): Map<String, Any> = mapOf(
         "null_bitmaps" to nullBitmaps,
@@ -1226,6 +1309,29 @@ class CameraManager(
         return mapOf(
             "active" to (s?.isActive == true),
             "codec" to (s?.codecName ?: "none"),
+            // Why the RTSP SDP has or has not got sprop-parameter-sets. A missing
+            // codec config means every client has to scavenge SPS/PPS from the
+            // first keyframe, and ffprobe showed what that costs: it connects,
+            // reports codec_name=h264, then fails every frame with
+            // "non-existing PPS 0 referenced" and "no frame!". One field makes the
+            // cause legible instead of leaving it to be inferred from a player.
+            "codec_config" to (s?.codecConfig?.let { cfg ->
+                // The bytes, not just the length: 27 B is what this device emits,
+                // which is one NAL unit, not the SPS+PPS pair sprop-parameter-sets
+                // expects. Printing the hex makes the shape obvious from outside
+                // instead of requiring a reproduction to confirm it.
+                val hex = cfg.joinToString("") { "%02x".format(it) }
+                val types = mutableListOf<Int>()
+                var i = 0
+                while (i + 2 <= cfg.size) {
+                    val n = ((cfg[i].toInt() and 0xFF) shl 8) or
+                        (cfg[i + 1].toInt() and 0xFF)
+                    if (n <= 0 || i + 2 + n > cfg.size) break
+                    types += cfg[i + 2].toInt() and 0x1F
+                    i += 2 + n
+                }
+                "present: ${cfg.size} B nals=$types hex=$hex"
+            } ?: rtspCodecConfigState()),
             "frames_encoded" to (s?.framesEncoded ?: 0L),
             "frames_queued" to (s?.framesQueued ?: 0L),
             "frames_dropped" to (s?.framesDropped ?: 0L),
@@ -1609,7 +1715,6 @@ class CameraManager(
     @Volatile var mirrored: Boolean = false
         private set
 
-
     /**
      * Rotates the stream, for `orientation`, `rotate` and the WebUI control.
      *
@@ -1653,7 +1758,6 @@ class CameraManager(
         "upsidedown_portrait" -> Surface.ROTATION_180
         else -> Surface.ROTATION_0
     }
-
 
     /**
      * The rotation to apply to an incoming frame, in degrees.
@@ -2216,7 +2320,6 @@ class CameraManager(
          * stale frames. Dropping at the door keeps latency flat instead.
          */
         private const val MAX_PENDING_ENCODES = 3
-
 
         /** Why a clip is being recorded: the user asked, or motion did. */
         const val REASON_ON_DEMAND = "ondemand"

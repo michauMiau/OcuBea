@@ -249,6 +249,8 @@ def rtsp_session():
     started = False
     carried = False
     nal_count = 0
+    # FU-A fragments seen, reported so a run of them is visible
+    fu_seen = 0
     first_payload = b""
     first_rtp = b""
     first_len_ok = False
@@ -332,10 +334,25 @@ def rtsp_session():
                     first_rtp = payload[:12]
                 if ln > 12:
                     media = payload[12:]
-                    # Annex-B: a start code, then a NAL whose type is in 1..23.
-                    if (media[:3] == b"\x00\x00\x01" or media[:4] == b"\x00\x00\x00\x01") \
-                            and len(media) > 4:
-                        nal_type = media[3] & 0x1F if media[:3] == b"\x00\x00\x01" else media[4] & 0x1F
+                    # RFC 6184, not Annex-B.
+                    #
+                    # This looked for a start code in the RTP payload and found
+                    # none, which was CORRECT: packetization strips start codes and
+                    # a payload is either a whole NAL or an FU-A fragment. So the
+                    # check was asserting a violation of the very spec the server
+                    # implements, and it went red the moment packetization was
+                    # fixed -- a check that fails when the code becomes right.
+                    #
+                    # A whole NAL has a type in 1..23 in byte 0. A fragment has
+                    # FU-A (28) in byte 0 and the real type in byte 1's low 5 bits,
+                    # with S and E flags above it.
+                    if len(media) >= 2:
+                        first = media[0] & 0x1F
+                        if first == 28:
+                            nal_type = media[1] & 0x1F
+                            fu_seen += 1
+                        else:
+                            nal_type = first
                         if 1 <= nal_type <= 23:
                             nal_count += 1
                             if not first_payload:
@@ -346,7 +363,8 @@ def rtsp_session():
     check("PLAY delivered interleaved RTP packets", rtp_count > 0,
           f"{rtp_count} packets in 8 s")
     check("RTP packets carry an H264 NAL", nal_count > 0,
-          f"{nal_count} of {rtp_count} packets had a NAL")
+          f"{nal_count} of {rtp_count} packets had a NAL "
+          f"({fu_seen} of them FU-A fragments)")
     # The header bytes themselves, asserted rather than inferred from a length.
     # This is the check that caught the framing bug: the stream began 00 00 01 65
     # where 80 60 belonged, because the 12-byte RTP header had been written BEFORE
