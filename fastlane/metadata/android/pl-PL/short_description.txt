@@ -1,0 +1,1 @@
+Telefon jako serwer kamery MJPEG, RTSP i ONVIF w Twojej sieci.

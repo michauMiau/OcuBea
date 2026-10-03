@@ -29,11 +29,28 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Signed only when the release keystore is present and named on the
+            // command line. Deliberately not defaulted: a release build that
+            // silently falls back to no signing is how unsigned APKs reach users,
+            // and one signed with the committed debug key is worse still, because
+            // that key is public. Configure with:
+            //   ./gradlew :app:assembleRelease \
+            //     -PocubeaStoreFile=/abs/path/release.keystore \
+            //     -PocubeaStorePass=... -PocubeaKeyAlias=... -PocubeaKeyPass=...
+            val releaseStore = (findProperty("ocubeaStoreFile") as String?)
+            if (releaseStore != null) {
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = file(releaseStore)
+                    storePassword = findProperty("ocubeaStorePass") as String
+                    keyAlias = findProperty("ocubeaKeyAlias") as String
+                    keyPassword = findProperty("ocubeaKeyPass") as String
+                }
+            }
         }
     }
 

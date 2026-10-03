@@ -43,6 +43,24 @@ class AdaptiveResolutionGovernorTest {
         requested: Int = 10,
     ): Decision = observe(ms, measured, requested)
 
+    /**
+     * Drives one closed measurement window the way production closes one: the
+     * window opened [spanMs] before the reading was taken.
+     *
+     * The 2026-10-02 defect needed this shape. A rebind leaves the F3311 camera
+     * dead for ~2.6 s, `settleMs` was 3 s, and the first window the governor
+     * judged covered only the ~400 ms after the camera came back. It reported 7
+     * fps against a request of 15 and the ladder stepped down on it. The elapsed
+     * time is what separates that reading from a real shortfall, so the tests
+     * have to be able to state it.
+     */
+    private fun AdaptiveResolutionGovernor.windowOfSpan(
+        closedAtMs: Long,
+        spanMs: Long,
+        measured: Double,
+        requested: Int = 10,
+    ): Decision = observe(closedAtMs, measured, requested, windowStartMs = closedAtMs - spanMs)
+
     // ── Downgrade ───────────────────────────────────────────────
 
     @Test
@@ -508,5 +526,176 @@ class AdaptiveResolutionGovernorTest {
         // A downgraded stream must be visible as downgraded, not reported as
         // the resolution the user picked.
         assertTrue("rung did not report a size", (t["rung"] as String).contains("x"))
+    }
+
+    // ── A window that is still ramping ─────────────────────────
+
+    @Test
+    fun `a reading from a window shorter than a second must not downgrade`() {
+        // The measured failure, verbatim: 400 ms of real frames after a rebind,
+        // 7 fps seen against a request of 15. Judged on that alone the ladder
+        // dropped 1280x720 -> 960x540 on a phone that then held 15 fps.
+        val g = governor()
+        g.anchor(1280, 720)
+
+        // Deliberately no onRebind: it sets lastChangeMs, and cooldownMs is 10 s,
+        // so every window below would be refused by the cooldown rather than by
+        // the ramp guard under test.
+
+        // Twelve short windows spanning 6 s. Twelve matters: downHoldMs is 3 s, so
+        // with only three or four windows this test would stay green even with the
+        // guard deleted, proved by downHoldMs instead. It has to outlast both the
+        // hold and the cooldown to be a test of the ramp at all.
+        val actions = (0 until 12).map { i ->
+            g.windowOfSpan(
+                closedAtMs = 500L + (i + 1) * 500L,
+                spanMs = 400L,
+                measured = 7.0,
+                requested = 15,
+            ).action
+        }
+        assertTrue(
+            "a 400 ms window must never degrade the ladder, got $actions",
+            actions.none { it != Decision.Action.NONE },
+        )
+        assertEquals(
+            "the rung must still be the one the user asked for",
+            "1280x720",
+            g.rung().toString(),
+        )
+    }
+
+    @Test
+    fun `a full second of the same low rate still downgrades`() {
+        // The guard above must not become a blanket refusal: a device that
+        // really does deliver 7 fps when 15 were asked for has to be able to
+        // degrade, or the ladder is decorative.
+        val g = governor()
+        g.anchor(1280, 720)
+        // Deliberately no onRebind: it sets lastChangeMs, and cooldownMs is 10 s,
+        // so every window below would be refused by the cooldown and this test
+        // would pass for the wrong reason. The guard under test is the ramp, not
+        // the cooldown.
+
+        // Six full windows of 7 fps. A commit starts a fresh settle window, so
+        // the readings *after* the downgrade return NONE by design -- the
+        // decision is the one that crossed downHoldMs, and that is what is
+        // asserted here.
+        val actions = (1..6).map { i ->
+            g.windowOfSpan(
+                closedAtMs = 1_000L + i * 1_000L,
+                spanMs = 1_000L,
+                measured = 7.0,
+                requested = 15,
+            ).action
+        }
+        assertTrue(
+            "a sustained full-second shortfall must still degrade, got $actions",
+            actions.contains(Decision.Action.RESOLUTION_DOWN),
+        )
+        assertEquals(
+            "the downgrade must move exactly one rung down",
+            "960x540",
+            g.rung().toString(),
+        )
+    }
+
+    @Test
+    fun `a short window is refused but does not arm the bad timer`() {
+        // Otherwise the ramp banks blame: three refused short windows would leave
+        // badSinceMs already running, and the first genuine full window after
+        // them would degrade immediately on no evidence of its own.
+        val g = governor()
+        g.anchor(1280, 720)
+        g.onRebind(0L)
+
+        repeat(4) { i ->
+            g.windowOfSpan(3_400L + i * 400L, 400L, 7.0, 15)
+        }
+        // Now the device genuinely delivers the target for full windows.
+        var last: Decision = Decision.NONE
+        repeat(4) { i ->
+            last = g.window(5_000L + (i + 1) * 1_000L, 15.0, 15)
+        }
+        assertEquals(
+            "a ramp must not leave the ladder primed to blame the next reading",
+            Decision.Action.NONE,
+            last.action,
+        )
+        assertEquals("1280x720", g.rung().toString())
+    }
+
+    @Test
+    fun `a caller that supplies no window start keeps the old behaviour`() {
+        // windowStartMs defaults to 0, meaning "unknown". An older caller must
+        // not be silently protected by a guard it does not know about.
+        val g = governor()
+        g.anchor(1280, 720)
+        val actions = (1..6).map { i ->
+            g.observe(1_000L + i * 1_000L, 7.0, 15).action
+        }
+        assertTrue(
+            "an unknown window span must not disable the ladder, got $actions",
+            actions.contains(Decision.Action.RESOLUTION_DOWN),
+        )
+    }
+
+    // ── Mixed clocks ──────────────────────────────────────────
+
+    @Test
+    fun `a window start on a different clock must not silently disable the guard`() {
+        // The 2026-10-03 defect. The windows were folded on a monotonic clock
+        // (elapsedRealtime, ms since boot, ~35 000 000) while observe() was handed
+        // System.currentTimeMillis() (~1 788 000 000 000). The span test then read
+        // 1.79e12, isRamping() was always false, and the guard never fired once in
+        // production -- while every unit test passed, because they fed both
+        // arguments from the same axis.
+        //
+        // So: a huge span must NOT be treated as "a long steady window". It means
+        // the caller mixed clocks and the measurement cannot be trusted at all.
+        val g = governor()
+        g.anchor(1280, 720)
+
+        val monotonicWindowStart = 35_341_000L      // ~9.8 h uptime, as on the phone
+        val wallClockNow = 1_788_000_000_000L       // October 2026
+        assertTrue(
+            "sanity: these two really are different axes",
+            wallClockNow - monotonicWindowStart > 1_000L,
+        )
+
+        val decisions = (1..8).map { i ->
+            g.observe(
+                nowMs = wallClockNow + i * 1_000L,
+                measuredFps = 6.0,
+                requestedFps = 15,
+                windowStartMs = monotonicWindowStart,
+            ).action
+        }
+        assertTrue(
+            "a window start that cannot be on the same clock must not be judged " +
+                "as a long steady window, got $decisions",
+            decisions.none { it != Decision.Action.NONE },
+        )
+        assertEquals("1280x720", g.rung().toString())
+    }
+
+    @Test
+    fun `both clocks agreeing still degrades`() {
+        // The other half: a consistent caller must keep working. If the guard
+        // rejected every reading the phone would never adapt again.
+        val g = governor()
+        g.anchor(1280, 720)
+        val actions = (1..6).map { i ->
+            g.observe(
+                nowMs = 35_341_000L + i * 1_000L,
+                measuredFps = 6.0,
+                requestedFps = 15,
+                windowStartMs = 35_341_000L,
+            ).action
+        }
+        assertTrue(
+            "a consistent monotonic caller must still be able to degrade, got $actions",
+            actions.contains(Decision.Action.RESOLUTION_DOWN),
+        )
     }
 }

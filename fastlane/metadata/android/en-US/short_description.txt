@@ -1,0 +1,1 @@
+Android phone as an MJPEG, RTSP and ONVIF camera on your LAN. No cloud.

@@ -1,0 +1,29 @@
+OcuBea zamienia telefon z Androidem w kamerę sieciową. Udostępnia obraz MJPEG, strumień RTSP i usługę ONVIF wszystkiemu w Twojej sieci lokalnej — przeglądarce, VLC, Home Assistant, rejestratorowi NVR — bez konta, bez chmury i bez danych opuszczających urządzenie.
+
+Wszystko działa na urządzeniu. Nie ma serwera, telemetrii ani analityki.
+
+Co potrafi:
+
+• Strumień MJPEG z WebUI: latarka, nocne widzenie, zoom, przełączanie kamery, jakość, ostrzenie
+• Strumień RTSP dla odtwarzaczy i rejestratorów
+• Usługa urządzenia ONVIF, więc klienci ONVIF wykrywają telefon jako kamerę
+• Zgodność z IP Webcam (/status.json, /shot.jpg, /focus, /ptz, /api/camera) — istniejące narzędzia działają bez zmian
+• Dźwięk jednokierunkowy w AAC, WAV lub FLAC, wybierany po sprawdzeniu, co sprzęt faktycznie obsługuje
+• Nagrywanie wyzwalane ruchem do klipów fMP4, odtwarzanych w aplikacji i przez HTTP z przewijaniem
+• Zarządzanie klipami w pamięci urządzenia
+• Programowe widzenie nocne dla kamer bez filtra IR
+
+Uprawnienia i powody:
+
+• KAMERA — sedno aplikacji
+• RECORD_AUDIO — strumień dźwięku i dźwięk w klipach
+• INTERNET / ACCESS_NETWORK_STATE / ACCESS_WIFI_STATE — obsługa klientów w sieci lokalnej
+• FOREGROUND_SERVICE (kamera, mikrofon) — kamera działa przy wyłączonym ekranie
+• POST_NOTIFICATIONS — powiadomienie usługi pierwszoplanowej w Androidzie 13+
+• RECEIVE_BOOT_COMPLETED — opcjonalne uruchamianie po restarcie
+• WAKE_LOCK — strumień działa przy wyłączonym ekranie
+• CHANGE_WIFI_MULTICAST_STATE — odkrywanie ONVIF używa multicastu
+
+Aplikacja nie łączy się z internetem. Każdy adres, który otwiera, to jej własny serwer w sieci lokalnej.
+
+Uwaga o wydajności: liczba klatek, jaką urządzenie potrafi dostarczyć, zależy od kamery i układu, nie od aplikacji. Aplikacja mierzy to, co faktycznie przychodzi, i dostosowuje drabinkę rozdzielczości, zamiast obiecywać cel, którego nie osiągnie.

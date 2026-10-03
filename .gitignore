@@ -21,3 +21,19 @@ local.properties
 # Narzedzia do weryfikacji WebUI (jsdom/playwright)
 node_modules/
 package-lock.json
+
+# Signing keys.
+
+# debug.keystore IS committed on purpose: CI and local builds must share one
+# debug signature or the app cannot be updated in place across the two. It is a
+# published, worthless key and must never sign a shipped build.
+
+# A release key is not worthless, so it never gets committed. Named explicitly
+# rather than as a blanket *.keystore/*.jks, because that pattern would also
+# exclude debug.keystore and silently break the shared debug signature above.
+release.keystore
+*.release.keystore
+*.release.jks
+*.p12
+*.pfx
+local-signing.properties
