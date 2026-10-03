@@ -140,32 +140,50 @@ jobs:
       - name: Check WebUI formatting
         run: npm run format:check
 
-      # Kotlin gets a linter for the same reason, and it is checked at the defect
-      # rules only. Full ktlint reports 3673 findings here, of which all but 77 are
-      # wrapping and indentation opinions: 782 on function-signature alone. Making
-      # the gate pass would mean reformatting 48 unrelated files inside a commit
-      # about RTSP, which buries the change instead of reviewing it.
+      # Kotlin lint, gated on defect rules only.
       #
-      # So .editorconfig disables the layout rules and keeps the ones that name a
-      # defect -- unused and duplicated imports, import order, a missing final
-      # newline, redundant curly braces in a template. Those were 77 real findings
-      # and all 77 are fixed. The layout rules are off as a deliberate recorded
-      # choice, not by accident: they stay available, and turning one on is a
-      # separate change with its own reformat.
+      # ktlint reports 1510 findings here and every one of them is a layout
+      # opinion: 337 argument-list-wrapping, 268 indent, 263 statement-wrapping.
+      # Gating on those is not a quality gate, it is a gate that can only be
+      # satisfied by reformatting 109 files, which buries whatever change is
+      # under review and gets reverted by the next person who disagrees with a
+      # line break. That reformat was tried, measured at 109 files and
+      # idempotent, and reverted.
       #
-      # Verified to fail: a duplicated import and an unsorted pair both make this
-      # exit 1. A gate never seen red is not a gate.
+      # So tools/ktlint_gate.py filters ktlint's output down to the rules that
+      # name something actually wrong: unused and duplicated imports, import
+      # order, a missing final newline, padded braces in a template, consecutive
+      # blank lines. That was 77 real findings and all 77 are fixed.
+      #
+      # An earlier attempt put this filter in .editorconfig as
+      # ktlint_standard_<rule> = disabled. ktlint 1.x has no such key: it is not
+      # in the 1.5.0 jar, not in 1.3.1, and four spelling variants changed
+      # nothing. The gate is a wrapper for that reason, and it fails with exit 2
+      # if ktlint itself cannot run -- a checker that reads "ktlint crashed" as
+      # "no findings" is worse than no checker.
+      #
+      # Verified by tools/verify_ktlint_gate.py, which runs here too: six
+      # mutations of a real source file, each of which must turn the gate red
+      # and is confirmed to name the rule it claims, plus the crash case. 7/7.
       - name: Lint Kotlin sources
         run: |
           curl -sSL --retry 3 -o /tmp/ktlint \
-            https://github.com/pinterest/ktlint/releases/download/1.5.0/ktlint
-          chmod +x /tmp/ktlint
-          /tmp/ktlint "app/src/**/*.kt" --relative
+            https://github.com/pinterest/ktlint/releases/download/1.3.1/ktlint
+          # The release asset is a shell wrapper with the jar appended after it.
+          # Find the zip header rather than hardcoding the offset: 477 works for
+          # both 1.3.1 and 1.5.0 today and silently produces a corrupt jar the day
+          # the wrapper changes.
+          python3 -c "
+          raw = open('/tmp/ktlint','rb').read()
+          off = raw.find(b'PK\\x03\\x04')
+          assert off > 0, 'ktlint asset carries no jar'
+          open('/tmp/ktlint.jar','wb').write(raw[off:])
+          print(f'jar wyciagniety z offsetu {off}')
+          "
+          python3 tools/ktlint_gate.py "app/src/**/*.kt" --jar /tmp/ktlint.jar
 
-      # The RTSP decoder gate. It needs a live camera, so it is not wired in here
-      # -- it runs on a device with tools/rtsp_capture_h264.py, which is the check
-      # that proved a stream can be 27/27 on every protocol check and still
-      # undecodable. It is listed here so the next person looking for it finds it.
+      - name: Verify the Kotlin lint gate can fail
+        run: python3 tools/verify_ktlint_gate.py
 
       # Needs a running phone, so it is NOT wired into this job: it creates and
       # deletes a clip. Run it against a device with tools/bulk_actions_verify.js
