@@ -89,20 +89,33 @@ class Sentinel:
     def __init__(self, path: Path, start_sha: str) -> None:
         self.path = path
         self.start_sha = start_sha
+        self.harness_sha: str | None = None
         self.violations: list[str] = []
 
-    def check(self, phase: str) -> None:
-        current = hashlib.sha256(self.path.read_bytes()).hexdigest()
-        if current == self.start_sha:
-            return
-        # Expected while a mutation is in place; the caller tells us so.
-        self.violations.append(
-            f"{phase}: file differs from the starting snapshot ({current[:12]} "
-            f"vs {self.start_sha[:12]})"
-        )
+    def note_harness_write(self, text: str) -> None:
+        """Record a write this harness performed, so it is not later mistaken
+        for an outside edit."""
+        self.harness_sha = hashlib.sha256(text.encode()).hexdigest()
 
     def started(self) -> bool:
-        return hashlib.sha256(self.path.read_bytes()).hexdigest() == self.start_sha
+        """True only when the file is byte-identical to the startup snapshot.
+
+        A mutation this harness applied is also a different SHA, so SHA equality
+        alone cannot distinguish "the harness mutated it" from "someone else
+        edited it". The three states are tracked separately: the startup
+        snapshot, the last thing the harness wrote, and anything else. Only the
+        third is an outside edit -- and only that must block the restore.
+        """
+        current = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        if current == self.start_sha:
+            return True
+        if self.harness_sha is not None and current == self.harness_sha:
+            return True
+        self.violations.append(
+            f"file is neither the startup snapshot ({self.start_sha[:12]}) nor "
+            f"the last harness write ({str(self.harness_sha)[:12]}): {current[:12]}"
+        )
+        return False == self.start_sha
 
 
 def run_suite() -> tuple[bool, list[str], bool]:
@@ -182,7 +195,9 @@ def main() -> int:
                 problems.append(f"{label}: anchor did not match exactly once")
                 continue
 
-            TARGET.write_text(original.replace(old, new, 1))
+            mutated = original.replace(old, new, 1)
+            TARGET.write_text(mutated)
+            guard.note_harness_write(mutated)
             passed, failed, compile_error = run_suite()
 
             if compile_error:
