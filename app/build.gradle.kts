@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.ocubea"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.ocubea"
         minSdk = 23 // Android 6.0 Marshmallow (API 23)
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "0.1.0-alpha"
 
@@ -83,7 +83,7 @@ android {
     // dies instead of falling back.
     //
     // Lint's NewApi check finds these, but it only runs under `./gradlew lint`,
-    // never as part of `assembleDebug`. With compileSdk 34 the symbols resolve,
+    // never as part of `assembleDebug`. With compileSdk 34 or 35 the symbols resolve,
     // so the app built cleanly and shipped two such calls: isHardwareAccelerated
     // (API 29) and ConcurrentHashMap.computeIfAbsent (API 24). Both are fixed,
     // and abortOnError makes the next one a build failure rather than a crash
