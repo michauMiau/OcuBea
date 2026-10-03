@@ -266,94 +266,40 @@ def main() -> int:
               f"rozmiary {sizes[:4]}{'...' if len(sizes) > 4 else ''}")
 
     print()
-    print("  === ffmpeg na zapisanym pliku ===")
-    stem = out.rsplit(".", 1)[0] if "." in os.path.basename(out) else out
-    for old in glob.glob(stem + "_frame*.png"):
-        os.remove(old)
-
-    r = subprocess.run(
-        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
-         "-show_entries", "stream=codec_name,width,height,nb_read_frames",
-         "-of", "default=nw=1", out],
-        capture_output=True, text=True, timeout=120)
-    print("  " + ("\n  ".join(l for l in r.stdout.strip().split("\n") if l) or "(brak wyniku)"))
-    for line in r.stderr.strip().split("\n")[:4]:
-        if line.strip():
-            print("  ! " + line)
-
-    r2 = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-v", "error", "-i", out, "-frames:v", "3",
-         "-f", "image2", "-y", stem + "_frame%d.png"],
-        capture_output=True, text=True, timeout=120)
-    frames = sorted(glob.glob(stem + "_frame*.png"))
-    print()
-    print(f"  klatki wyeksportowane: {len(frames)}  "
-          f"{[f'{os.path.basename(f)} {os.path.getsize(f)} B' for f in frames]}")
-    if not frames:
-        print("  ffmpeg nie wyksportowal zadnej klatki -- plik jest nieodkodowywalny")
-        return 1
-
-    # The exit status is the gate, not the printout.
+    # Everything from here on is the decode gate, and it lives in
+    # tools/decode_gate.py so it can be run against a saved file without a phone.
+    # It used to be inline, which meant the only way to check whether this gate
+    # could tell a broken capture from a good one was to produce a broken capture.
     #
-    # The protocol probe once reported 27/27 on a stream no player could decode:
-    # DESCRIBE answered 200, every RTP header was valid, every payload held H264
-    # markers, and ffprobe still produced nothing. Those checks ask the server
-    # whether it is talking to itself. This one asks a decoder whether it can
-    # decode the result, which is the only question worth asking.
-    count = 0
-    for line in r.stdout.split("\n"):
-        if line.startswith("nb_read_frames="):
-            try:
-                count = int(line.split("=", 1)[1])
-            except ValueError:
-                count = 0
-    print(f"  nb_read_frames = {count}")
-
-    # nb_read_frames is not enough, and neither is "the frames differ".
+    # What it asks, and why: every other check here asks the server whether it is
+    # talking to itself -- 200 on DESCRIBE, NAL units present, packets arriving --
+    # and all of those pass on a stream that decodes into a vertical smear with a
+    # green band. A NAL with a hole in it still decodes, so nb_read_frames is
+    # green on it: this tool once read one interleaved frame per recv() and threw
+    # 212 of 213 away, and ffprobe still reported 15 frames. Frame uniqueness passed
+    # too, because two of three exported frames were identical and the third
+    # differed.
     #
-    # Both of those passed on a stream that was visibly broken. The capture tool
-    # read one $ frame per recv() and threw the rest away, and TCP interleaving
-    # does not preserve message boundaries: one recv() returned 213 complete
-    # frames, so 212 packets were dropped. Dropped FU-A fragments leave holes in
-    # a NAL, and a NAL with a hole still decodes -- it decodes into a vertical
-    # smear with a green band, and ffmpeg still reports nb_read_frames=15. Two of
-    # the three exported frames were byte-identical, but the third differed, so a
-    # uniqueness check passed too.
-    #
-    # What cannot be faked is the decoder's own error output. A NAL with a hole
-    # produces "error while decoding MB 63 20" and "out of range intra chroma
-    # pred mode" per damaged macroblock row. Measured on this stream: 46 such
-    # messages from the damaged capture, 0-2 from a clean one. So the gate is the
-    # error count, and a frame that is legitimately dark still passes -- blackness
-    # is the room, not the codec.
-    verify = subprocess.run(
-        ["ffmpeg", "-v", "warning", "-i", out, "-f", "null", "-"],
-        capture_output=True, text=True, timeout=180)
-    error_lines = [
-        l for l in verify.stderr.split("\n")
-        if any(k in l for k in (
-            "error while decoding", "out of range", "invalid level",
-            "decode_slice_header", "non-existing PPS", "reference overflow",
-            "missing picture", "no frame",
-        ))
-    ]
-    print(f"  bledow dekodowania: {len(error_lines)}")
-    for l in error_lines[:3]:
-        print("  ! " + l.strip()[:110])
+    # The decoder's own error output is what cannot be faked. Measured across
+    # seventeen captures: healthy files 0-1 errors over 26-36 frames, damaged ones
+    # 24-47 over 13-29. The line is drawn at 0.5 errors per frame, where the two
+    # populations actually separate -- not at zero, which no file reaches.
+    ok, rep = decode_gate.passes(out)
+    print(f"  codec            : {rep['codec']}")
+    print(f"  nb_read_frames   : {rep['frames']}")
+    print(f"  bledy dekodowania: {rep['errors']}")
+    print(f"  na klatke        : {rep['per_frame']:.2f}")
+    for sample in rep["samples"]:
+        print("  ! " + sample)
+    pngs = decode_gate.export_pngs(out)
+    print(f"  klatki wyeksportowane: {len(pngs)}  "
+          f"{[f'{os.path.basename(f)} {os.path.getsize(f)} B' for f in pngs]}")
 
-    # Per frame, not per file: a healthy file has a couple of harmless ones, a
-    # damaged one has one per damaged row. The line is drawn where the two
-    # populations actually separate rather than at zero, which no file reaches.
-    per_frame = len(error_lines) / max(1, count)
-    if per_frame > 0.5:
-        print("  zbyt duzo bledow na klatke -- brama dekodowania nie przeszla")
-        return 1
-
-    if count <= 0:
-        print("  BRAK RAMKI -- brama dekodowania nie przeszla")
-        return 1
-    print("  brama dekodowania: OK")
-    return 0
+    if ok:
+        print("  brama dekodowania: OK")
+        return 0
+    print(f"  BRAK: {rep.get('reason', 'brama dekodowania nie przeszla')}")
+    return 1
 
 
 if __name__ == "__main__":
