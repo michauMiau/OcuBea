@@ -127,6 +127,23 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
+      # Before every gate that renders the WebUI, because they all read the
+      # built bundle rather than src/. Gradle does not build it -- nothing in
+      # app/build.gradle.kts invokes node or build.mjs -- so it is committed, and
+      # nothing checked that it still matched its source.
+      #
+      # Measured: the committed bundle was last rebuilt at 5b1c2fc, and src/ has
+      # gained 1452 lines since. All three browser gates were green throughout,
+      # testing a bundle that no longer corresponded to the code. The APK built
+      # at 18:57 shipped buildId d7fa31ed while src/ was at 2d2a0850, so the
+      # phone was running the old UI and CI was congratulating it.
+      #
+      # A gate that only inspects an artefact cannot tell a stale artefact from a
+      # correct one. This rebuilds and compares bytes, so the answer does not
+      # depend on remembering to run a build.
+      - name: Verify the WebUI bundle matches src
+        run: node tools/bundle_verify.js
+
       - name: Check Polish strings are complete
         run: node tools/strings_verify.js
 
