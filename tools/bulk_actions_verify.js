@@ -24,8 +24,11 @@ const BULK = new Set(['bPruneClips', 'bClearClips', 'bDelAll']);
   const get = async (p) => {
     const res = await fetch(url(p));
     const text = await res.text();
-    try { return JSON.parse(text); }
-    catch { throw new Error(`${p} -> HTTP ${res.status} ${text.slice(0, 60)}`); }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`${p} -> HTTP ${res.status} ${text.slice(0, 60)}`);
+    }
   };
   const post = async (p) => {
     const r = await fetch(NEW + p, { method: 'POST' });
@@ -45,14 +48,14 @@ const BULK = new Set(['bPruneClips', 'bClearClips', 'bDelAll']);
   const b = await chromium.launch();
   const p = await b.newPage();
   const reqs = [];
-  p.on('request', r => {
+  p.on('request', (r) => {
     const u = new URL(r.url());
     if (u.pathname.match(/\/(clips|recordings)/) && r.method() === 'POST') {
       reqs.push(u.pathname + (u.search || '?'));
     }
   });
   const errs = [];
-  p.on('pageerror', e => errs.push(String(e)));
+  p.on('pageerror', (e) => errs.push(String(e)));
 
   await p.goto(NEW, { waitUntil: 'domcontentloaded' });
   await p.waitForTimeout(9000);
@@ -73,19 +76,26 @@ const BULK = new Set(['bPruneClips', 'bClearClips', 'bDelAll']);
     clips: document.getElementById('bClearClips')?.disabled,
     recs: document.getElementById('bDelAll')?.disabled,
   }));
-  console.log(`po Refresh: bClearClips.disabled=${stateNow.clips}` +
-    ` bDelAll.disabled=${stateNow.recs}  (oba powinny byc false)`);
+  console.log(
+    `po Refresh: bClearClips.disabled=${stateNow.clips}` +
+      ` bDelAll.disabled=${stateNow.recs}  (oba powinny byc false)`,
+  );
 
   // Order matters: check the disabled state while the lists are still empty,
   // then clear and click with real data. Playwright refuses to click a disabled
   // element, so the two halves cannot be tested in one pass -- which is exactly
   // why the disabled path needs its own assertion rather than being assumed.
   const disEmpty = await p.evaluate(() =>
-    ['bDelAll', 'bClearClips', 'bPruneClips'].map(id => {
+    ['bDelAll', 'bClearClips', 'bPruneClips'].map((id) => {
       const e = document.getElementById(id);
-      return { id, present: !!e, disabled: e ? e.disabled : null,
-               opacity: e ? getComputedStyle(e).opacity : null };
-    }));
+      return {
+        id,
+        present: !!e,
+        disabled: e ? e.disabled : null,
+        opacity: e ? getComputedStyle(e).opacity : null,
+      };
+    }),
+  );
   // Expectation follows the state, not the other way round: the clip buttons can
   // only be disabled when the clip list is empty, and the recordings button only
   // when that list is. A run that starts with a leftover file is still valid --
@@ -99,25 +109,35 @@ const BULK = new Set(['bPruneClips', 'bClearClips', 'bDelAll']);
     const want = expectDisabled[d.id];
     const faded = parseFloat(d.opacity) < 1;
     const ok = d.present && d.disabled === want && (want ? faded : !faded);
-    console.log(`  start ${d.id}: ${ok ? 'OK' : 'PROBLEM'} disabled=${d.disabled}` +
-      ` (oczekiwane ${want}) opacity=${d.opacity}`);
+    console.log(
+      `  start ${d.id}: ${ok ? 'OK' : 'PROBLEM'} disabled=${d.disabled}` +
+        ` (oczekiwane ${want}) opacity=${d.opacity}`,
+    );
   }
 
   reqs.length = 0;
   for (const id of BULK) {
-    const state = await p.evaluate(i => {
+    const state = await p.evaluate((i) => {
       const e = document.getElementById(i);
       return e ? { present: true, disabled: e.disabled } : { present: false };
     }, id);
-    if (!state.present) { console.log(`  ${id}: NIE ZNALEZIONY`); continue; }
-    if (state.disabled) { console.log(`  ${id}: nadal disabled (lista pusta)`); continue; }
+    if (!state.present) {
+      console.log(`  ${id}: NIE ZNALEZIONY`);
+      continue;
+    }
+    if (state.disabled) {
+      console.log(`  ${id}: nadal disabled (lista pusta)`);
+      continue;
+    }
     const before = reqs.length;
     await p.click('#' + id, { timeout: 3000 });
     await p.waitForTimeout(1200);
     const fired = reqs.slice(before);
-    const bad = fired.filter(r => r.includes('name='));
-    console.log(`  ${id}: ${fired.length ? fired.join(' ') : 'brak HTTP'}` +
-      (bad.length ? '  <<< BLAD: wysyla name= do bulk endpointu' : ''));
+    const bad = fired.filter((r) => r.includes('name='));
+    console.log(
+      `  ${id}: ${fired.length ? fired.join(' ') : 'brak HTTP'}` +
+        (bad.length ? '  <<< BLAD: wysyla name= do bulk endpointu' : ''),
+    );
   }
   await p.waitForTimeout(1500);
   const left = await get('/clips');
@@ -126,10 +146,11 @@ const BULK = new Set(['bPruneClips', 'bClearClips', 'bDelAll']);
   // And back to empty: the buttons must go disabled again, or a stale list
   // would leave "delete all" looking live with nothing to delete.
   const disAfter = await p.evaluate(() =>
-    ['bDelAll', 'bClearClips', 'bPruneClips'].map(id => {
+    ['bDelAll', 'bClearClips', 'bPruneClips'].map((id) => {
       const e = document.getElementById(id);
       return { id, disabled: e ? e.disabled : null };
-    }));
+    }),
+  );
   for (const d of disAfter) {
     console.log(`  po czyszczeniu ${d.id}: disabled=${d.disabled}`);
   }

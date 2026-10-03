@@ -99,8 +99,8 @@ class QualityScaleTest {
         val midpoint = QualityScale.bitrateKbpsFor(mid)
         assertTrue(
             "midpoint $mid -> $midpoint should be between the endpoints",
-            QualityScale.MIN_BITRATE_KBPS < midpoint
-                && midpoint < QualityScale.MAX_BITRATE_KBPS,
+            QualityScale.MIN_BITRATE_KBPS < midpoint &&
+                midpoint < QualityScale.MAX_BITRATE_KBPS,
         )
         // The bottom quarter must still be meaningfully below the midpoint,
         // or the slider's first half does almost nothing.

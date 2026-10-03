@@ -2,7 +2,6 @@ package com.ocubea.server
 
 import fi.iki.elonen.NanoHTTPD
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -248,5 +247,4 @@ class ApiAuthRateLimitTest {
         val now = System.currentTimeMillis()
         assertTrue("epoch millis must exceed Int range for this test to mean anything", now > Int.MAX_VALUE)
     }
-
 }

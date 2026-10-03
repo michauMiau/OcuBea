@@ -39,8 +39,20 @@ const RELABELS = new Set(['bMode', 'bLL']);
  * Polish translations all contain a diacritic or a word that is not English,
  * so the words to look for are the ones only the English version has. */
 const ENGLISH_ONLY = [
-  'stream', 'latency', 'mode', 'night', 'motion', 'record', 'torch',
-  'stop', 'start', 'snapshot', 'live', 'offline', 'off', 'on'
+  'stream',
+  'latency',
+  'mode',
+  'night',
+  'motion',
+  'record',
+  'torch',
+  'stop',
+  'start',
+  'snapshot',
+  'live',
+  'offline',
+  'off',
+  'on',
 ];
 
 (async () => {
@@ -50,16 +62,19 @@ const ENGLISH_ONLY = [
   for (const lang of ['en', 'pl']) {
     const page = await browser.newPage({ viewport: { width: 1000, height: 1200 } });
     const errors = [];
-    page.on('pageerror', e => errors.push(String(e)));
+    page.on('pageerror', (e) => errors.push(String(e)));
     await page.goto('file://' + PAGE + '?lang=' + lang, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(400);
 
     for (const id of TOGGLES) {
-      const before = await page.$eval('#' + id, e => e.textContent.trim()).catch(() => null);
-      if (before === null) { console.log(lang + ' #" + id + ": brak przycisku'); continue; }
+      const before = await page.$eval('#' + id, (e) => e.textContent.trim()).catch(() => null);
+      if (before === null) {
+        console.log(lang + ' #" + id + ": brak przycisku');
+        continue;
+      }
       await page.click('#' + id);
       await page.waitForTimeout(150);
-      const after = await page.$eval('#' + id, e => e.textContent.trim());
+      const after = await page.$eval('#' + id, (e) => e.textContent.trim());
       if (before === after && RELABELS.has(id)) {
         console.log(lang + ' #' + id + ': etykieta nie zmienila sie? "' + after + '"');
         problems++;
@@ -70,7 +85,7 @@ const ENGLISH_ONLY = [
        * page is supposed to read that way. */
       if (lang === 'pl') {
         const low = after.toLowerCase();
-        const hit = ENGLISH_ONLY.find(w => new RegExp('\\b' + w + '\\b').test(low));
+        const hit = ENGLISH_ONLY.find((w) => new RegExp('\\b' + w + '\\b').test(low));
         if (hit) {
           console.log('   ! #' + id + ' po kliknieciu: "' + after + '" (angielskie "' + hit + '")');
           problems++;
@@ -85,25 +100,37 @@ const ENGLISH_ONLY = [
     /* The status pill and the motion line are rebuilt by refresh(), which is
      * where a label most often reverts. */
     const dyn = await page.evaluate(() => {
-      const pick = id => { const e = document.getElementById(id); return e ? e.textContent.trim() : null; };
+      const pick = (id) => {
+        const e = document.getElementById(id);
+        return e ? e.textContent.trim() : null;
+      };
       return [pick('statusPill'), pick('motionState')];
     });
     if (lang === 'pl') {
-      dyn.forEach(s => {
+      dyn.forEach((s) => {
         if (!s) return;
-        const hit = ENGLISH_ONLY.find(w => new RegExp('\\b' + w + '\\b').test(s.toLowerCase()));
-        if (hit) { console.log('   ! dynamiczny napis: "' + s + '" (angielskie "' + hit + '")'); problems++; }
+        const hit = ENGLISH_ONLY.find((w) => new RegExp('\\b' + w + '\\b').test(s.toLowerCase()));
+        if (hit) {
+          console.log('   ! dynamiczny napis: "' + s + '" (angielskie "' + hit + '")');
+          problems++;
+        }
       });
     }
     /* The three toggles that PUT to an endpoint fire a fetch, and there is no
      * server behind file://. That failure is expected here and says nothing
      * about labels, so only errors that are not a failed fetch are counted. */
-    const real = errors.filter(e => !/Failed to fetch|NetworkError/i.test(e));
-    if (real.length) { console.log('   ! bledy JS: ' + real.join(' | ')); problems += real.length; }
+    const real = errors.filter((e) => !/Failed to fetch|NetworkError/i.test(e));
+    if (real.length) {
+      console.log('   ! bledy JS: ' + real.join(' | '));
+      problems += real.length;
+    }
     await page.close();
   }
 
   await browser.close();
   console.log(problems ? '\n' + problems + ' problemow.' : '\nEtykiety trzymaja jezyk.');
   process.exit(problems ? 1 : 0);
-})().catch(e => { console.error(e); process.exit(2); });
+})().catch((e) => {
+  console.error(e);
+  process.exit(2);
+});

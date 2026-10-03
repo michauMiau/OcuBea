@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
-import android.os.Environment
 import android.os.PowerManager
 import android.os.StatFs
 import java.io.File
@@ -98,8 +97,7 @@ class DeviceSensors(private val context: Context) {
         val plugged: String
     )
 
-    private fun battery(): BatteryInfo {
-        return try {
+    private fun battery(): BatteryInfo = try {
             val intent: Intent? = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
             val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
@@ -131,7 +129,6 @@ class DeviceSensors(private val context: Context) {
         } catch (_: Exception) {
             BatteryInfo(-1, false, null, -1, "unknown", "unknown")
         }
-    }
 
     // ── Storage ────────────────────────────────────────────────
 

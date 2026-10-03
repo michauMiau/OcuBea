@@ -3,7 +3,6 @@ package com.ocubea.server
 import android.content.ContextWrapper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 

@@ -25,7 +25,7 @@ export const setToken = (v) => {
 // If auth is on, a bare /video returns 401 to that player, so the token has to
 // travel in the query exactly as it does for the in-page requests.
 export const withToken = (p) =>
-  (TOKEN ? p + (p.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : p);
+  TOKEN ? p + (p.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : p;
 
 // ── requests ────────────────────────────────────────────────────────────────
 // The phone answers with plain text as often as JSON ("ok", "torch on"), so a
@@ -41,7 +41,11 @@ export const api = async (p, opts = {}) => {
   if (!res.ok) throw new Error(p + ' → ' + res.status);
   const text = await res.text();
   if (!text) return {};
-  try { return JSON.parse(text); } catch { return { text }; }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { text };
+  }
 };
 
 export const get = (p) => api(p, { method: 'GET' });
@@ -119,16 +123,16 @@ export const pruneClips = () => api('/clips/prune', { method: 'POST' });
 export const deleteAllRecordings = async (recordings) => {
   const gone = [];
   for (const r of recordings) {
-    const res = await api(
-      '/recordings/delete?name=' + encodeURIComponent(r.name), { method: 'POST' });
+    const res = await api('/recordings/delete?name=' + encodeURIComponent(r.name), {
+      method: 'POST',
+    });
     if (res.text !== 'not found') gone.push(r.name);
   }
   return { deleted: gone.length, failed: recordings.length - gone.length };
 };
 
 // Autofocus takes normalised coordinates, not pixels: 0.5/0.5 is the centre.
-export const focus = (x, y) =>
-  api('/focus?x=' + x + '&y=' + y, { method: 'POST' });
+export const focus = (x, y) => api('/focus?x=' + x + '&y=' + y, { method: 'POST' });
 
 // The audio codec takes its value in the query string like the settings do. A
 // JSON body is answered {"error":"codec is required"} -- measured, not assumed.

@@ -125,6 +125,48 @@ jobs:
       - name: Lint WebUI sources
         run: npx eslint src/
 
+      # Prettier is the WebUI's formatter, and it is a gate rather than a
+      # convenience because a reformat that nobody asked for is how a diff stops
+      # being readable: with no formatter enforced, every unrelated pull request
+      # grows a formatting diff nobody can review, and the real change drowns in
+      # it. It runs after eslint because eslint is the check that finds bugs
+      # (no-undef caught three dead buttons) and this one only finds style.
+      #
+      # --check, not --write. A CI job that fixes the code it is checking has
+      # verified nothing; the working tree stays clean and the job fails.
+      #
+      # exit code 2 means a parse error, not a style difference, so it is treated
+      # as a failure too rather than passing quietly.
+      - name: Check WebUI formatting
+        run: npm run format:check
+
+      # Kotlin gets a linter for the same reason, and it is checked at the defect
+      # rules only. Full ktlint reports 3673 findings here, of which all but 77 are
+      # wrapping and indentation opinions: 782 on function-signature alone. Making
+      # the gate pass would mean reformatting 48 unrelated files inside a commit
+      # about RTSP, which buries the change instead of reviewing it.
+      #
+      # So .editorconfig disables the layout rules and keeps the ones that name a
+      # defect -- unused and duplicated imports, import order, a missing final
+      # newline, redundant curly braces in a template. Those were 77 real findings
+      # and all 77 are fixed. The layout rules are off as a deliberate recorded
+      # choice, not by accident: they stay available, and turning one on is a
+      # separate change with its own reformat.
+      #
+      # Verified to fail: a duplicated import and an unsorted pair both make this
+      # exit 1. A gate never seen red is not a gate.
+      - name: Lint Kotlin sources
+        run: |
+          curl -sSL --retry 3 -o /tmp/ktlint \
+            https://github.com/pinterest/ktlint/releases/download/1.5.0/ktlint
+          chmod +x /tmp/ktlint
+          /tmp/ktlint "app/src/**/*.kt" --relative
+
+      # The RTSP decoder gate. It needs a live camera, so it is not wired in here
+      # -- it runs on a device with tools/rtsp_capture_h264.py, which is the check
+      # that proved a stream can be 27/27 on every protocol check and still
+      # undecodable. It is listed here so the next person looking for it finds it.
+
       # Needs a running phone, so it is NOT wired into this job: it creates and
       # deletes a clip. Run it against a device with tools/bulk_actions_verify.js
       # -- it is the check that caught the bulk buttons doing nothing.

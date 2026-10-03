@@ -153,7 +153,6 @@ class AviWriter(private val file: File, private val width: Int, private val heig
         // = 56, which is exactly what the chunk declared. No padding, and
         // the header length is therefore fully determined.
 
-
         s("strf"); le32(40)       // BITMAPINFOHEADER
         le32(40); le32(width); le32(height)
         le16(1); le16(24)

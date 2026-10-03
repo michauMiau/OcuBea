@@ -27,14 +27,43 @@ const PAGE = path.join(__dirname, '..', 'app/src/main/assets/index.html');
  * The numeric ones are found by shape, not enumerated, because they change with
  * whatever the camera is currently doing. */
 const STAYS_ENGLISH = new Set([
-  'Ocu', 'Bea', 'OcuBea', 'MJPEG', 'FPS', 'RAM', 'Android', 'API', 'ONVIF SOAP',
-  'Sepia', 'Status', 'Model', 'Web UI', 'ONVIF', 'QVGA', 'VGA', 'HD',
-  'FullHD', 'Webcam', 'HLS', 'HTTP', 'GET', 'POST', 'SOAP', 'Zoom',
+  'Ocu',
+  'Bea',
+  'OcuBea',
+  'MJPEG',
+  'FPS',
+  'RAM',
+  'Android',
+  'API',
+  'ONVIF SOAP',
+  'Sepia',
+  'Status',
+  'Model',
+  'Web UI',
+  'ONVIF',
+  'QVGA',
+  'VGA',
+  'HD',
+  'FullHD',
+  'Webcam',
+  'HLS',
+  'HTTP',
+  'GET',
+  'POST',
+  'SOAP',
+  'Zoom',
   // Codec names and units. These are the names the encoders register under,
   // so a Polish label for them would not match what /audio/codec answers and
   // what the phone's own status card prints. "Monochrome" likewise: the phone
   // spells the effect that way.
-  'Opus', 'AAC', 'AMR-NB', 'FLAC', 'WAV', 'AMR', 's', 'Monochrome'
+  'Opus',
+  'AAC',
+  'AMR-NB',
+  'FLAC',
+  'WAV',
+  'AMR',
+  's',
+  'Monochrome',
 ]);
 
 /* A resolution, a count, a duration, a zoom value, an en dash placeholder.
@@ -72,12 +101,12 @@ function isGlyph(s) {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1000, height: 1200 } });
   const pageErrors = [];
-  page.on('pageerror', e => pageErrors.push(String(e)));
+  page.on('pageerror', (e) => pageErrors.push(String(e)));
 
   /* lang goes in the URL because that is how the runtime picks a language and
    * it works from file:// with no server behind it. The walk runs inside the
    * page because the window handle does not survive a navigation. */
-  const render = async lang => {
+  const render = async (lang) => {
     await page.goto('file://' + PAGE + '?lang=' + lang, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(500);
     return page.evaluate(() => {
@@ -101,13 +130,18 @@ function isGlyph(s) {
 
   if (pageErrors.length) {
     console.log('--- bledy JS: ' + pageErrors.length + ' ---');
-    pageErrors.forEach(e => console.log('  ! ' + e));
+    pageErrors.forEach((e) => console.log('  ! ' + e));
   }
 
   const countMismatch = en.length !== pl.length;
   if (countMismatch) {
-    console.log('Strona ma różną liczbę napisów w dwóch językach: ' +
-      en.length + ' vs ' + pl.length + ' — tłumaczenie zmienia strukturę DOM?');
+    console.log(
+      'Strona ma różną liczbę napisów w dwóch językach: ' +
+        en.length +
+        ' vs ' +
+        pl.length +
+        ' — tłumaczenie zmienia strukturę DOM?',
+    );
   }
   console.log('=== EN: ' + en.length + ' widocznych napisow, PL: ' + pl.length + ' ===');
 
@@ -117,15 +151,20 @@ function isGlyph(s) {
    * already failed above, and reading past it would report noise. */
   const n = Math.min(en.length, pl.length);
   for (let i = 0; i < n; i++) {
-    if (en[i] === pl[i] && !STAYS_ENGLISH.has(en[i]) && !isNumberLike(en[i])
-        && !isGlyph(en[i]) && !seen.has(en[i])) {
+    if (
+      en[i] === pl[i] &&
+      !STAYS_ENGLISH.has(en[i]) &&
+      !isNumberLike(en[i]) &&
+      !isGlyph(en[i]) &&
+      !seen.has(en[i])
+    ) {
       seen.add(en[i]);
       untranslated.push(en[i]);
     }
   }
 
   console.log('--- bez tlumaczenia: ' + untranslated.length + ' ---');
-  untranslated.forEach(t => console.log('  ! ' + t));
+  untranslated.forEach((t) => console.log('  ! ' + t));
   const bad = untranslated.length || countMismatch || pageErrors.length;
   if (bad) {
     console.log('Dodaj te napisy do I18N.pl w index.html.');
@@ -133,4 +172,7 @@ function isGlyph(s) {
   }
   console.log('Wszystko przetlumaczone.');
   process.exit(0);
-})().catch(e => { console.error(e); process.exit(2); });
+})().catch((e) => {
+  console.error(e);
+  process.exit(2);
+});

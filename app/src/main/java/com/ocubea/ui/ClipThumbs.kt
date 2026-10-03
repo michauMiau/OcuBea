@@ -3,7 +3,6 @@ package com.ocubea.ui
 import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
-import android.net.Uri
 import android.util.Log
 import android.util.LruCache
 import com.ocubea.security.ClipStorage

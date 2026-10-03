@@ -19,12 +19,17 @@
 const { chromium } = require('playwright');
 const H = 'http://192.168.1.184:8080';
 
-const post = (p, v) => fetch(H.replace(/\/$/, '') + '/settings/' + p + '?set=' + v,
-  { method: 'POST' });
+const post = (p, v) =>
+  fetch(H.replace(/\/$/, '') + '/settings/' + p + '?set=' + v, { method: 'POST' });
 const state = async () => {
-const d = JSON.parse(await (await fetch(H + '/status.json')).text());
-return { night: !!d.night_vision, motion: !!d.motion?.enabled, front: !!d.front_camera,
-         torch: !!d.torch, recording: !!d.recording?.enabled };
+  const d = JSON.parse(await (await fetch(H + '/status.json')).text());
+  return {
+    night: !!d.night_vision,
+    motion: !!d.motion?.enabled,
+    front: !!d.front_camera,
+    torch: !!d.torch,
+    recording: !!d.recording?.enabled,
+  };
 };
 
 (async () => {
@@ -34,7 +39,7 @@ return { night: !!d.night_vision, motion: !!d.motion?.enabled, front: !!d.front_
   const b = await chromium.launch();
   const p = await b.newPage();
   const errs = [];
-  p.on('pageerror', e => errs.push(String(e)));
+  p.on('pageerror', (e) => errs.push(String(e)));
   await p.goto(H, { waitUntil: 'domcontentloaded' });
   await p.waitForTimeout(9000);
 
@@ -45,7 +50,7 @@ return { night: !!d.night_vision, motion: !!d.motion?.enabled, front: !!d.front_
   const CASES = [
     ['nocne widzenie', 'bNight', 'night_vision', true],
     ['ruch', 'bMotion', 'motion_detection', true],
-    ['ffc', 'bFlip', 'ffc', null],        // the server inverts; movement is all
+    ['ffc', 'bFlip', 'ffc', null], // the server inverts; movement is all
     ['latarka', 'bTorch', 'torch', true],
     ['nagrywanie ruchu', 'bRec', 'recording', true],
   ];
@@ -58,15 +63,20 @@ return { night: !!d.night_vision, motion: !!d.motion?.enabled, front: !!d.front_
   const preMotion = (await state()).motion;
   if (!preMotion) {
     await post('motion_detection', 'on');
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 1500));
     console.log('  (nagrywanie wymaga wlaczonego wykrywania ruchu -- wlaczone na czas testu)');
   }
 
   const results = [];
   for (const [label, id, setting, wantOn] of CASES) {
     const before = await state();
-    const key = { night_vision: 'night', motion_detection: 'motion', ffc: 'front',
-                  torch: 'torch', recording: 'recording' }[setting];
+    const key = {
+      night_vision: 'night',
+      motion_detection: 'motion',
+      ffc: 'front',
+      torch: 'torch',
+      recording: 'recording',
+    }[setting];
 
     // First press: whatever the button currently shows, pressing must move it.
     await p.click('#' + id, { timeout: 4000 });
@@ -84,9 +94,10 @@ return { night: !!d.night_vision, motion: !!d.motion?.enabled, front: !!d.front_
     // ffc is the exception: the server inverts, so the direction is its
     // business and only movement counts. Everything else has to return to where
     // it started, which is what catches a toggle pinned to one value.
-    const ok = setting === 'ffc'
-      ? (movedOnce && movedBack)
-      : (movedOnce && movedBack && afterSecond[key] === before[key]);
+    const ok =
+      setting === 'ffc'
+        ? movedOnce && movedBack
+        : movedOnce && movedBack && afterSecond[key] === before[key];
 
     results.push([label, ok, `${before[key]} -> ${afterFirst[key]} -> ${afterSecond[key]}`]);
   }
@@ -106,8 +117,10 @@ return { night: !!d.night_vision, motion: !!d.motion?.enabled, front: !!d.front_
   console.log('stan po przywroceniu:', JSON.stringify(await state()));
 
   console.log('JS errors: ' + (errs.length ? errs.join(' | ') : 'brak'));
-  const failed = results.filter(r => !r[1]).length;
-  console.log(failed ? `\n${failed} toggle(s) nie przełącza sie.` : '\nWszystkie przelaczniki dzialaja.');
+  const failed = results.filter((r) => !r[1]).length;
+  console.log(
+    failed ? `\n${failed} toggle(s) nie przełącza sie.` : '\nWszystkie przelaczniki dzialaja.',
+  );
   await b.close();
   process.exit(failed ? 1 : 0);
 })();

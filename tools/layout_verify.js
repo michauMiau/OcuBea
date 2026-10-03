@@ -28,11 +28,11 @@ const LANGS = ['en', 'pl'];
     for (const width of WIDTHS) {
       const page = await browser.newPage({ viewport: { width, height: 1200 } });
       const errors = [];
-      page.on('pageerror', e => errors.push(String(e)));
+      page.on('pageerror', (e) => errors.push(String(e)));
       await page.goto('file://' + PAGE + '?lang=' + lang, { waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(400);
 
-      const bad = await page.evaluate(vw => {
+      const bad = await page.evaluate((vw) => {
         const out = [];
         /* A screen-reader-only element is clipped to 1px on purpose, so its
          * content is *supposed* to be bigger than its box. Measuring it is
@@ -46,33 +46,52 @@ const LANGS = ['en', 'pl'];
          * A genuinely clipped visible label is still reported: the test is
          * whether the browser is already hiding it from sighted users, not
          * whether the text is long. */
-        const srOnly = e => {
+        const srOnly = (e) => {
           const s = getComputedStyle(e);
-          return s.position === 'absolute' && (s.clip === 'rect(0px, 0px, 0px, 0px)'
-            || s.clipPath === 'inset(50%)');
+          return (
+            s.position === 'absolute' &&
+            (s.clip === 'rect(0px, 0px, 0px, 0px)' || s.clipPath === 'inset(50%)')
+          );
         };
-        document.querySelectorAll('button,label,dt,dd,h1,h2,p,span,a,div').forEach(e => {
+        document.querySelectorAll('button,label,dt,dd,h1,h2,p,span,a,div').forEach((e) => {
           const r = e.getBoundingClientRect();
           if (r.width === 0 || r.height === 0) return;
           if (srOnly(e)) return;
           // scrollWidth > clientWidth means the text does not fit its own box.
           if (e.scrollWidth > e.clientWidth + 2) {
-            out.push('overflow  ' + e.tagName + ' "' + e.textContent.trim().slice(0, 30) +
-                     '" (' + e.scrollWidth + '>' + e.clientWidth + ')');
+            out.push(
+              'overflow  ' +
+                e.tagName +
+                ' "' +
+                e.textContent.trim().slice(0, 30) +
+                '" (' +
+                e.scrollWidth +
+                '>' +
+                e.clientWidth +
+                ')',
+            );
           }
           // Past the right edge of the viewport.
           if (r.right > vw + 1) {
-            out.push('poza ekranem  ' + e.tagName + ' "' + e.textContent.trim().slice(0, 30) +
-                     '" right=' + Math.round(r.right));
+            out.push(
+              'poza ekranem  ' +
+                e.tagName +
+                ' "' +
+                e.textContent.trim().slice(0, 30) +
+                '" right=' +
+                Math.round(r.right),
+            );
           }
         });
         return out;
       }, width);
 
-      const issues = bad.concat(errors.map(e => 'bled JS: ' + e));
+      const issues = bad.concat(errors.map((e) => 'bled JS: ' + e));
       problems += issues.length;
-      console.log(lang + ' @' + width + 'px: ' + (issues.length ? issues.length + ' problemy' : 'ok'));
-      issues.slice(0, 5).forEach(x => console.log('   ! ' + x));
+      console.log(
+        lang + ' @' + width + 'px: ' + (issues.length ? issues.length + ' problemy' : 'ok'),
+      );
+      issues.slice(0, 5).forEach((x) => console.log('   ! ' + x));
       await page.close();
     }
   }
@@ -80,4 +99,7 @@ const LANGS = ['en', 'pl'];
 
   console.log(problems ? '\n' + problems + ' problemow do naprawy.' : '\nLayout czysty.');
   process.exit(problems ? 1 : 0);
-})().catch(e => { console.error(e); process.exit(2); });
+})().catch((e) => {
+  console.error(e);
+  process.exit(2);
+});

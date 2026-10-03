@@ -4,8 +4,6 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Log
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /**
  * Encodes captured PCM into one encoded audio stream, once, shared by every client.
@@ -435,5 +433,4 @@ class AudioEncoder private constructor(
         }
         codec = null
     }
-
 }

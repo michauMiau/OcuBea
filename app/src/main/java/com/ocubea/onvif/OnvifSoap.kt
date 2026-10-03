@@ -76,7 +76,6 @@ $ops
     "GetServiceCapabilities", "SendAuxiliaryCommand"
     )
 
-
     /**
      * The auxiliary commands this device actually honours.
      *
@@ -248,7 +247,6 @@ $ops
                 <trt:GetStreamUriResponse>
                   <trt:MediaUri><tt:Uri>$streamUri</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect><tt:InvalidAfterReboot>false</tt:InvalidAfterReboot><tt:Timeout>PT60S</tt:Timeout></trt:MediaUri>
                 </trt:GetStreamUriResponse>"""
-
 
             action.contains("GetSnapshotUri") -> """
                 <trt:GetSnapshotUriResponse>

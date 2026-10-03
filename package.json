@@ -5,7 +5,9 @@
   "description": "OcuBea WebUI — Preact + htm, bundled into the Android assets",
   "scripts": {
     "build": "node build.mjs",
-    "watch": "node build.mjs --watch"
+    "watch": "node build.mjs --watch",
+    "format": "prettier --write src/ tools/ eslint.config.js build.mjs",
+    "format:check": "prettier --check src/ tools/ eslint.config.js build.mjs"
   },
   "dependencies": {
     "hls.js": "^1.5.17",
@@ -15,7 +17,8 @@
   "devDependencies": {
     "esbuild": "^0.24.0",
     "eslint": "^9.39.5",
-    "globals": "^17.13.0"
+    "globals": "^17.13.0",
+    "prettier": "^3.4.2"
   },
   "allowScripts": {
     "esbuild@0.24.2": true

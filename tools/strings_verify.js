@@ -52,13 +52,16 @@ const en = parse(EN);
 const pl = parse(PL);
 const problems = [];
 
-const dupes = list => {
+const dupes = (list) => {
   const src = fs.readFileSync(list, 'utf8');
-  const names = [...src.matchAll(/<string name="([^"]+)"/g)].map(m => m[1]);
+  const names = [...src.matchAll(/<string name="([^"]+)"/g)].map((m) => m[1]);
   return [...new Set(names.filter((n, i) => names.indexOf(n) !== i))];
 };
 
-for (const [label, file] of [['EN', EN], ['PL', PL]]) {
+for (const [label, file] of [
+  ['EN', EN],
+  ['PL', PL],
+]) {
   const d = dupes(file);
   if (d.length) problems.push(label + ' duplikaty nazw: ' + d.join(', '));
 }
@@ -92,7 +95,7 @@ for (const [name, enText] of en) {
 
 console.log('=== EN: ' + en.size + ' napisow, PL: ' + pl.size + ' ===');
 console.log('--- problemy: ' + problems.length + ' ---');
-problems.forEach(p => console.log('  ! ' + p));
+problems.forEach((p) => console.log('  ! ' + p));
 if (problems.length) {
   console.log('\nPopraw values/values-pl/strings.xml.');
   process.exit(1);

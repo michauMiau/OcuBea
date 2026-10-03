@@ -21,8 +21,7 @@ const cssFile = resolve(root, 'src/ui.css');
 // A short id of the content actually shipped. Used as the favicon's query
 // string so a changed build asks for a URL the browser has never cached,
 // rather than relying on it noticing that the bytes behind one URL moved.
-const buildId = (css, js) =>
-  createHash('sha256').update(css).update(js).digest('hex').slice(0, 8);
+const buildId = (css, js) => createHash('sha256').update(css).update(js).digest('hex').slice(0, 8);
 
 const shell = (css, js, v) => `<!DOCTYPE html>
 <html lang="en" data-default-lang="en">
@@ -82,7 +81,7 @@ if (process.argv.includes('--watch')) {
     cssTimer = setTimeout(async () => {
       const js = (await ctx.rebuild()).outputFiles[0].text;
       const c2 = readFileSync(cssFile, 'utf8');
-          writeFileSync(outFile, shell(c2, js, buildId(c2, js)));
+      writeFileSync(outFile, shell(c2, js, buildId(c2, js)));
     }, 60);
   });
   console.log('watching src/ …');

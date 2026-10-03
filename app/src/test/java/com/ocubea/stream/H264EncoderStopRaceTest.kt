@@ -1,12 +1,10 @@
 package com.ocubea.stream
 
-import java.lang.reflect.Field
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.lang.reflect.Field
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The encoder stop/teardown race that killed the process in native code.
@@ -263,7 +261,6 @@ class H264EncoderStopRaceTest {
         val flag = field("encodeInFlight").get(enc) as AtomicBoolean
         assertTrue("flag left set after two stops", !flag.get())
     }
-
 
     /**
      * Every release goes through claimRelease().

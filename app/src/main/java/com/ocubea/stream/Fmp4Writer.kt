@@ -1,8 +1,7 @@
 package com.ocubea.stream
 
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
 import com.ocubea.perf.Metrics
+import java.io.ByteArrayOutputStream
 
 /**
  * Minimal fragmented-MP4 writer for CMAF-style HLS video.
