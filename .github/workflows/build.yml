@@ -105,6 +105,24 @@ jobs:
       - name: Verify the MJPEG gate can fail
         run: python3 tools/verify_mjpeg_gate.py
 
+      # onvif_verify.py is the only check that answers "would a real NVR accept
+      # this camera", and it needs a phone, so CI cannot run it. Without this it
+      # is 14 checks whose own correctness nobody knows until the device stops
+      # behaving like an ONVIF service -- which is discovered by an NVR showing
+      # "no response from device".
+      #
+      # Two servers stand in. The first faults every operation, which anything
+      # fails. The second is the one that matters: a decoy answering with
+      # well-formed envelopes containing every string a grep-based probe looks
+      # for -- operation names, the profile token, the encoder configuration, a
+      # stream URI -- while being useless to an NVR. Measured, it collects 6 of
+      # 15 checks as PASS and still exits 1.
+      #
+      # That second server is the whole test. A probe that passes a decoy is not
+      # a weak probe, it is a probe that would certify anything.
+      - name: Verify the ONVIF gate rejects a fake device
+        run: python3 tools/verify_onvif_gate.py
+
       # The WebUI is checked in a real browser because a translation gap, a
       # clipped label or a label that reverts to English after a click is
       # invisible in a JVM test and in a build log. All three checks exit
