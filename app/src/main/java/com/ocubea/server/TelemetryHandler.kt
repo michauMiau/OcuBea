@@ -8,7 +8,6 @@ import com.ocubea.sensors.DeviceSensors
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import fi.iki.elonen.NanoHTTPD.Response
-import fi.iki.elonen.NanoHTTPD.Response.IStatus
 import fi.iki.elonen.NanoHTTPD.Response.Status as Status
 
 /**
@@ -79,8 +78,7 @@ class TelemetryHandler(
      * version this app supports, so the fallback is only for the case where
      * something has gone wrong well enough to break file IO as well.
      */
-    private fun residentMb(): Int {
-        return try {
+    private fun residentMb(): Int = try {
             val line = java.io.File("/proc/self/status")
                 .useLines { lines -> lines.firstOrNull { it.startsWith("VmRSS:") } }
             // Format is "VmRSS:\t  123456 kB" -- a number, whitespace, a unit.
@@ -90,7 +88,6 @@ class TelemetryHandler(
         } catch (_: Exception) {
             0
         }
-    }
 
     /** Escapes a string for safe inclusion inside a JSON string literal. */
     private fun jsonEscape(value: String): String {

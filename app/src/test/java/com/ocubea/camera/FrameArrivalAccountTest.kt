@@ -585,7 +585,6 @@ class FrameArrivalAccountTest {
             Regex("LIMITED_BY_FPS[\\s\\S]{0,120}?else").containsMatchIn(body),
         )
     }
-
 }
 
 /**

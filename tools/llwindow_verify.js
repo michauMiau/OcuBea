@@ -23,23 +23,25 @@ const stable = async (label) => {
   const seen = [];
   for (let i = 0; i < 12; i++) {
     seen.push((await playlistSeconds()).end);
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 1500));
   }
   // Take the last 6: the ring is full by then and the tail is the real window.
   const tail = seen.slice(-6);
   const med = tail.slice().sort((a, b) => a - b)[Math.floor(tail.length / 2)];
-  console.log(`${label}: playlista ${tail.map(x => x.toFixed(2)).join(', ')} -> mediana ${med.toFixed(2)} s`);
+  console.log(
+    `${label}: playlista ${tail.map((x) => x.toFixed(2)).join(', ')} -> mediana ${med.toFixed(2)} s`,
+  );
   return med;
 };
 
 (async () => {
   await fetch(H + '/hls/profile?set=low', { method: 'POST' });
-  await new Promise(r => setTimeout(r, 4000));
+  await new Promise((r) => setTimeout(r, 4000));
   console.log('profil:', await profile());
   const low = await stable('LOW_LATENCY');
 
   await fetch(H + '/hls/profile?set=default', { method: 'POST' });
-  await new Promise(r => setTimeout(r, 4000));
+  await new Promise((r) => setTimeout(r, 4000));
   console.log('profil:', await profile());
   const def = await stable('DEFAULT     ');
 

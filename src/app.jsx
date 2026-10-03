@@ -9,12 +9,28 @@ import htm from 'htm';
 import Hls from 'hls.js';
 
 import {
-  bytes, get, setSetting, ptz, deleteRecording, setToken, getToken,
-  clipOnFile, recordNow, stopClipRecording, clipRecordingState, focus, setAudioCodec,
+  bytes,
+  get,
+  setSetting,
+  ptz,
+  deleteRecording,
+  setToken,
+  getToken,
+  clipOnFile,
+  recordNow,
+  stopClipRecording,
+  clipRecordingState,
+  focus,
+  setAudioCodec,
   withToken,
-  hlsProfile, setHlsProfile,
-  clearClips, pruneClips, deleteAllRecordings,
-  t, uptime, LANG as T_LANG,
+  hlsProfile,
+  setHlsProfile,
+  clearClips,
+  pruneClips,
+  deleteAllRecordings,
+  t,
+  uptime,
+  LANG as T_LANG,
 } from './state.js';
 import { hlsMessage } from './hlsmsg.js';
 
@@ -26,7 +42,8 @@ const log = (msg) => {
   if (!el) {
     el = document.createElement('pre');
     el.id = 'ocubeaLog';
-    el.style.cssText = 'margin:8px 16px;padding:8px;background:#161b22;border:1px solid #30363d;' +
+    el.style.cssText =
+      'margin:8px 16px;padding:8px;background:#161b22;border:1px solid #30363d;' +
       'border-radius:8px;color:var(--dim,#8b949e);font:11px/1.4 monospace;white-space:pre-wrap';
     document.body.appendChild(el);
   }
@@ -45,13 +62,18 @@ const html = htm.bind(/** @type {any} */ (createElement));
 // effect names come from the old UI's select, the resolutions from what
 // status.json reports back.
 const EFFECTS = [
-  ['none', 'effectNone'], ['mono', 'effectMono'], ['negative', 'effectNegative'],
-  ['sepia', 'effectSepia'], ['night', 'effectNight'],
+  ['none', 'effectNone'],
+  ['mono', 'effectMono'],
+  ['negative', 'effectNegative'],
+  ['sepia', 'effectSepia'],
+  ['night', 'effectNight'],
 ];
 
 const QUALITIES = [
-  ['0', '320×240 (QVGA)'], ['1', '640×480 (VGA)'],
-  ['2', '1280×720 (HD)'], ['3', '1920×1080 (FullHD)'],
+  ['0', '320×240 (QVGA)'],
+  ['1', '640×480 (VGA)'],
+  ['2', '1280×720 (HD)'],
+  ['3', '1920×1080 (FullHD)'],
 ];
 
 // status.json reports a resolution as "320x240"; the select sends an index.
@@ -69,8 +91,12 @@ export const qualityKey = (res) => {
 // list is a presentation default; AudioCodecs() below overrides it from
 // status.json's "available" string on every poll.
 const ALL_CODECS = [
-  ['none', 'noAudio'], ['aac', 'audioAac'], ['opus', 'audioOpus'],
-  ['amrnb', 'audioAmr'], ['flac', 'audioFlac'], ['wav', 'audioWav'],
+  ['none', 'noAudio'],
+  ['aac', 'audioAac'],
+  ['opus', 'audioOpus'],
+  ['amrnb', 'audioAmr'],
+  ['flac', 'audioFlac'],
+  ['wav', 'audioWav'],
 ];
 
 // "aac=true opus=false amrnb=false flac=true default=aac" -> ids the phone
@@ -80,8 +106,11 @@ const ALL_CODECS = [
 const AudioCodecs = (available) => {
   if (!available) return ALL_CODECS;
   const yes = new Set(
-    String(available).split(/\s+/).map((p) => p.split('='))
-      .filter((kv) => kv[1] === 'true').map((kv) => kv[0])
+    String(available)
+      .split(/\s+/)
+      .map((p) => p.split('='))
+      .filter((kv) => kv[1] === 'true')
+      .map((kv) => kv[0]),
   );
   if (!yes.size) return ALL_CODECS;
   const listed = ALL_CODECS.filter(([id]) => id === 'none' || yes.has(id));
@@ -126,12 +155,23 @@ const MAX_CLIP_DEFAULT = 300;
 
 // ── small building blocks ───────────────────────────────────────────────────
 const Row = ({ label, children }) => html`
-  <div class="row"><span>${label}</span><div class="ctl">${children}</div></div>
+  <div class="row">
+    <span>${label}</span>
+    <div class="ctl">${children}</div>
+  </div>
 `;
 
 const Slider = ({ value, min = 0, max = 100, step = 1, onInput, label, id }) => html`
-  <input id=${id} type="range" min=${min} max=${max} step=${step} value=${value}
-    aria-label=${label} onInput=${(e) => onInput(+e.target.value)} />
+  <input
+    id=${id}
+    type="range"
+    min=${min}
+    max=${max}
+    step=${step}
+    value=${value}
+    aria-label=${label}
+    onInput=${(e) => onInput(+e.target.value)}
+  />
 `;
 
 // /hls/profile answers text, not JSON:
@@ -186,21 +226,30 @@ const HlsQuality = () => {
         setP(kv);
       })
       .catch(() => {});
-    return () => { dead = true; };
+    return () => {
+      dead = true;
+    };
   }, []);
   // Not a <Row>: inside the big-button row a Row nests a second .row, which
   // made the outer row 841px wide inside an 798px parent -- the layout check
   // caught it as an overflow. As a direct flex item it shares the button grid.
-  return html`
-    <span class="badge" id="bHQ"
-      title=${'segment_ms=' + (p && p.segment_ms) + ' keyframe_sec=' + (p && p.keyframe_sec)}>
-      ${t('hlsQuality')}: ${p ? p.profile : '–'}
-    </span>`;
+  return html` <span
+    class="badge"
+    id="bHQ"
+    title=${'segment_ms=' + (p && p.segment_ms) + ' keyframe_sec=' + (p && p.keyframe_sec)}
+  >
+    ${t('hlsQuality')}: ${p ? p.profile : '–'}
+  </span>`;
 };
 
 const Toggle = ({ on, onChange, label, id }) => html`
-  <button id=${id} class=${'tgl' + (on ? ' on' : '')} onClick=${() => onChange(!on)}
-    aria-label=${label} aria-pressed=${on}></button>
+  <button
+    id=${id}
+    class=${'tgl' + (on ? ' on' : '')}
+    onClick=${() => onChange(!on)}
+    aria-label=${label}
+    aria-pressed=${on}
+  ></button>
 `;
 
 // ── live video ──────────────────────────────────────────────────────────────
@@ -258,9 +307,11 @@ function LiveAudio({ codec, enabled, running }) {
     const p = el.play();
     if (p && p.catch) {
       p.catch((e) => {
-        setErr(e && e.name === 'NotAllowedError'
-          ? 'audio: the browser blocked autoplay — press the speaker button'
-          : 'audio: ' + (e && e.name ? e.name : 'the stream did not start'));
+        setErr(
+          e && e.name === 'NotAllowedError'
+            ? 'audio: the browser blocked autoplay — press the speaker button'
+            : 'audio: ' + (e && e.name ? e.name : 'the stream did not start'),
+        );
       });
     }
   }, [have, codec]);
@@ -274,17 +325,20 @@ function LiveAudio({ codec, enabled, running }) {
     if (!on && !el.paused) el.pause();
   }, [on]);
 
-  return html`
-    <div class="audio-row">
-      <audio ref=${ref} preload="none"></audio>
-      <button id="bAud" class=${'tgl' + (on ? ' on' : '')}
-        aria-label=${t('audio')} aria-pressed=${on}
-        title=${t('audio')}
-        onClick=${() => setOn(!on)}></button>
-      <span class="dim" id="audioState">
-        ${err ? err : have ? (on ? t('audioOn') : t('audioMuted')) : t('audioOff')}
-      </span>
-    </div>`;
+  return html` <div class="audio-row">
+    <audio ref=${ref} preload="none"></audio>
+    <button
+      id="bAud"
+      class=${'tgl' + (on ? ' on' : '')}
+      aria-label=${t('audio')}
+      aria-pressed=${on}
+      title=${t('audio')}
+      onClick=${() => setOn(!on)}
+    ></button>
+    <span class="dim" id="audioState">
+      ${err ? err : have ? (on ? t('audioOn') : t('audioMuted')) : t('audioOff')}
+    </span>
+  </div>`;
 }
 
 // ── fullscreen + external player ────────────────────────────────────────────
@@ -314,9 +368,15 @@ function StreamControls({ boxRef, codec, enabled, running }) {
     // would make that indistinguishable from a browser refusing fullscreen. It
     // is the same class of bug this repo keeps finding: a control that does
     // nothing and reports nothing.
-    if (!el) { setMsg(t('fullscreenNoTarget')); return; }
-    const req = el.requestFullscreen || el.webkitRequestFullscreen
-      || el.webkitEnterFullscreen || el.msRequestFullscreen;
+    if (!el) {
+      setMsg(t('fullscreenNoTarget'));
+      return;
+    }
+    const req =
+      el.requestFullscreen ||
+      el.webkitRequestFullscreen ||
+      el.webkitEnterFullscreen ||
+      el.msRequestFullscreen;
     if (!req) {
       setMsg(t('noFullscreen'));
       return;
@@ -343,21 +403,30 @@ function StreamControls({ boxRef, codec, enabled, running }) {
 
   const haveAudio = running && enabled && codec && codec !== 'none';
 
-  return html`
-    <div class="streamctl">
-      <button id="bFull" class="ico" onClick=${fs}
-        title=${t('fullscreen')}><span aria-hidden="true">⛶</span
-        ><span class="sr">${t('fullscreen')}</span></button>
-      <button id="bExtV" class="ico" disabled=${!running}
-        onClick=${() => ext('/video', 'video')}
-        title=${t('openVideo')}><span aria-hidden="true">▶</span
-        ><span class="sr">${t('openVideo')}</span></button>
-      <button id="bExtA" class="ico" disabled=${!haveAudio}
-        onClick=${() => ext('/audio.' + codec, 'audio')}
-        title=${t('openAudio')}><span aria-hidden="true">♪</span
-        ><span class="sr">${t('openAudio')}</span></button>
-      ${msg && html`<span class="dim">${msg}</span>`}
-    </div>`;
+  return html` <div class="streamctl">
+    <button id="bFull" class="ico" onClick=${fs} title=${t('fullscreen')}>
+      <span aria-hidden="true">⛶</span><span class="sr">${t('fullscreen')}</span>
+    </button>
+    <button
+      id="bExtV"
+      class="ico"
+      disabled=${!running}
+      onClick=${() => ext('/video', 'video')}
+      title=${t('openVideo')}
+    >
+      <span aria-hidden="true">▶</span><span class="sr">${t('openVideo')}</span>
+    </button>
+    <button
+      id="bExtA"
+      class="ico"
+      disabled=${!haveAudio}
+      onClick=${() => ext('/audio.' + codec, 'audio')}
+      title=${t('openAudio')}
+    >
+      <span aria-hidden="true">♪</span><span class="sr">${t('openAudio')}</span>
+    </button>
+    ${msg && html`<span class="dim">${msg}</span>`}
+  </div>`;
 }
 
 function Stream({ mode, running, lowLatency, audioCodec, audioEnabled }) {
@@ -389,126 +458,131 @@ function Stream({ mode, running, lowLatency, audioCodec, audioEnabled }) {
 
     const run = async () => {
       if (cancelled) return;
-    // MJPEG: a plain <img> fed by a multipart endpoint. Stop it by dropping src.
-    //
-    // The cache-buster goes on ONCE, when there is no stream yet. Setting a
-    // fresh /video?nocache=<timestamp> for every frame makes each one a
-    // separate resource: the browser then has to open, tear down and re-open
-    // the connection instead of holding one multipart stream, which is what
-    // put a second of lag on MJPEG no matter what the low-latency switch said.
-    // The old UI guarded this with `if (live.naturalWidth === 0)`.
-    //
-    // useMjpeg, not mode === 'mjpeg': it is also true once the HLS fallback has
-    // fired, and this branch is what puts a picture up in that case.
-    if (useMjpeg && running) {
-      if (!img.naturalWidth) img.src = '/video?nocache=' + Date.now();
-      return () => { img.src = ''; };
-    }
-    img.src = '';
+      // MJPEG: a plain <img> fed by a multipart endpoint. Stop it by dropping src.
+      //
+      // The cache-buster goes on ONCE, when there is no stream yet. Setting a
+      // fresh /video?nocache=<timestamp> for every frame makes each one a
+      // separate resource: the browser then has to open, tear down and re-open
+      // the connection instead of holding one multipart stream, which is what
+      // put a second of lag on MJPEG no matter what the low-latency switch said.
+      // The old UI guarded this with `if (live.naturalWidth === 0)`.
+      //
+      // useMjpeg, not mode === 'mjpeg': it is also true once the HLS fallback has
+      // fired, and this branch is what puts a picture up in that case.
+      if (useMjpeg && running) {
+        if (!img.naturalWidth) img.src = '/video?nocache=' + Date.now();
+        return () => {
+          img.src = '';
+        };
+      }
+      img.src = '';
 
-    if (mode !== 'hls' || !running) return;
+      if (mode !== 'hls' || !running) return;
 
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      setHlsError(null);
 
-    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
-    setHlsError(null);
+      // hls.js 1.5.x raises mediaSourceRequiresReset when attachMedia() runs on a
+      // <video> that still carries a src from a previous session, which is exactly
+      // what happens when this effect re-runs on a mode or latency change. Clear
+      // it and stop playback so attachMedia starts from a clean element.
+      vid.removeAttribute('src');
+      vid.load();
 
-    // hls.js 1.5.x raises mediaSourceRequiresReset when attachMedia() runs on a
-    // <video> that still carries a src from a previous session, which is exactly
-    // what happens when this effect re-runs on a mode or latency change. Clear
-    // it and stop playback so attachMedia starts from a clean element.
-    vid.removeAttribute('src');
-    vid.load();
-
-    if (!Hls.isSupported()) {
-      // Old Android: H.264 in MSE may be missing. Say so instead of hanging.
-      if (vid.canPlayType('application/vnd.apple.mpegurl')) vid.src = '/hls.m3u8';
-      else setHlsError('hls_unsupported_mse');
-      return;
-    }
-
-
-    const hls = new Hls({
-      // Latency here is set by the SERVER, not by this flag. /hls/profile
-      // answers `segment_ms=250 sync=3 buffer=6` and the playlist carries no
-      // EXT-X-PART or EXT-X-SERVER-CONTROL, so this is ordinary HLS: a client
-      // cannot start a segment until the muxer closes it, and playback sits at
-      // least one buffer behind. lowLatencyMode only lets hls.js skip the extra
-      // safety margin it would otherwise keep; it cannot make an ordinary
-      // playlist low-latency. Measured on the phone: 4.14s of media on the
-      // playlist, produced every 0.17s.
-      lowLatencyMode: lowLatency,
-      // Keep the buffer shallow. A deep buffer on a live stream is only lag, so
-      // these are what actually move the playhead: the size it will grow to,
-      // and how far behind live it is allowed to sit.
-      maxBufferLength: lowLatency ? 2 : 6,
-      backBufferLength: lowLatency ? 4 : 30,
-      liveSyncDurationCount: lowLatency ? 2 : 3,
-      // Without this hls.js refuses to start at all when the manifest reports
-      // no EXT-X-ENDLIST and the first sync point is behind the live edge.
-      liveDurationInfinity: true,
-      enableWorker: true,
-      // The playlist is served without a Vary header, so a stale one can be
-      // reused; that alone is a second or more of dead time.
-      manifestLoadingMaxRetry: 2,
-      manifestLoadingRetryDelay: 200,
-      levelLoadingMaxRetry: 4,
-      fragLoadingMaxRetry: 6,
-    });
-    hlsRef.current = hls;
-    // Exposed so the page can be measured from outside: `__hls.config` is the
-    // only place the effective buffer settings are visible once hls.js has
-    // merged them with its own defaults.
-    window.__hls = hls;
-    hls.on(Hls.Events.ERROR, (_e, d) => {
-      // A live stream drops fragments and reloads its playlist constantly; those
-      // are recoverable and hls.js retries them itself. Only a fatal error needs
-      // action, and the documented recovery is to rebuild the MediaSource.
-      if (!d.fatal) return;
-      // MEDIA_SOURCE_REQUIRES_RESET, not MEDIA_SOURCE_RESET: the shorter name
-      // does not exist on ErrorDetails, so the comparison was always false and
-      // this branch never ran. The value the event carries is the
-      // "mediaSourceRequiresReset" string either way.
-      if (d.details === Hls.ErrorDetails.MEDIA_SOURCE_REQUIRES_RESET ||
-          d.details === Hls.ErrorDetails.OTHER_MEDIA_ERROR) {
-        log('HLS: recreating MediaSource after ' + d.details);
-        setHlsError(null);
-        hls.recoverMediaError();
+      if (!Hls.isSupported()) {
+        // Old Android: H.264 in MSE may be missing. Say so instead of hanging.
+        if (vid.canPlayType('application/vnd.apple.mpegurl')) vid.src = '/hls.m3u8';
+        else setHlsError('hls_unsupported_mse');
         return;
       }
-      setHlsError(d.details || 'hls_error');
-    });
-    // The phone starts the H.264 encoder lazily, on the first playlist request.
-    // The server now holds that request open until the first keyframe exists
-    // (StreamServer.handleHlsPlaylist), so hls.js sees a 200 on its very first
-    // manifest load instead of a 503 it would treat as fatal. An earlier
-    // client-side retry loop waited for the same thing here and was removed:
-    // it duplicated the server's wait and raced it.
-    if (!hlsRef.current) setHlsError('hls_warming');
 
-    // Checked after the wait as well, not only at the top of run(): this
-    // polls for the playlist, and an unmount during that poll used to carry
-    // on and attach a source to an instance the cleanup had already destroyed.
-    if (cancelled) return;
+      const hls = new Hls({
+        // Latency here is set by the SERVER, not by this flag. /hls/profile
+        // answers `segment_ms=250 sync=3 buffer=6` and the playlist carries no
+        // EXT-X-PART or EXT-X-SERVER-CONTROL, so this is ordinary HLS: a client
+        // cannot start a segment until the muxer closes it, and playback sits at
+        // least one buffer behind. lowLatencyMode only lets hls.js skip the extra
+        // safety margin it would otherwise keep; it cannot make an ordinary
+        // playlist low-latency. Measured on the phone: 4.14s of media on the
+        // playlist, produced every 0.17s.
+        lowLatencyMode: lowLatency,
+        // Keep the buffer shallow. A deep buffer on a live stream is only lag, so
+        // these are what actually move the playhead: the size it will grow to,
+        // and how far behind live it is allowed to sit.
+        maxBufferLength: lowLatency ? 2 : 6,
+        backBufferLength: lowLatency ? 4 : 30,
+        liveSyncDurationCount: lowLatency ? 2 : 3,
+        // Without this hls.js refuses to start at all when the manifest reports
+        // no EXT-X-ENDLIST and the first sync point is behind the live edge.
+        liveDurationInfinity: true,
+        enableWorker: true,
+        // The playlist is served without a Vary header, so a stale one can be
+        // reused; that alone is a second or more of dead time.
+        manifestLoadingMaxRetry: 2,
+        manifestLoadingRetryDelay: 200,
+        levelLoadingMaxRetry: 4,
+        fragLoadingMaxRetry: 6,
+      });
+      hlsRef.current = hls;
+      // Exposed so the page can be measured from outside: `__hls.config` is the
+      // only place the effective buffer settings are visible once hls.js has
+      // merged them with its own defaults.
+      window.__hls = hls;
+      hls.on(Hls.Events.ERROR, (_e, d) => {
+        // A live stream drops fragments and reloads its playlist constantly; those
+        // are recoverable and hls.js retries them itself. Only a fatal error needs
+        // action, and the documented recovery is to rebuild the MediaSource.
+        if (!d.fatal) return;
+        // MEDIA_SOURCE_REQUIRES_RESET, not MEDIA_SOURCE_RESET: the shorter name
+        // does not exist on ErrorDetails, so the comparison was always false and
+        // this branch never ran. The value the event carries is the
+        // "mediaSourceRequiresReset" string either way.
+        if (
+          d.details === Hls.ErrorDetails.MEDIA_SOURCE_REQUIRES_RESET ||
+          d.details === Hls.ErrorDetails.OTHER_MEDIA_ERROR
+        ) {
+          log('HLS: recreating MediaSource after ' + d.details);
+          setHlsError(null);
+          hls.recoverMediaError();
+          return;
+        }
+        setHlsError(d.details || 'hls_error');
+      });
+      // The phone starts the H.264 encoder lazily, on the first playlist request.
+      // The server now holds that request open until the first keyframe exists
+      // (StreamServer.handleHlsPlaylist), so hls.js sees a 200 on its very first
+      // manifest load instead of a 503 it would treat as fatal. An earlier
+      // client-side retry loop waited for the same thing here and was removed:
+      // it duplicated the server's wait and raced it.
+      if (!hlsRef.current) setHlsError('hls_warming');
 
-    hls.loadSource('/hls.m3u8');
-    hls.attachMedia(vid);
+      // Checked after the wait as well, not only at the top of run(): this
+      // polls for the playlist, and an unmount during that poll used to carry
+      // on and attach a source to an instance the cleanup had already destroyed.
+      if (cancelled) return;
 
-    // Firefox rejects our fMP4 init segment in MP4Demuxer::Init() on bytes
-    // ffmpeg decodes without complaint, and nothing on the phone side can fix
-    // that. Switch to the stream that is known to work everywhere rather than
-    // leaving the user to discover the workaround.
-    fallbackTimer = setTimeout(() => {
-      if (hlsRef.current !== hls) return;
-      if (vid.readyState > 2 || vid.currentTime > 0) return;
-      log('HLS: no frames after 8s, falling back to MJPEG');
-      hls.destroy();
-      hlsRef.current = null;
-      setHlsError('hls_unplayable_mjpeg');
-    }, 8000);
+      hls.loadSource('/hls.m3u8');
+      hls.attachMedia(vid);
 
-    // Autoplay can be refused; a muted+playsinline video is allowed far more often.
-    vid.muted = true;
-    vid.play().catch(() => {});
+      // Firefox rejects our fMP4 init segment in MP4Demuxer::Init() on bytes
+      // ffmpeg decodes without complaint, and nothing on the phone side can fix
+      // that. Switch to the stream that is known to work everywhere rather than
+      // leaving the user to discover the workaround.
+      fallbackTimer = setTimeout(() => {
+        if (hlsRef.current !== hls) return;
+        if (vid.readyState > 2 || vid.currentTime > 0) return;
+        log('HLS: no frames after 8s, falling back to MJPEG');
+        hls.destroy();
+        hlsRef.current = null;
+        setHlsError('hls_unplayable_mjpeg');
+      }, 8000);
+
+      // Autoplay can be refused; a muted+playsinline video is allowed far more often.
+      vid.muted = true;
+      vid.play().catch(() => {});
     };
 
     run();
@@ -526,15 +600,27 @@ function Stream({ mode, running, lowLatency, audioCodec, audioEnabled }) {
   return html`
     <div class="stream" ref=${boxRef}>
       <img ref=${imgRef} alt="Live stream" style=${useMjpeg ? '' : 'display:none'} />
-      <video ref=${vidRef} playsinline muted autoplay
-        style=${mode === 'hls' && !fellBack ? '' : 'display:none'}></video>
-      <${StreamControls} boxRef=${boxRef} codec=${audioCodec}
-        enabled=${audioEnabled} running=${running} />
+      <video
+        ref=${vidRef}
+        playsinline
+        muted
+        autoplay
+        style=${mode === 'hls' && !fellBack ? '' : 'display:none'}
+      ></video>
+      <${StreamControls}
+        boxRef=${boxRef}
+        codec=${audioCodec}
+        enabled=${audioEnabled}
+        running=${running}
+      />
       ${!running && html`<div class="off">${t('streamOffline')}</div>`}
       ${fellBack && html`<div class="badge">HLS unsupported here — MJPEG</div>`}
       ${hlsError === 'hls_warming' && html`<div class="off">${t('hlsWarming')}</div>`}
-      ${hlsError && !fellBack && hlsError !== 'hls_warming' && running &&
-        html`<div class="off">${hlsMessage(hlsError)}</div>`}
+      ${hlsError &&
+      !fellBack &&
+      hlsError !== 'hls_warming' &&
+      running &&
+      html`<div class="off">${hlsMessage(hlsError)}</div>`}
     </div>
   `;
 }
@@ -576,11 +662,19 @@ function App() {
       setOnline(false);
       return;
     }
-    try { setSensors(await get('/sensors.json')); } catch { /* optional */ }
+    try {
+      setSensors(await get('/sensors.json'));
+    } catch {
+      /* optional */
+    }
     // Same 1s cadence as the rest. Failures are ignored: a phone with the clip
     // writer disabled may not answer, and that must not take the status poll
     // down with it.
-    try { setClipRec(await clipRecordingState()); } catch { /* optional */ }
+    try {
+      setClipRec(await clipRecordingState());
+    } catch {
+      /* optional */
+    }
   }, []);
 
   useEffect(() => {
@@ -592,11 +686,21 @@ function App() {
   const loadLists = useCallback(async () => {
     // These answer with { clips: [...] } and { recordings: [...] }, not bare
     // arrays; reading the response itself rendered an empty list with no error.
-    try { setClips((await get('/clips')).clips || []); } catch { /* not mounted */ }
-    try { setRecordings((await get('/recordings')).recordings || []); } catch { /* none yet */ }
+    try {
+      setClips((await get('/clips')).clips || []);
+    } catch {
+      /* not mounted */
+    }
+    try {
+      setRecordings((await get('/recordings')).recordings || []);
+    } catch {
+      /* none yet */
+    }
   }, []);
 
-  useEffect(() => { loadLists(); }, [loadLists]);
+  useEffect(() => {
+    loadLists();
+  }, [loadLists]);
 
   // Every action goes through here so a failure is visible instead of silent.
   // fn is a callable (a helper from state.js) rather than a bare path, because
@@ -613,7 +717,10 @@ function App() {
     }
   }, []);
 
-  const setModeBoth = (m) => { setMode(m); localStorage.setItem('ocubea_mode', m); };
+  const setModeBoth = (m) => {
+    setMode(m);
+    localStorage.setItem('ocubea_mode', m);
+  };
   const running = !!(status && status.camera_active);
 
   const s = status || {};
@@ -641,37 +748,58 @@ function App() {
       </span>
       <span class="pill">${s.fps || 0} ${t('fps')}</span>
       ${!online && html`<span class="pill off">${t('phoneOffline')}</span>`}
-      <button class="lang" title=${t('language')}
+      <button
+        class="lang"
+        title=${t('language')}
         onClick=${() => {
           // lang, not T: T is the resolved translation table, so comparing it
           // to 'pl' was always false and the button always offered EN.
           localStorage.setItem('ocubea_lang', lang === 'pl' ? 'en' : 'pl');
           location.reload();
-        }}>${lang.toUpperCase()}</button>
+        }}
+      >
+        ${lang.toUpperCase()}
+      </button>
     </header>
 
     <main>
-      <${Stream} mode=${mode} running=${running} lowLatency=${lowLatency}
-        audioCodec=${audio.codec} audioEnabled=${!!audio.enabled} />
+      <${Stream}
+        mode=${mode}
+        running=${running}
+        lowLatency=${lowLatency}
+        audioCodec=${audio.codec}
+        audioEnabled=${!!audio.enabled}
+      />
       <${LiveAudio} codec=${audio.codec} enabled=${!!audio.enabled} running=${running} />
 
       ${flash && html`<div class="flash">${flash}</div>`}
 
       <section>
         <div class="row">
-          <button id="bStream" class="big danger primary-weight"
-            onClick=${() => act(setSetting, 'force_stop', '1')}>
+          <button
+            id="bStream"
+            class="big danger primary-weight"
+            onClick=${() => act(setSetting, 'force_stop', '1')}
+          >
             ${t('stop')}
           </button>
-          <button id="bStart" class="big primary primary-weight"
-            onClick=${() => act(setSetting, 'force_start', '1')}>
+          <button
+            id="bStart"
+            class="big primary primary-weight"
+            onClick=${() => act(setSetting, 'force_start', '1')}
+          >
             ${t('start')}
           </button>
-          <button class="big secondary" id="bMode"
-            onClick=${() => setModeBoth(mode === 'mjpeg' ? 'hls' : 'mjpeg')}>
+          <button
+            class="big secondary"
+            id="bMode"
+            onClick=${() => setModeBoth(mode === 'mjpeg' ? 'hls' : 'mjpeg')}
+          >
             ${t('mode')}: ${mode === 'mjpeg' ? 'MJPEG' : 'HLS'}
           </button>
-          <button id="bLL" class=${'big secondary' + (lowLatency ? ' on' : '')}
+          <button
+            id="bLL"
+            class=${'big secondary' + (lowLatency ? ' on' : '')}
             onClick=${() => {
               const v = !lowLatency;
               setLowLatency(v);
@@ -683,35 +811,51 @@ function App() {
               // put 4.14s of media on the playlist -- with `lowLatencyMode`
               // alone the button changed nothing an end viewer could see.
               act(setHlsProfile, v ? 'low' : 'default', poll);
-            }}>
+            }}
+          >
             ${t('lowLatency')}: ${lowLatency ? t('on') : t('off')}
           </button>
           <${HlsQuality} />
-          <button id="bShot" class="big secondary" onClick=${() => {
-            const a = document.createElement('a');
-            a.href = '/shot.jpg?t=' + Date.now();
-            a.download = 'ocubea-' + Date.now() + '.jpg';
-            a.click();
-          }}>${t('snapshot')}</button>
+          <button
+            id="bShot"
+            class="big secondary"
+            onClick=${() => {
+              const a = document.createElement('a');
+              a.href = '/shot.jpg?t=' + Date.now();
+              a.download = 'ocubea-' + Date.now() + '.jpg';
+              a.click();
+            }}
+          >
+            ${t('snapshot')}
+          </button>
         </div>
       </section>
 
       <section>
         <h2>${t('status')}</h2>
         <dl>
-          <dt>FPS</dt><dd>${s.fps || 0}</dd>
-          <dt>${t('encoder')}</dt><dd>${hls.codec || s.encoder || '–'}</dd>
-          <dt>${t('segments')}</dt><dd>${hls.active ? hls.segments || 0 : '–'}</dd>
-          <dt>${t('resolution')}</dt><dd>${s.resolution || '–'}</dd>
-          <dt>${t('uptime')}</dt><dd>${uptime(s.uptime_s || 0)}</dd>
-          <dt>${t('dropped')}</dt><dd>${(s.pipeline && s.pipeline.dropped_saturated) || s.dropped || 0}</dd>
+          <dt>FPS</dt>
+          <dd>${s.fps || 0}</dd>
+          <dt>${t('encoder')}</dt>
+          <dd>${hls.codec || s.encoder || '–'}</dd>
+          <dt>${t('segments')}</dt>
+          <dd>${hls.active ? hls.segments || 0 : '–'}</dd>
+          <dt>${t('resolution')}</dt>
+          <dd>${s.resolution || '–'}</dd>
+          <dt>${t('uptime')}</dt>
+          <dd>${uptime(s.uptime_s || 0)}</dd>
+          <dt>${t('dropped')}</dt>
+          <dd>${(s.pipeline && s.pipeline.dropped_saturated) || s.dropped || 0}</dd>
         </dl>
       </section>
 
       <section>
         <h2>${t('optics')}</h2>
         <${Row} label=${t('zoom')}>
-          <${Slider} value=${Math.round((zoomLevel - 1) * 100)} max=${Math.round((zoomMax - 1) * 100)} step=${1}
+          <${Slider}
+            value=${Math.round((zoomLevel - 1) * 100)}
+            max=${Math.round((zoomMax - 1) * 100)}
+            step=${1}
             id="zoom"
             label=${t('zoom')}
             onInput=${(v) => {
@@ -721,12 +865,17 @@ function App() {
               // the bottom of the slider means to a user.
               const level = 1 + (zoomMax - 1) * (v / (Math.round((zoomMax - 1) * 100) || 1));
               act(ptz, { zoom: Math.max(1.01, level).toFixed(2) });
-            }} />
+            }}
+          />
           <span class="val">${zoomLevel.toFixed(1)}×</span>
         <//>
         <${Row} label=${t('torch')}>
-          <${Toggle} id="bTorch" on=${!!s.torch} label=${t('torch')}
-            onChange=${(v) => act(setSetting, 'torch', v ? 'on' : 'off', poll)} />
+          <${Toggle}
+            id="bTorch"
+            on=${!!s.torch}
+            label=${t('torch')}
+            onChange=${(v) => act(setSetting, 'torch', v ? 'on' : 'off', poll)}
+          />
         <//>
         <${Row} label=${t('autofocus')}>
           <button id="bFocus" class="ctl" onClick=${() => act(focus, 0.5, 0.5)}>
@@ -742,28 +891,54 @@ function App() {
                The comment is HTML, not /* */ inside the attribute list: htm
                treats that as a child, and the button then gets a non-function
                handler and throws "e is not a function" on click. -->
-          <${Toggle} id="bFlip" on=${!!s.front_camera} label=${t('flip')}
-            onChange=${() => act(setSetting, 'ffc', 'toggle', poll)} />
+          <${Toggle}
+            id="bFlip"
+            on=${!!s.front_camera}
+            label=${t('flip')}
+            onChange=${() => act(setSetting, 'ffc', 'toggle', poll)}
+          />
         <//>
         <${Row} label=${t('effect')}>
-          <select id="effect" class="ctl" value=${s.effect || 'none'} aria-label=${t('effect')}
-            onChange=${(e) => act(setSetting, 'effect', e.target.value, poll)}>
-            ${EFFECTS.map(([id, key]) =>
-              html`<option value=${id} selected=${(s.effect || 'none') === id}>${t(key)}</option>`)}
+          <select
+            id="effect"
+            class="ctl"
+            value=${s.effect || 'none'}
+            aria-label=${t('effect')}
+            onChange=${(e) => act(setSetting, 'effect', e.target.value, poll)}
+          >
+            ${EFFECTS.map(
+              ([id, key]) =>
+                html`<option value=${id} selected=${(s.effect || 'none') === id}>
+                  ${t(key)}
+                </option>`,
+            )}
           </select>
         <//>
         <${Row} label=${t('quality')}>
-          <select id="quality" class="ctl" value=${qualityKey(s.resolution)} aria-label=${t('quality')}
-            onChange=${(e) => act(setSetting, 'quality', e.target.value, poll)}>
-            ${QUALITIES.map(([id, label]) =>
-              html`<option value=${id} selected=${qualityKey(s.resolution) === id}>${label}</option>`)}
+          <select
+            id="quality"
+            class="ctl"
+            value=${qualityKey(s.resolution)}
+            aria-label=${t('quality')}
+            onChange=${(e) => act(setSetting, 'quality', e.target.value, poll)}
+          >
+            ${QUALITIES.map(
+              ([id, label]) =>
+                html`<option value=${id} selected=${qualityKey(s.resolution) === id}>
+                  ${label}
+                </option>`,
+            )}
           </select>
         <//>
-        <${JpegQuality} value=${s.jpeg_quality != null ? s.jpeg_quality : 82}
-          onInput=${(v) => act(setSetting, 'jpeg_quality', v, poll)} />
-        <${Orientation} value=${s.orientation || 'landscape'}
+        <${JpegQuality}
+          value=${s.jpeg_quality != null ? s.jpeg_quality : 82}
+          onInput=${(v) => act(setSetting, 'jpeg_quality', v, poll)}
+        />
+        <${Orientation}
+          value=${s.orientation || 'landscape'}
           options=${(s.avail && s.avail.orientation) || ORIENTATIONS}
-          onChange=${(v) => act(setSetting, 'orientation', v, poll)} />
+          onChange=${(v) => act(setSetting, 'orientation', v, poll)}
+        />
         <${Row} label=${t('viewers')}>
           <span class="val">${s.viewers || 0}</span>
         <//>
@@ -772,9 +947,12 @@ function App() {
       <section>
         <h2>${t('image')}</h2>
         <dl>
-          <dt>${t('bitrate')}</dt><dd>${s.video_bitrate_kbps ? s.video_bitrate_kbps + ' kbps' : '–'}</dd>
-          <dt>${t('frames')}</dt><dd>${s.frames != null ? s.frames : '–'}</dd>
-          <dt>${t('effect')}</dt><dd>${s.effect || '–'}</dd>
+          <dt>${t('bitrate')}</dt>
+          <dd>${s.video_bitrate_kbps ? s.video_bitrate_kbps + ' kbps' : '–'}</dd>
+          <dt>${t('frames')}</dt>
+          <dd>${s.frames != null ? s.frames : '–'}</dd>
+          <dt>${t('effect')}</dt>
+          <dd>${s.effect || '–'}</dd>
         </dl>
       </section>
 
@@ -790,32 +968,61 @@ function App() {
                -- the button looked fine and did the opposite of what its label
                said. Sending the real state works for every setting and needs no
                server-side toggle. -->
-          <${Toggle} id="bNight" on=${!!s.night_vision} label=${t('nightVision')}
-            onChange=${(v) => act(setSetting, 'night_vision', v ? 'on' : 'off', poll)} />
+          <${Toggle}
+            id="bNight"
+            on=${!!s.night_vision}
+            label=${t('nightVision')}
+            onChange=${(v) => act(setSetting, 'night_vision', v ? 'on' : 'off', poll)}
+          />
         <//>
         <${Row} label=${t('motion')}>
-          <${Toggle} id="bMotion" on=${!!motion.enabled} label=${t('motion')}
-            onChange=${(v) => act(setSetting, 'motion_detection', v ? 'on' : 'off', poll)} />
+          <${Toggle}
+            id="bMotion"
+            on=${!!motion.enabled}
+            label=${t('motion')}
+            onChange=${(v) => act(setSetting, 'motion_detection', v ? 'on' : 'off', poll)}
+          />
         <//>
         <${Row} label=${t('sensitivity')}>
-          <${Slider} value=${motion.sensitivity != null ? motion.sensitivity : 5} min=${1} max=${10} step=${1}
+          <${Slider}
+            value=${motion.sensitivity != null ? motion.sensitivity : 5}
+            min=${1}
+            max=${10}
+            step=${1}
             id="sens"
             label=${t('sensitivity')}
-            onInput=${(v) => act(setSetting, 'motion_sensitivity', v, poll)} />
+            onInput=${(v) => act(setSetting, 'motion_sensitivity', v, poll)}
+          />
           <span class="val">${motion.sensitivity != null ? motion.sensitivity : '–'}</span>
         <//>
         <${Row} label=${t('preRecord')}>
-          <${Slider} value=${preRecord} min=${0} max=${10} step=${1}
+          <${Slider}
+            value=${preRecord}
+            min=${0}
+            max=${10}
+            step=${1}
             id="pre"
             label=${t('preRecord')}
-            onInput=${(v) => { setPreRecord(v); act(setSetting, 'pre_record_seconds', v, poll); }} />
+            onInput=${(v) => {
+              setPreRecord(v);
+              act(setSetting, 'pre_record_seconds', v, poll);
+            }}
+          />
           <span class="val">${preRecord}${t('sec')}</span>
         <//>
         <${Row} label=${t('maxClip')}>
-          <${Slider} value=${maxClip} min=${10} max=${600} step=${10}
+          <${Slider}
+            value=${maxClip}
+            min=${10}
+            max=${600}
+            step=${10}
             id="clip"
             label=${t('maxClip')}
-            onInput=${(v) => { setMaxClip(v); act(setSetting, 'max_clip_seconds', v, poll); }} />
+            onInput=${(v) => {
+              setMaxClip(v);
+              act(setSetting, 'max_clip_seconds', v, poll);
+            }}
+          />
           <span class="val">${maxClip}${t('sec')}</span>
         <//>
       </section>
@@ -823,52 +1030,92 @@ function App() {
       <section>
         <h2>${t('audio')}</h2>
         <${Row} label=${t('audioEnabled')}>
-          <${Toggle} id="bAudOn" on=${!!audio.enabled} label=${t('audioEnabled')}
-            onChange=${(v) => act(setSetting, 'audio_enabled', v ? 'on' : 'off', poll)} />
+          <${Toggle}
+            id="bAudOn"
+            on=${!!audio.enabled}
+            label=${t('audioEnabled')}
+            onChange=${(v) => act(setSetting, 'audio_enabled', v ? 'on' : 'off', poll)}
+          />
           <span class="dim">${audio.enabled ? t('audioOn') : t('audioOff')}</span>
         <//>
-        ${AudioCodecs(audio.available).map(([id, key]) => html`
-          <${Row} label=${t(key)}>
-            <input id=${'ac_' + id} type="radio" name="acodec" value=${id}
-              aria-label=${t(key)} checked=${(audio.codec || 'none') === id}
-              onChange=${() => act(setAudioCodec, id, poll)} />
-            <span class="dim">${t('audioNote_' + id)}</span>
-          <//>`)}
+        ${AudioCodecs(audio.available).map(
+          ([id, key]) =>
+            html` <${Row} label=${t(key)}>
+              <input
+                id=${'ac_' + id}
+                type="radio"
+                name="acodec"
+                value=${id}
+                aria-label=${t(key)}
+                checked=${(audio.codec || 'none') === id}
+                onChange=${() => act(setAudioCodec, id, poll)}
+              />
+              <span class="dim">${t('audioNote_' + id)}</span>
+            <//>`,
+        )}
         <p class="dim">${t('audioNote')}</p>
         <dl>
-          <dt>${t('audioCodec')}</dt><dd>${audio.enabled ? audio.codec : t('off')}</dd>
-          <dt>${t('available')}</dt><dd>${audio.available || '–'}</dd>
+          <dt>${t('audioCodec')}</dt>
+          <dd>${audio.enabled ? audio.codec : t('off')}</dd>
+          <dt>${t('available')}</dt>
+          <dd>${audio.available || '–'}</dd>
         </dl>
       </section>
 
       <section class="files">
         <h2>${t('recordings')} ${recordings.length}</h2>
         <${Row} label=${t('recording')}>
-          <${Toggle} id="bRec" on=${!!recording.enabled} label=${t('recording')}
-            onChange=${(v) => act(setSetting, 'recording', v ? 'on' : 'off',
-              async () => { await poll(); await loadLists(); })} />
+          <${Toggle}
+            id="bRec"
+            on=${!!recording.enabled}
+            label=${t('recording')}
+            onChange=${(v) =>
+              act(setSetting, 'recording', v ? 'on' : 'off', async () => {
+                await poll();
+                await loadLists();
+              })}
+          />
         <//>
         <div class="row">
-          <button id="bRefreshRec" class="ctl" onClick=${() => act(loadLists)}>${t('refresh')}</button>
+          <button id="bRefreshRec" class="ctl" onClick=${() => act(loadLists)}>
+            ${t('refresh')}
+          </button>
           <!-- Disabled on an empty list rather than a no-op click: the bulk
                delete walks the list client-side, so with nothing recorded it
                sends no request at all, and a live-looking button that does
                nothing is the same failure as the undefined helpers were. -->
-          <button id="bDelAll" class="ctl danger" disabled=${recordings.length === 0}
+          <button
+            id="bDelAll"
+            class="ctl danger"
+            disabled=${recordings.length === 0}
             onClick=${() => act(deleteAllRecordings, recordings, loadLists)}
-            >${t('deleteAll')}</button>
+          >
+            ${t('deleteAll')}
+          </button>
         </div>
         ${recordings.length === 0
           ? html`<p class="dim">${t('noRecordings')}</p>`
-          : recordings.map((r) => html`
-              <div class="row file">
-                <span class="name" title=${r.name}>${r.name}</span>
-                <span class="size">${bytes(r.size)}</span>
-                <a class="ctl" href=${'/recordings/' + encodeURIComponent(r.name)}
-                  download title=${t('download')}>↓</a>
-                <button class="ctl" onClick=${() => act(deleteRecording, r.name, loadLists)}
-                  title=${t('deleteClip')}>✕</button>
-              </div>`)}
+          : recordings.map(
+              (r) =>
+                html` <div class="row file">
+                  <span class="name" title=${r.name}>${r.name}</span>
+                  <span class="size">${bytes(r.size)}</span>
+                  <a
+                    class="ctl"
+                    href=${'/recordings/' + encodeURIComponent(r.name)}
+                    download
+                    title=${t('download')}
+                    >↓</a
+                  >
+                  <button
+                    class="ctl"
+                    onClick=${() => act(deleteRecording, r.name, loadLists)}
+                    title=${t('deleteClip')}
+                  >
+                    ✕
+                  </button>
+                </div>`,
+            )}
       </section>
 
       <section class="files">
@@ -878,54 +1125,89 @@ function App() {
              failing write reported nothing -- the error field is the phone's
              own clipState error, and dropped frames are the one number that
              says the encoder was falling behind. -->
-        ${clipRec && html`
-          <dl class="kv">
-            <dt>${t('recState')}</dt>
-            <dd>${clipRec.active ? t('recording') : clipRec.armed ? t('armed') : t('idle')}</dd>
-            ${clipRec.file && html`<dt>${t('recFile')}</dt><dd>${clipRec.file}</dd>`}
-            <dt>${t('recFrames')}</dt><dd>${clipRec.frames}</dd>
-            ${clipRec.dropped > 0 && html`<dt>${t('recDropped')}</dt>
-              <dd class="warn">${clipRec.dropped}</dd>`}
-            ${clipRec.bytes > 0 && html`<dt>${t('recBytes')}</dt>
-              <dd>${bytes(clipRec.bytes)}</dd>`}
-            ${clipRec.error && html`<dt>${t('recError')}</dt>
-              <dd class="warn">${clipRec.error}</dd>`}
-          </dl>`}
+        ${clipRec &&
+        html` <dl class="kv">
+          <dt>${t('recState')}</dt>
+          <dd>${clipRec.active ? t('recording') : clipRec.armed ? t('armed') : t('idle')}</dd>
+          ${clipRec.file &&
+          html`<dt>${t('recFile')}</dt>
+            <dd>${clipRec.file}</dd>`}
+          <dt>${t('recFrames')}</dt>
+          <dd>${clipRec.frames}</dd>
+          ${clipRec.dropped > 0 &&
+          html`<dt>${t('recDropped')}</dt>
+            <dd class="warn">${clipRec.dropped}</dd>`}
+          ${clipRec.bytes > 0 &&
+          html`<dt>${t('recBytes')}</dt>
+            <dd>${bytes(clipRec.bytes)}</dd>`}
+          ${clipRec.error &&
+          html`<dt>${t('recError')}</dt>
+            <dd class="warn">${clipRec.error}</dd>`}
+        </dl>`}
         <div class="row">
-          <button id="bRecNow" class="ctl primary" onClick=${() => act(recordNow, 30, loadLists)}
-            >${t('recordNow')}</button>
-          <button id="bRecStop" class="ctl" onClick=${() => act(stopClipRecording, loadLists)}
-            >${t('stopClip')}</button>
-          <button id="bRefreshClips" class="ctl" onClick=${() => act(loadLists)}>${t('refresh')}</button>
-          <button id="bPruneClips" class="ctl" disabled=${clips.length === 0}
+          <button id="bRecNow" class="ctl primary" onClick=${() => act(recordNow, 30, loadLists)}>
+            ${t('recordNow')}
+          </button>
+          <button id="bRecStop" class="ctl" onClick=${() => act(stopClipRecording, loadLists)}>
+            ${t('stopClip')}
+          </button>
+          <button id="bRefreshClips" class="ctl" onClick=${() => act(loadLists)}>
+            ${t('refresh')}
+          </button>
+          <button
+            id="bPruneClips"
+            class="ctl"
+            disabled=${clips.length === 0}
             onClick=${() => act(pruneClips, loadLists)}
-            >${t('applyLimits')}</button>
-          <button id="bClearClips" class="ctl danger" disabled=${clips.length === 0}
+          >
+            ${t('applyLimits')}
+          </button>
+          <button
+            id="bClearClips"
+            class="ctl danger"
+            disabled=${clips.length === 0}
             onClick=${() => act(clearClips, loadLists)}
-            >${t('deleteAll')}</button>
+          >
+            ${t('deleteAll')}
+          </button>
         </div>
         ${clips.length === 0
           ? html`<p class="dim">${t('noClips')}</p>`
-          : clips.map((c) => html`
-              <div class="row file">
-                <span class="name" title=${c.name}
-                  onClick=${() => setClipPreview(c.name)}>${c.name}</span>
-                <span class="size">${bytes(c.size)}</span>
-                <a class="ctl" href=${'/clips/' + encodeURIComponent(c.name)}
-                  download title=${t('download')}>↓</a>
-                <button id="clipDelete" class="ctl"
-                  onClick=${() => act(clipOnFile, 'delete', c.name, loadLists)}
-                  title=${t('deleteClip')}>✕</button>
-              </div>`)}
+          : clips.map(
+              (c) =>
+                html` <div class="row file">
+                  <span class="name" title=${c.name} onClick=${() => setClipPreview(c.name)}
+                    >${c.name}</span
+                  >
+                  <span class="size">${bytes(c.size)}</span>
+                  <a
+                    class="ctl"
+                    href=${'/clips/' + encodeURIComponent(c.name)}
+                    download
+                    title=${t('download')}
+                    >↓</a
+                  >
+                  <button
+                    id="clipDelete"
+                    class="ctl"
+                    onClick=${() => act(clipOnFile, 'delete', c.name, loadLists)}
+                    title=${t('deleteClip')}
+                  >
+                    ✕
+                  </button>
+                </div>`,
+            )}
       </section>
 
       <section>
         <h2>${t('device')}</h2>
         <dl>
-          <dt>Model</dt><dd>${sensorsDev.model || '–'}</dd>
+          <dt>Model</dt>
+          <dd>${sensorsDev.model || '–'}</dd>
           <dt>${t('recording')}</dt>
           <dd>${recording.enabled ? (recording.active ? '● ' + t('on') : t('idle')) : t('off')}</dd>
-          <dt>${t('audio')}</dt><dd>${audio.enabled ? audio.codec : t('off')}</dd>
+          <dt>${t('audio')}</dt>
+          <dd>${audio.enabled ? audio.codec : t('off')}</dd>
           <dt>${t('battery')}</dt>
           <dd>${sensors && sensors.battery ? sensors.battery.level + '%' : '–'}</dd>
           <dt>${t('storage')}</dt>
@@ -933,25 +1215,40 @@ function App() {
         </dl>
       </section>
 
-      ${clipPreview && html`
-        <section class="preview">
-          <h2>${t('clipPreview')}</h2>
-          <video src=${'/clips/' + encodeURIComponent(clipPreview)} controls autoplay
-            playsinline style="width:100%;max-height:60vh;background:#000"></video>
-          <div class="row">
-            <a class="ctl" href=${'/clips/' + encodeURIComponent(clipPreview)} download
-              >${t('download')}</a>
-            <button id="clipCloseBtn" class="ctl danger"
-              onClick=${() => setClipPreview(null)}>${t('close')}</button>
-          </div>
-        </section>`}
+      ${clipPreview &&
+      html` <section class="preview">
+        <h2>${t('clipPreview')}</h2>
+        <video
+          src=${'/clips/' + encodeURIComponent(clipPreview)}
+          controls
+          autoplay
+          playsinline
+          style="width:100%;max-height:60vh;background:#000"
+        ></video>
+        <div class="row">
+          <a class="ctl" href=${'/clips/' + encodeURIComponent(clipPreview)} download
+            >${t('download')}</a
+          >
+          <button id="clipCloseBtn" class="ctl danger" onClick=${() => setClipPreview(null)}>
+            ${t('close')}
+          </button>
+        </div>
+      </section>`}
 
       <section>
         <h2>${t('api')}</h2>
         <${Row} label=${t('token')}>
-          <input class="text" type="password" value=${token} placeholder="—"
+          <input
+            class="text"
+            type="password"
+            value=${token}
+            placeholder="—"
             onInput=${(e) => setTokenState(e.target.value)}
-            onChange=${(e) => { setToken(e.target.value); setTokenState(e.target.value); }} />
+            onChange=${(e) => {
+              setToken(e.target.value);
+              setTokenState(e.target.value);
+            }}
+          />
         <//>
         <p class="dim">${t('tokenHint')}</p>
       </section>

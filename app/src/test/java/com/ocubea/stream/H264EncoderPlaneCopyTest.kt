@@ -1,10 +1,10 @@
 package com.ocubea.stream
 
 import androidx.camera.core.ImageProxy
-import java.nio.ByteBuffer
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.ByteBuffer
 
 /**
  * The per-byte plane copy that cost 190ms per frame.

@@ -8,8 +8,8 @@ import com.ocubea.onvif.OnvifDiscovery
 import com.ocubea.security.MotionDetector
 import com.ocubea.security.MotionRecorder
 import org.junit.After
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before

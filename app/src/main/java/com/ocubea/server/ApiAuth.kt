@@ -1,9 +1,9 @@
 package com.ocubea.server
 
 import fi.iki.elonen.NanoHTTPD
-import fi.iki.elonen.NanoHTTPD.Response.Status as Status
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import fi.iki.elonen.NanoHTTPD.Response.Status as Status
 
 /**
  * Optional bearer-token auth for the HTTP API.

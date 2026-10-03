@@ -1,0 +1,43 @@
+root = true
+
+[*.{kt,kts}]
+ktlint_code_style = intellij_idea
+# max_line_length stays off: this codebase has 153 lines over 100 chars and they
+# are almost all long string literals and comments in the RTSP/H264 paths, where
+# wrapping a byte sequence mid-literal would make it wrong rather than tidy.
+# The line-length rule was disabled rather than satisfied by a reformat that
+# nobody asked for and that would touch 150 files inside an unrelated commit.
+
+ktlint_standard_function-signature = disabled
+ktlint_standard_argument-list-wrapping = disabled
+ktlint_standard_multiline-expression-wrapping = disabled
+ktlint_standard_statement-wrapping = disabled
+ktlint_standard_indent = disabled
+ktlint_standard_trailing-comma-on-call-site = disabled
+ktlint_standard_try-catch-finally-spacing = disabled
+ktlint_standard_chain-method-continuation = disabled
+ktlint_standard_no-multi-spaces = disabled
+ktlint_standard_wrapping = disabled
+ktlint_standard_no-empty-first-line-in-class-body = disabled
+ktlint_standard_blank-line-before-declaration = disabled
+ktlint_standard_class-signature = disabled
+ktlint_standard_if-else-wrapping = disabled
+ktlint_standard_multiline-if-else = disabled
+ktlint_standard_condition-wrapping = disabled
+ktlint_standard_parameter-list-wrapping = disabled
+ktlint_standard_spacing-between-declarations-with-annotations = disabled
+ktlint_standard_spacing-between-declarations-with-comments = disabled
+ktlint_standard_no-consecutive-comments = disabled
+ktlint_standard_property-naming = disabled
+ktlint_standard_trailing-comma-on-declaration-site = disabled
+
+ktlint_standard_no-unused-imports = enabled
+ktlint_standard_final-newline = enabled
+ktlint_standard_import-ordering = enabled
+ktlint_standard_no-consecutive-blank-lines = enabled
+ktlint_standard_string-template = enabled
+ktlint_standard_no-trailing-spaces = enabled
+ktlint_standard_no-blank-line-before-rbrace = enabled
+ktlint_standard_multiline-loop = enabled
+ktlint_standard_function-expression-body = enabled
+ktlint_standard_chain-wrapping = enabled

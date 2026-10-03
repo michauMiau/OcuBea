@@ -1,7 +1,6 @@
 package com.ocubea.server
 
 import android.util.Log
-import java.util.concurrent.Executors
 
 /**
  * Encoded audio, sharing the microphone the PCM path already has open.

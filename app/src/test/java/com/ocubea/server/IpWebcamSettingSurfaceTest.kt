@@ -5,9 +5,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
-import java.net.URI
-import java.net.URL
-import java.util.Locale
 
 /**
  * Guards the gap that let a client do nothing wrong and still get a 404.

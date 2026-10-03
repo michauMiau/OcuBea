@@ -9,9 +9,9 @@ import android.os.Build
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
+import com.ocubea.CrashLogger
 import com.ocubea.R
 import com.ocubea.camera.CameraManager
-import com.ocubea.CrashLogger
 import com.ocubea.model.OcuBeaConfig
 import com.ocubea.onvif.OnvifDiscovery
 import com.ocubea.security.MotionDetector

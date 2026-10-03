@@ -17,7 +17,7 @@ const get = async (p) => JSON.parse(await (await fetch(url(p))).text());
   const b = await chromium.launch();
   const p = await b.newPage();
   const errs = [];
-  p.on('pageerror', e => errs.push(String(e)));
+  p.on('pageerror', (e) => errs.push(String(e)));
 
   await p.goto(H, { waitUntil: 'domcontentloaded' });
   await p.waitForTimeout(9000);
@@ -28,15 +28,18 @@ const get = async (p) => JSON.parse(await (await fetch(url(p))).text());
 
   const live = await get('/clips/recording');
   const shown = await p.evaluate(() => {
-    const sec = [...document.querySelectorAll('section')].find(s =>
-      (s.querySelector('h2')?.textContent || '').match(/Klip|Clips/));
+    const sec = [...document.querySelectorAll('section')].find((s) =>
+      (s.querySelector('h2')?.textContent || '').match(/Klip|Clips/),
+    );
     if (!sec) return null;
     const dl = sec.querySelector('dl.kv');
     if (!dl) return { panel: false };
     const out = {};
     const dts = [...dl.querySelectorAll('dt')];
     const dds = [...dl.querySelectorAll('dd')];
-    dts.forEach((dt, i) => { out[dt.textContent.trim()] = dds[i]?.textContent.trim(); });
+    dts.forEach((dt, i) => {
+      out[dt.textContent.trim()] = dds[i]?.textContent.trim();
+    });
     return { panel: true, out };
   });
 

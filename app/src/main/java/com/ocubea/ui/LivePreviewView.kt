@@ -9,7 +9,6 @@ import android.graphics.Rect
 import android.util.AttributeSet
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.View
 import android.widget.FrameLayout
 import com.ocubea.stream.FrameHub
 import java.util.concurrent.atomic.AtomicBoolean

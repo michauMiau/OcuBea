@@ -6,7 +6,6 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.random.Random
 
 /**
  * Minimal ONVIF compatibility layer:
@@ -80,9 +79,7 @@ class OnvifDiscovery(private val context: Context) {
         thread = null
     }
 
-    private fun uuid(): String {
-        return "urn:uuid:" + java.util.UUID.randomUUID().toString()
-    }
+    private fun uuid(): String = "urn:uuid:" + java.util.UUID.randomUUID().toString()
 
     private val deviceId = "urn:uuid:" + java.util.UUID.randomUUID().toString()
 

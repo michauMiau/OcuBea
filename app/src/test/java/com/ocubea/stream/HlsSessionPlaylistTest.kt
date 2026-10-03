@@ -217,7 +217,7 @@ class HlsSessionPlaylistTest {
         val longest = entries(playlist).maxOf { it.extinfMs }
         assertTrue(
             "TARGETDURATION $target s cannot hold the longest advertised " +
-                "segment ${longest} ms — a client may reject the playlist outright",
+                "segment $longest ms — a client may reject the playlist outright",
             targetSec * 1000 >= longest,
         )
     }

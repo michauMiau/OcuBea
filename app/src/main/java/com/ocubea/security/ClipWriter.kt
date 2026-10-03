@@ -2,7 +2,6 @@ package com.ocubea.security
 
 import android.content.Context
 import com.ocubea.stream.H264Encoder
-import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.concurrent.LinkedBlockingQueue
