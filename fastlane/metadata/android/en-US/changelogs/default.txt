@@ -1,0 +1,1 @@
+See the repository history. Recent changes separate arrival rate from delivery rate, stop the adaptive resolution ladder judging a camera that is still starting, and scope cleartext traffic to loopback.

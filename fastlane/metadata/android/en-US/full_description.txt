@@ -1,0 +1,29 @@
+OcuBea turns an Android phone into a network camera. It serves MJPEG video, RTSP and an ONVIF device service to anything on your local network — a browser, a VLC, a Home Assistant instance, an NVR — with no account, no cloud and no data leaving the device.
+
+Everything runs on the device. There is no server component, no telemetry and no analytics.
+
+What it does:
+
+• MJPEG streaming with a live WebUI for torch, night vision, zoom, camera switch, quality and focus
+• RTSP stream for players and NVRs
+• ONVIF device service, so ONVIF clients can discover the phone as a camera
+• IP Webcam compatible endpoints (/status.json, /shot.jpg, /focus, /ptz, /api/camera), so existing tools work unmodified
+• One-way audio in AAC, WAV or FLAC, chosen per device after probing what the hardware actually supports
+• Motion-triggered recording to fMP4 clips, playable in the app and over HTTP with byte-range seeking
+• Clip recording with native storage management
+• Software night vision for cameras without an IR filter
+
+Permissions, and why each is there:
+
+• CAMERA — the whole point of the app
+• RECORD_AUDIO — one-way audio streaming and clip audio
+• INTERNET / ACCESS_NETWORK_STATE / ACCESS_WIFI_STATE — to serve clients on your local network
+• FOREGROUND_SERVICE (camera, microphone) — the camera keeps running while the screen is off
+• POST_NOTIFICATIONS — the foreground service notification on Android 13+
+• RECEIVE_BOOT_COMPLETED — optional autostart after reboot
+• WAKE_LOCK — keeps streaming while the screen is off
+• CHANGE_WIFI_MULTICAST_STATE — ONVIF discovery uses multicast
+
+No internet permission is used to contact anything. Every address the app opens is its own server on the local network.
+
+A note on performance: the frame rate a device can deliver is bounded by its camera and SoC, not by this app. The app measures what actually arrives and adapts the resolution ladder, rather than reporting a target it cannot hit.
