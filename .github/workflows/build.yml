@@ -141,10 +141,51 @@ jobs:
       - name: Verify the RTSP gate rejects a silent server
         run: python3 tools/verify_rtsp_gate.py
 
-      # The WebUI is checked in a real browser because a translation gap, a
-      # clipped label or a label that reverts to English after a click is
-      # invisible in a JVM test and in a build log. All three checks exit
-      # non-zero on failure, so they gate the APK.
+      # The decode gate is the only check that asks a decoder instead of asking
+      # the server whether it is talking to itself. It was inline in
+      # rtsp_capture_h264.py, which meant the only way to learn whether it could
+      # tell a broken capture from a clean one was to produce a broken capture --
+      # and the capture tool is what has been broken before.
+      #
+      # tools/decode_gate.py is that logic on its own, so it runs against a saved
+      # file. This verifies it by construction: ffmpeg encodes a real stream, and
+      # bytes are cut out of it at chosen points, which is what a dropped FU-A
+      # fragment looks like from outside anyway. The decoder still emits a frame
+      # for a damaged one, so nb_read_frames stays green -- which is the whole
+      # reason the gate counts decoder errors rather than frames.
+      #
+      # The threshold is measured, not asserted, and it separates: 0.00 clean,
+      # 0.10 and 0.25 for one and three holes, 0.61 to 1.05 from eight upward.
+      # Real phone captures read 0.00-0.03 healthy and 1.59-2.14 damaged, so the
+      # limit of 0.5 sits in the gap rather than at zero, which no file reaches.
+      #
+      # Two earlier versions of this test were wrong and both were the test's
+      # fault. One built slices from a repeating byte pattern, which is not video:
+      # ffmpeg said "A non-intra slice in an IDR NAL unit" and both the clean and
+      # the damaged case decoded zero frames. The other punched one hole into one
+      # frame out of twelve and expected a failure -- that is 8% of the picture
+      # damaged, and the gate correctly read 0.33 and passed.
+      #
+      # A third asked ffmpeg for an IDR so the test could run without a phone. It
+      # will not emit one -- -g 1, -qp 0, -force_key_frames and all-intra=1 all
+      # still give NAL type 1 -- and splitting its output by type reported a PPS of
+      # 8239 bytes, which was the test's own parser being wrong about where NALs
+      # start. The current version needs no IDR and parses no NALs at all, so it
+      # runs identically here and on the machine that took the capture.
+      # ffmpeg is installed here rather than assumed. The verify script exits 1
+      # with "brak ffmpeg" when it is missing, which is correct for a check and
+      # useless for a build: it would turn a missing package into a red X that
+      # reads like a broken stream. So the install is explicit and the script's
+      # own guard stays as the honest failure.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+
+      - name: Verify the decode gate measures a damaged stream
+        run: python3 tools/verify_decode_gate.py
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
