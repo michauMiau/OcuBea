@@ -33,6 +33,8 @@ Run: python3 tools/verify_rtsp_gate.py
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import os
 import signal
 import socket
@@ -118,6 +120,70 @@ def probe(port: int, on: bool) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=500)
 
 
+def sdp_audio_declares_chosen_codec() -> tuple[bool, str]:
+    """Read RtspServer.kt and confirm the SDP payload type follows config.audioCodec.
+
+    A fake server cannot prove this: the defect is that the real server writes
+    L16/44100/1 into its own SDP while sending AAC, and no decoy that answers
+    200 can reproduce a wrong string the decoy itself does not generate. So this
+    reads the source, and the check is deliberately narrow -- it asserts that the
+    rtpmap line is computed from config.audioCodec rather than hardcoded.
+    """
+    src = Path(REPO, "app", "src", "main", "java", "com", "ocubea",
+               "server", "RtspServer.kt")
+    if not src.exists():
+        return False, "RtspServer.kt not found"
+    text = src.read_text()
+    if "val audioRtpmap = when (config.audioCodec)" not in text:
+        return False, ("the rtpmap line is not derived from config.audioCodec, "
+                       "so a track can be advertised as one codec and sent as another")
+    for codec in ("aac", "opus", "amrnb", "flac"):
+        if f'"{codec}" ->' not in text:
+            return False, f"codec {codec} has no payload-type declaration"
+    # The computed value has to be the one that reaches the wire. Checking only
+    # that the `when` exists passes while the append still writes a hardcoded
+    # L16 line, which is the exact defect: the branch was present and unused.
+    if 'body.append("a=rtpmap:97 $audioRtpmap\\r\\n")' not in text:
+        return False, ("the SDP still appends a literal payload type instead of the "
+                       "computed one, so the when-block is dead code")
+    return True, "aac/opus/amrnb/flac each declare their own payload type, and it is used"
+
+
+def track_id_overrides_stem() -> tuple[bool, str]:
+    """parseSdpUri must let an explicit trackID beat the filename stem.
+
+    Measured on a Redmi Note 12 Pro (Android 16) and a Sony F3311 (Android 6),
+    identically: the aggregate URL every client is told to use is h264_pcm.sdp,
+    whose stem contains "pcm" and so read as audio. A SETUP for
+    h264_pcm.sdp/trackID=0 therefore never entered the video branch, videoChannel
+    stayed -1, PLAY still answered 200, and `videoChannel < 0 || ensureEncoder()`
+    short-circuited so startHls was never called at all -- `logcat | grep -c
+    startHls` returned 0. ffmpeg wrote 287 bytes for twelve seconds of video
+    while MJPEG delivered 218 frames in the same twelve seconds.
+
+    A fake server cannot catch this: the defect is in the track a request is
+    routed to, and a decoy that answers 200 to everything routes nothing. So the
+    check reads the source and asserts the trackID override exists AND is applied
+    before the stem decides.
+    """
+    src = Path(REPO, "app", "src", "main", "java", "com", "ocubea",
+               "server", "RtspServer.kt")
+    if not src.exists():
+        return False, "RtspServer.kt not found"
+    text = src.read_text()
+    if "trackID=" not in text:
+        return False, ("parseSdpUri never reads trackID from the URI, so the "
+                       "aggregate h264_pcm.sdp sends every track to the branch its "
+                       "filename implies")
+    if "tracks.clear()" not in text:
+        return False, ("the trackID override exists but does not replace the "
+                       "stem-derived track, so videoChannel stays -1 and "
+                       "ensureEncoder() is short-circuited away")
+    if 'if (trackId == "1") "audio" else "video"' not in text:
+        return False, "trackID 0 must map to video and 1 to audio, as describe() numbers them"
+    return True, "trackID=0 -> video, trackID=1 -> audio, overriding the stem"
+
+
 def main() -> int:
     if not os.path.exists(TOOL):
         print(f"brak narzedzia {TOOL}")
@@ -168,6 +234,23 @@ def main() -> int:
             print(f"  BLAD: pusty port przy RTSP off -> exit {got.returncode}, "
                   f"oczekiwano 0")
             failures.append("quiet port")
+
+        # 4. The SDP must declare the codec the server actually sends.
+        ok, why = sdp_audio_declares_chosen_codec()
+        if ok:
+            print(f"  ok: SDP audio deklaruje wybrany kodek ({why})")
+        else:
+            print(f"  BLAD: SDP audio - {why}")
+            failures.append("sdp audio payload type")
+
+        # 5. A SETUP for trackID=0 on the aggregate URL must reach the video
+        # branch, or the session answers 200 and streams audio only.
+        ok, why = track_id_overrides_stem()
+        if ok:
+            print(f"  ok: trackID rozstrzyga oddol od stem ({why})")
+        else:
+            print(f"  BLAD: trackID vs stem - {why}")
+            failures.append("trackID does not override the stem")
     finally:
         for proc in procs:
             proc.send_signal(signal.SIGTERM)
@@ -178,12 +261,13 @@ def main() -> int:
 
     print()
     if failures:
-        print(f"  BRAK: {len(failures)} z 3 spraw")
+        print(f"  BRAK: {len(failures)} z 5 spraw")
         for f in failures:
             print("   -", f)
         return 1
     print("  bramka rtsp: atrapa 200/zero-RTP odrzucona, socket przy off odrzucony, "
-          "pusty port poprawny")
+          "pusty port poprawny, SDP audio zgodny z wybranym kodekiem, "
+          "trackID rozstrzyga oddol od stem")
     return 0
 
 

@@ -830,9 +830,32 @@ class RtspServer(
         body.append("a=fmtp:96 $fmtp\r\n")
         body.append("a=control:trackID=0\r\n")
         if (wantsAudio && audioLive) {
+            // The payload type must describe the track the server actually
+            // sends. This hardcoded L16/44100/1 regardless of config.audioCodec,
+            // so a session configured for aac, which is the default, advertised
+            // raw PCM while delivering AAC: ffprobe then reported
+            // codec_name=pcm_s16be for an AAC stream, and the client had no way
+            // to notice, because RTSP has no signal saying the SDP payload type
+            // was wrong.
+            //
+            // L16 stays the declaration for wav, the one codec whose ring really
+            // does hold L16. The others name their own RTP encoding. Measured on
+            // a Redmi Note 12 Pro running Android 16 with codec=aac: DESCRIBE
+            // returned L16/44100/1 while logcat showed c2.android.aac.encoder
+            // producing 216 frames per 5 s.
+            val audioRtpmap = when (config.audioCodec) {
+                "aac" -> "MPEG4-GENERIC/$PCM_SAMPLE_RATE/1"
+                "opus" -> "OPUS/$PCM_SAMPLE_RATE/2"
+                "amrnb" -> "AMR/$PCM_SAMPLE_RATE/1"
+                "flac" -> "FLAC/$PCM_SAMPLE_RATE/1"
+                else -> "L16/$PCM_SAMPLE_RATE/1"
+            }
             body.append("m=audio 0 RTP/AVP 97\r\n")
-            // L16 mono is what /audio.wav produces. Declared, not guessed.
-            body.append("a=rtpmap:97 L16/$PCM_SAMPLE_RATE/1\r\n")
+            body.append("a=rtpmap:97 $audioRtpmap\r\n")
+            // AAC over RTP needs the mode and profile that MP4 carries in esds.
+            if (config.audioCodec == "aac") {
+                body.append("a=fmtp:97 mode=AAC-hbr;profile-level-id=1\r\n")
+            }
             body.append("a=control:trackID=1\r\n")
         }
         // Content-Base is the absolute base that track controls resolve against,
@@ -940,6 +963,27 @@ class RtspServer(
             stem.contains("ulaw") || stem.contains("alaw") || stem.contains("audio")
         if (audio) tracks.add("audio")
         if (!audio && (stem.contains("h264") || stem.contains("video"))) tracks.add("video")
+
+        // An explicit trackID overrides the stem, because the aggregate
+        // `h264_pcm.sdp` is the URL every client is told to use and it carries
+        // BOTH tracks. Without this, `h264_pcm.sdp/trackID=0` was read as audio
+        // from the stem and the video branch never ran, so PLAY logged
+        // `videoChannel=-1` while answering 200, ensureEncoder() was skipped by
+        // `videoChannel < 0 ||`, startHls was never called, and the session
+        // delivered audio only. Measured on both an API 23 and an API 36 phone:
+        // ffmpeg wrote 287 B for twelve seconds of video, against 218 MJPEG
+        // frames in twelve seconds over HTTP on the same phone at the same
+        // moment.
+        //
+        // trackID 0 is video and 1 is audio because that is how describe()
+        // numbers them: m=video gets a=control:trackID=0 and m=audio gets 1.
+        val trackId = uri.substringAfterLast("trackID=", "")
+            .takeWhile { it.isDigit() }
+            .ifEmpty { null }
+        if (trackId != null) {
+            tracks.clear()
+            tracks.add(if (trackId == "1") "audio" else "video")
+        }
         return proto to tracks
     }
 
