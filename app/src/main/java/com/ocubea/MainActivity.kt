@@ -1,5 +1,6 @@
 package com.ocubea
 
+import com.ocubea.ui.EdgeToEdgeInsets
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -80,6 +81,10 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        // Measured on a Redmi Note 12 Pro, Android 16 (API 36): before this
+        // call tvTitle sat at y=27-86 while the status bar occupied y=0-94,
+        // so 67 px of the title was under the clock. See EdgeToEdgeInsets.
+        EdgeToEdgeInsets.padForSystemBars(findViewById(android.R.id.content))
         config = OcuBeaConfig(this)
         // The `awake` setting can only be honoured on a real window, and this is
         // the one window this app owns. Registering here is what lets

@@ -1,5 +1,6 @@
 package com.ocubea
 
+import com.ocubea.ui.EdgeToEdgeInsets
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -66,6 +67,10 @@ class SettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
+        // Measured on a Redmi Note 12 Pro, Android 16 (API 36): before this
+        // call tvTitle sat at y=27-86 while the status bar occupied y=0-94,
+        // so 67 px of the title was under the clock. See EdgeToEdgeInsets.
+        EdgeToEdgeInsets.padForSystemBars(findViewById(android.R.id.content))
         config = OcuBeaConfig(this)
 
         bindViews()
