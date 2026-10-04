@@ -235,6 +235,20 @@ object H264Rtp {
             val type = header and 0x1F
             val isLast = index == nals.lastIndex
 
+            // The NAL header byte goes in `indicator`, never in `body`.
+            //
+            // Payload() writes `indicator` itself and then appends `body`, so a
+            // body that still carries its own header emits the header twice: an
+            // SPS went out as `67 67 42 00 2d ...` and a PPS as `68 68 ca 43
+            // c8`. ffmpeg read the second `67` as payload, so every access unit
+            // lost a byte of shift and decoded as nal_unit_type 0 -- measured
+            // on a Sony F3311: "illegal POC type 5" and "sps_id 1 out of range"
+            // on all 75 frames, from a server that answered 200 OK and shipped
+            // 2.4 MB of RTP. The same frames over HLS decoded cleanly, because
+            // fMP4 takes its own length-prefixed NALs and never goes through
+            // here.
+            //
+            // So `body` starts at from + 1 for both paths below.
             if (length <= singleMax) {
                 out += Packet(
                     indicator = indicator,
@@ -242,12 +256,12 @@ object H264Rtp {
                     fragment = false,
                     start = true,
                     end = true,
-                    body = accessUnit.copyOfRange(from, to),
+                    body = accessUnit.copyOfRange(from + 1, to),
                     marker = isLast,
                 )
                 continue
             }
-            var offset = from
+            var offset = from + 1
             var first = true
             while (offset < to) {
                 val chunk = minOf(fuMax, to - offset)

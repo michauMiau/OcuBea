@@ -179,18 +179,30 @@ class H264RtpTest {
 
     @Test
     fun `fragments reassemble back into the original NAL`() {
+        // The first byte is a real NAL header, because packetize() takes the
+        // header into `indicator` and starts `body` after it. A synthetic
+        // payload that began with 0x00 described the bug, not the format: it
+        // made the old double-header behaviour look correct, and passed while
+        // every frame on the phone failed to decode.
+        val header = 0x65.toByte()
         val original = ByteArray(50_000) { (it % 251).toByte() }
+        original[0] = header
         val au = H264Rtp.START_CODE + original
         val packets = H264Rtp.packetize(au)
 
-        // Undo FU-A the way a decoder does, then compare with the source.
+        // Undo FU-A the way a decoder does, then compare with the source. The
+        // NAL byte comes back from the indicator's NRI and the FU header's
+        // type -- that is the reconstruction every client performs.
         val rebuilt = java.io.ByteArrayOutputStream()
         for (p in packets) {
             val payload = p.payload()
             if ((payload[0].toInt() and 0x1F) == H264Rtp.FU_A_TYPE) {
+                if (payload[1].toInt() and 0x80 != 0) {
+                    rebuilt.write((payload[0].toInt() and 0xE0) or (payload[1].toInt() and 0x1F))
+                }
                 rebuilt.write(payload, 2, payload.size - 2)
             } else {
-                rebuilt.write(payload, 1, payload.size - 1)
+                rebuilt.write(payload)
             }
         }
         assertEquals(original.size, rebuilt.size())
