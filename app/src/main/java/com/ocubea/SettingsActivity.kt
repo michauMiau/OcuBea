@@ -71,6 +71,10 @@ class SettingsActivity : AppCompatActivity() {
         // call tvTitle sat at y=27-86 while the status bar occupied y=0-94,
         // so 67 px of the title was under the clock. See EdgeToEdgeInsets.
         EdgeToEdgeInsets.padForSystemBars(findViewById(android.R.id.content))
+
+        // See EdgeToEdgeInsets: the theme attribute alone did not remove the
+        // platform's contrast scrim on API 30+, measured on an Android 16 device.
+        EdgeToEdgeInsets.disableNavigationBarContrast(window)
         config = OcuBeaConfig(this)
 
         bindViews()

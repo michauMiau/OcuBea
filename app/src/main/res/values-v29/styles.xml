@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Bar appearance for API 29 and later.
+
+  `android:enforceNavigationBarContrast` was introduced in API 29. It belongs in
+  a versioned resource for the same reason as its API 27 sibling in
+  values-v27/: the default theme is read on API 23, where lint's NewApi check
+  rejects the attribute.
+
+  Setting it false is necessary but was not sufficient on MIUI. Measured on a
+  Redmi Note 12 Pro running Android 16: with the dark-only theme in place the
+  status bar came out RGB(18,18,18) over 93% of its area, and the navigation bar
+  stayed RGB(208,208,208) over 98%, which is the system scrim and not the theme colour.
+  MainActivity therefore also calls
+  `window.isNavigationBarContrastEnforced = false` for API 30+, and after both
+  were in place the navigation bar measured RGB(18,18,18) like the status bar.
+
+  Both are asserted on hardware. Neither is inferred from documentation alone.
+
+  The parent is Theme.OcuBea.Base for the same reason as in values-v27/: a
+  versioned resource replaces the default style rather than merging with it, so
+  a Material parent here dropped windowBackground, the bar colours and the primary
+  colour from every device running API 29 or later, which is all of them.
+-->
+<resources>
+    <style name="Theme.OcuBea" parent="Theme.OcuBea.Base">
+        <item name="android:enforceNavigationBarContrast">false</item>
+    </style>
+</resources>

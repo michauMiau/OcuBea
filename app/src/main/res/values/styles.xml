@@ -1,13 +1,68 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.OcuBea" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <!-- Dark, unconditionally. Measured, and the reason is not cosmetic:
+         the DayNight parent follows the SYSTEM night setting, and on a phone with
+         night mode off that resolved the light theme. The layouts are dark
+         (#0d1117, dark buttons, light text) so the light theme painted a white
+         window background behind a dark UI. Android 15 and later disable
+         android:statusBarColor, so there was nothing left to hide it, and both
+         system bars measured as RGB(255,255,255) over 98% of their area with a
+         hard edge at y=93/94: white bands with unreadable dark icons over a dark
+         camera screen.
+
+         A security camera preview is looked at in a dark room, and its own UI is
+         dark to keep the screen from glowing. Following the system theme would
+         leave the app white in a dark room and bright at night, which is the exact
+         opposite of what it is for. So the theme is pinned dark.
+
+         Pinning the theme is also what makes the system-bar icons legible: light
+         icons on the dark bars, rather than dark icons chosen for a white
+         background this app never uses. -->
+    <!--
+      Base, so the versioned themes can inherit it.
+
+      A versioned resource REPLACES the default one rather than merging with it.
+      The first attempt at this fix put a full copy of the theme into values-v27/
+      and values-v29/ with its own parent, and aapt2 showed exactly what that
+      costs:
+
+        resource 0x7f12029c style/Theme.OcuBea
+          ()   (style) size=7   windowBackground, statusBarColor, navigationBarColor,
+                               windowLightStatusBar, colorPrimary, colorPrimaryVariant,
+                               colorOnPrimary
+          (v27) (style) size=1   windowLightNavigationBar
+          (v29) (style) size=1   enforceNavigationBarContrast
+
+      On API 27 and later the theme was therefore ONE attribute deep with a
+      MaterialComponents parent: no windowBackground, no bar colours, no primary
+      colour, on every device this app targets. The windowBackground loss is the
+      one that shows, because without it the system draws its own window
+      background until the first layout pass, which is the white flash this
+      change was meant to remove. Measuring the bars did not catch it: the bars are painted
+      from code and from the colour attrs, not from that item.
+
+      Theme.OcuBea.Base carries the seven shared items; each versioned style adds
+      the one attribute its API level allows and inherits the rest.
+    -->
+    <style name="Theme.OcuBea.Base" parent="Theme.MaterialComponents.NoActionBar">
         <item name="colorPrimary">@color/green_primary</item>
         <item name="colorPrimaryVariant">@color/green_hover</item>
         <item name="colorOnPrimary">@color/white</item>
+        <!-- Ignored on API 35+ and kept for API 23-34, where it is the status bar
+             background. EdgeToEdgeInsets handles the layout on API 35+. -->
         <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/surface_dark</item>
     </style>
 
-    <style name="Theme.OcuBea.NoActionBar" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <style name="Theme.OcuBea" parent="Theme.OcuBea.Base" />
+
+    <!-- Also inherits Base. Declared with the Material parent instead, this
+         style resolved to two items over a light window, so any screen using it
+         started on a white background. tools/verify_theme_gate.py catches this
+         against the compiled apk, which is how it was found. -->
+    <style name="Theme.OcuBea.NoActionBar" parent="Theme.OcuBea.Base">
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
     </style>

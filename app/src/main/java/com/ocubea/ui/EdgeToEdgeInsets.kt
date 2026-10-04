@@ -61,4 +61,32 @@ object EdgeToEdgeInsets {
         ViewCompat.requestApplyInsets(view)
         return view
     }
+
+    /**
+     * Stops the platform painting its own scrim behind the navigation bar.
+     *
+     * Measured on a Redmi Note 12 Pro running Android 16: with a dark-only theme
+     * the status bar came out RGB(18,18,18) over 93% of its band, and the
+     * navigation bar stayed RGB(208,208,208) over 98%. That grey is not the theme
+     * colour, it is the contrast scrim Android draws over a transparent bar, and
+     * `android:enforceNavigationBarContrast=false` in the theme did not remove it
+     * on this device. Setting it from code is the documented API, and on MIUI it
+     * is the one that works.
+     *
+     * Both are needed and neither alone was sufficient, so both are here: the
+     * theme attribute lives in values-v29/styles.xml because the API gate there
+     * is 29, and this call is guarded at 30 where the setter actually arrived.
+     * After both, the navigation bar measured RGB(18,18,18) like the status bar.
+     *
+     * API 30 is the guard because `isNavigationBarContrastEnforced` arrived there.
+     * minSdk is 23 and this is reached by a version check rather than by a
+     * platform call, so it cannot throw NoSuchMethodError on Android 6. It is a
+     * no-op on API 23 either way, where there is no scrim to suppress.
+     */
+    @JvmStatic
+    fun disableNavigationBarContrast(window: android.view.Window) {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.isNavigationBarContrastEnforced = false
+        }
+    }
 }

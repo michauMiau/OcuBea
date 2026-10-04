@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Bar appearance for API 27 and later.
+
+  `android:windowLightNavigationBar` was introduced in API 27. It has to live in
+  a versioned resource because the default theme is also read on API 23, where
+  the attribute does not exist, and lint's NewApi check fails the build on it
+  rather than on the runtime no-op.
+
+  The parent is Theme.OcuBea.Base, NOT the Material theme. A versioned resource
+  replaces the default one instead of merging with it, so declaring this style
+  with its own Material parent meant the seven shared items, namely windowBackground,
+  the bar colours and the primary colour, were simply absent on API 27 and later.
+  See the aapt2 dump in values/styles.xml for the measurement that showed it.
+  The earlier note in this file claimed the opposite, that declaring it
+  separately was the safe choice; it was not, and the claim is what the size=1
+  dump refutes.
+
+  The value is false because this app is dark-only. A light navigation bar asks
+  for dark icons, and that was the measured bug on a Redmi Note 12 Pro running
+  Android 16: the bar painted RGB(255,255,255) over 98.6% of its area with icons
+  that were light on white and unreadable.
+-->
+<resources>
+    <style name="Theme.OcuBea" parent="Theme.OcuBea.Base">
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

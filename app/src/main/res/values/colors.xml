@@ -13,4 +13,9 @@
     <color name="card_border">#FF333333</color>
     <color name="text_primary">#FFE0E0E0</color>
     <color name="text_secondary">#FF888888</color>
+
+    <!-- The app surface. Matches the #0d1117 that activity_main, activity_clips
+         and activity_perf paint, so the window background and the layouts do
+         not differ on any Activity that has not yet drawn. -->
+    <color name="surface_dark">#FF0D1117</color>
 </resources>
