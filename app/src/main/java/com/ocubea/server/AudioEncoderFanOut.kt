@@ -94,26 +94,35 @@ class AudioEncoderFanOut(
      * into PCM by the caller: a client that asked for AAC and got WAV would be
      * decoding a lie.
      */
-    fun addClient(codecId: String, bitrate: Int): AudioRingBuffer? = synchronized(lock) {
+    /** The ring to read from, and the call that hands this client's sink back. */
+    class Subscription(val ring: AudioRingBuffer, val release: () -> Unit)
+
+    fun addClient(codecId: String, bitrate: Int): Subscription? = synchronized(lock) {
         if (!ensureEncoder(codecId, bitrate)) return null
         val ring = AudioRingBuffer()
         // The header first, before any packet: for Opus that is the OpusHead
         // page, without which no player decodes a single byte of what follows.
         val header = encoders[codecId]!!.streamHeader()
         if (header.isNotEmpty() && !ring.offer(header, 0, header.size)) return null
-        clients.getOrPut(codecId) { AudioFanOut() }.add(
-            AudioFanOut.Client(
-                write = { buf, len -> ring.offer(buf, 0, len) },
-                onDisconnect = { ring.close() }
-            )
+        val sink = AudioFanOut.Client(
+            write = { buf, len -> ring.offer(buf, 0, len) },
+            onDisconnect = { ring.close() }
         )
+        val fan = clients.getOrPut(codecId) { AudioFanOut() }
+        fan.add(sink)
         clientCount++
-        ring
+        Subscription(ring) { fan.remove(sink) }
     }
 
-    fun removeClient() {
+    fun removeClient(release: (() -> Unit)? = null) {
         val dying: List<AudioEncoder>
         synchronized(lock) {
+            // Hand back THIS client's sink before any early return. Without it a
+            // client that simply stopped listening stayed registered on the
+            // fan-out forever: encoded.clients kept counting it while the ring it
+            // wrote to was closed, so the measured symptom was an RTSP audio
+            // session that answered 200 and then went silent.
+            release?.invoke()
             clientCount--
             if (clientCount > 0) return
             // Announce first. MediaCodec is not thread-safe, and the capture

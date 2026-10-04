@@ -54,18 +54,35 @@ class AudioStreamManager(private val context: Context) {
      * the device cannot encode [codecId] -- the caller must then answer 501
      * rather than fall back to PCM.
      */
-    fun addEncodedClient(codecId: String, bitrate: Int): AudioRingBuffer? {
+    /**
+     * One encoded-audio client: the ring to read, and the call that returns it.
+     *
+     * The releaser travels with the ring because ownership has to be per client,
+     * not per codec. The fan-out is shared by every client of a given codec, so
+     * a `removeEncodedClient()` with no arguments could only ever decrement a
+     * counter -- it could not unregister the one sink that had gone away, which
+     * is where the leak was.
+     */
+    data class EncodedSubscription(
+        val ring: AudioRingBuffer,
+        private val fanOut: AudioEncoderFanOut,
+        private val releaseSink: () -> Unit,
+    ) {
+        fun release() = runCatching { fanOut.removeClient(releaseSink) }.let { }
+    }
+
+    fun addEncodedClient(codecId: String, bitrate: Int): EncodedSubscription? {
         val fanOut = synchronized(this) {
             // CHANNEL_CONFIG is AudioFormat.CHANNEL_IN_MONO (16), which is a
             // bitmask, not a channel count. MediaCodec wants the count: 1.
             encoded ?: AudioEncoderFanOut(SAMPLE_RATE, 1).also { encoded = it }
         }
-        val ring = fanOut.addClient(codecId, bitrate) ?: return null
+        val sub = fanOut.addClient(codecId, bitrate) ?: return null
         // The recorder has to be running for feed() to ever be called, and it
         // only starts for PCM clients. This is the same ordering rule as
         // addClient: register first, then touch the hardware.
         ensureCapture()
-        return ring
+        return EncodedSubscription(sub.ring, fanOut, sub.release)
     }
 
     fun removeEncodedClient() {

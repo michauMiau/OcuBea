@@ -38,6 +38,13 @@ class RtspServer(
     private val config: OcuBeaConfig,
     /** Opens the current raw PCM audio source, or null when there is none. */
     private val openAudio: () -> InputStream?,
+    // Releasing the encoded-audio client is not implied by closing the stream.
+    // AudioStreamManager.addEncodedClient() bumps a client count and registers a
+    // sink on the shared fan-out; only removeEncodedClient() takes it back. The
+    // HTTP path does this in its response's close(), and RTSP had no equivalent,
+    // so every RTSP audio SETUP that was answered 200 leaked one client and one
+    // encoder slot -- five probes in a row and `clients: 5` in /status.json.
+    private val releaseAudio: () -> Unit,
     /** Installs (or with null clears) the per-frame tap on the encoder session. */
     private val setFrameTap: (((H264Encoder.Sample) -> Unit)?) -> Unit,
     /**
@@ -302,6 +309,29 @@ class RtspServer(
                                     ))
                                 }
                             }
+                            // A second SETUP for a track this session already
+                            // holds is not a request for media that does not
+                            // exist -- it is the same subscription. ffmpeg's
+                            // RTSP demuxer does exactly this: after PLAY it
+                            // re-SETUPs a track it already set up when it needs
+                            // the payload type, and the old `else` answered 551,
+                            // so ffprobe reported "method SETUP failed" against a
+                            // server that was streaming correctly. Answer with the
+                            // channel it already owns and take no second client.
+                            tracks.contains("audio") && audioChannel >= 0 -> {
+                                response(output, cseq, 200, "OK", listOf(
+                                    "Transport: RTP/AVP/TCP;unicast;" +
+                                        "interleaved=$audioChannel-${audioChannel + 1}",
+                                    "Session: $SESSION_ID;timeout=60",
+                                ))
+                            }
+                            tracks.contains("video") && videoChannel >= 0 -> {
+                                response(output, cseq, 200, "OK", listOf(
+                                    "Transport: RTP/AVP/TCP;unicast;" +
+                                        "interleaved=$videoChannel-${videoChannel + 1}",
+                                    "Session: $SESSION_ID;timeout=60",
+                                ))
+                            }
                             else -> {
                                 // Never answer 200 to a SETUP this build cannot
                                 // honour. A client that gets 200 waits forever for
@@ -383,7 +413,11 @@ class RtspServer(
             // Clear the tap when the last sink is gone, so a stopped camera does
             // not leave a tap pointing at a server nobody is listening to.
             if (sinks.isEmpty()) setFrameTap(null)
+            // Order matters: close the stream first so the reader stops, then
+            // release the client that owns the encoder slot. Releasing first
+            // would let the fan-out drop the sink under a live reader.
             runCatching { audioSource?.close() }
+            if (audioSource != null) runCatching { releaseAudio() }
             runCatching { client.close() }
             sessions.decrementAndGet()
         }

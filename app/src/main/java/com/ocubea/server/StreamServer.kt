@@ -104,6 +104,9 @@ class StreamServer(
     private val rtspServer: RtspServer = RtspServer(
         config,
         { openRtspAudio() },
+        // RTSP owns the client's lifetime, so it returns it. See RtspServer's
+        // constructor for why closing the InputStream is not enough on its own.
+        { releaseRtspAudioClient() },
         { tap -> cameraManager.setRtspFrameTap(tap) },
         // RTSP shares the one hardware encoder with HLS and clip recording, rather
         // than claiming a second MediaCodec. So starting RTSP video means ensuring
@@ -135,8 +138,54 @@ class StreamServer(
      */
     private fun openRtspAudio(): java.io.InputStream? {
         if (!config.audioEnabled) return null
-        val ring = audio.addEncodedClient("wav", 706_000) ?: return null
-        return ring.asInputStream()
+        // The codec must be the one the user actually chose, not a hardcoded
+        // "wav". "wav" is a container, not an encoder: AudioEncoder.mimeFor()
+        // has no MIME for it, so addEncodedClient("wav", ...) always returned
+        // null and every RTSP audio SETUP answered 551 Unsupported media --
+        // while /status.json said audio.enabled=true, because that flag only
+        // records what was requested. So the device promised a track it could
+        // not open, and the probe could only see the contradiction.
+        val codec = config.audioCodec
+        if (!AudioEncoder.isEncodable(codec)) return null
+        val sub = audio.addEncodedClient(codec, bitrateForRtsp(codec)) ?: return null
+        // The subscription is parked on the thread that owns the session, so the
+        // release callback RtspServer holds can reach it. A plain InputStream
+        // would lose the handle, which is how the sink leaked in the first place.
+        rtspAudioSubscription = sub
+        return sub.ring.asInputStream()
+    }
+
+    /** The live encoded-audio subscription for the current RTSP audio track. */
+    @Volatile private var rtspAudioSubscription: AudioStreamManager.EncodedSubscription? = null
+
+    /**
+     * Hands one RTSP audio client back to the shared fan-out.
+     *
+     * Null-guarded because a session that never got as far as SETUP has nothing
+     * to return, and calling this for one would decrement a count it never
+     * incremented.
+     */
+    fun releaseRtspAudioClient() {
+        rtspAudioSubscription?.let { sub ->
+            rtspAudioSubscription = null
+            sub.release()
+        }
+    }
+
+    /**
+     * Bitrate for one RTSP audio session.
+     *
+     * RTP has no container to carry a sample rate or a channel count, so the
+     * SDP has to state both or a client is guessing. The encoder's own choice
+     * for the codec is what the SDP advertises, which is the one number that
+     * is guaranteed to match the bytes on the wire.
+     */
+    private fun bitrateForRtsp(codec: String): Int = when (codec) {
+        "aac" -> 64_000
+        "opus" -> 48_000
+        "amrnb" -> 12_200
+        "flac" -> 0
+        else -> 64_000
     }
 
     /** Live connection stats for status.json. */
@@ -625,12 +674,12 @@ class StreamServer(
         // falling back to serveWavAudio() here would hand the client PCM under
         // an `audio/aac` content type, which is the exact lie this path was
         // written to remove.
-        val ring = audio.addEncodedClient(option.id, option.bitrate)
+        val sub = audio.addEncodedClient(option.id, option.bitrate)
             ?: return newFixedLengthResponse(
                 Status.NOT_IMPLEMENTED, "text/plain",
                 "encoder for ${option.id} did not start; /audio.wav still works"
             )
-        return EncodedAudioResponse(ring, option)
+        return EncodedAudioResponse(sub, option)
     }
 
     /**
@@ -650,12 +699,12 @@ class StreamServer(
      * a client that simply vanishes will ever produce.
      */
     private inner class EncodedAudioResponse(
-        private val ring: AudioRingBuffer,
+        private val subscription: AudioStreamManager.EncodedSubscription,
         private val option: AudioCodecProbe.Option
     ) : fi.iki.elonen.NanoHTTPD.Response(
         fi.iki.elonen.NanoHTTPD.Response.Status.OK,
         option.contentTypeForHttp,
-        ring.asInputStream(),
+        subscription.ring.asInputStream(),
         0L
     ) {
         init {
@@ -663,11 +712,12 @@ class StreamServer(
         }
 
         override fun close() {
-            // Guarded: a client that hung up before the ring existed must not
-            // decrement anything, and this must never propagate out of close()
-            // -- a failure to tidy up cannot be allowed to become a broken
-            // response on a stream that was serving fine.
-            runCatching { audio.removeEncodedClient() }
+            // Guarded, and per client rather than per codec: a client that hung
+            // up before its subscription existed must not decrement anything,
+            // and this must never propagate out of close() -- a failure to tidy
+            // up cannot be allowed to become a broken response on a stream that
+            // was serving fine.
+            runCatching { subscription.release() }
             super.close()
         }
     }
