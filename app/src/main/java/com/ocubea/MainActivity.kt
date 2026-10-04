@@ -1,6 +1,5 @@
 package com.ocubea
 
-import com.ocubea.ui.EdgeToEdgeInsets
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -18,6 +17,7 @@ import androidx.core.content.ContextCompat
 import com.ocubea.model.OcuBeaConfig
 import com.ocubea.service.StreamService
 import com.ocubea.ui.ClipActivity
+import com.ocubea.ui.EdgeToEdgeInsets
 import com.ocubea.ui.KeepScreenOn
 import com.ocubea.ui.LivePreviewView
 import java.net.NetworkInterface

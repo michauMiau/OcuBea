@@ -1,6 +1,5 @@
 package com.ocubea.perf
 
-import com.ocubea.ui.EdgeToEdgeInsets
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -8,6 +7,7 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.ocubea.R
+import com.ocubea.ui.EdgeToEdgeInsets
 import java.util.Locale
 
 /**

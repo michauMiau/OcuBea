@@ -1,6 +1,5 @@
 package com.ocubea
 
-import com.ocubea.ui.EdgeToEdgeInsets
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -17,6 +16,7 @@ import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
 import com.ocubea.model.QualityScale
 import com.ocubea.service.StreamService
+import com.ocubea.ui.EdgeToEdgeInsets
 import java.net.NetworkInterface
 
 /**
