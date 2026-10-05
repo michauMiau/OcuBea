@@ -66,11 +66,22 @@ def adb(*args: str, timeout: int = 20) -> str:
 
 def status(retries: int = 4) -> dict | None:
     """Read /status.json, retrying: it blocks during a rebind and then serves a
-    stale snapshot, so a single read is not evidence of anything."""
+    stale snapshot, so a single read is not evidence of anything.
+
+    It also checks that OcuBea is the thing answering, because on the Sony
+    F3311 another camera app (Server: IP Webcam Server 0.4, com.pas.webcam) holds
+    port 8080 and answers /status.json with its own five keys. A gate reading
+    that would report `?` for every field and call it a failed ladder --
+    indistinguishable from a real regression. A missing key here is a port
+    conflict to report, not a measurement.
+    """
     for _ in range(retries):
         try:
             with urllib.request.urlopen(f"{BASE}/status.json", timeout=8) as response:
-                return json.loads(response.read())
+                body = json.loads(response.read())
+            if "pipeline" not in body or "hls" not in body:
+                return {"__foreign__": sorted(body.keys())}
+            return body
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             time.sleep(1.5)
     return None
@@ -110,6 +121,12 @@ def main() -> int:
                 anchored.append(line.strip())
 
         state = status()
+        if state and "__foreign__" in state:
+            print(f"  t={round(DURATION - (end - time.time())):3}s port {BASE} odpowiada "
+                  f"NIE OcuBea: klucze={state['__foreign__']}")
+            print("        konflikt portu 8080 z inną aplikacją kamery -- "
+                  "bramka nie może tu nic zmierzyć")
+            return 3
         if state:
             pipe = state.get("pipeline", {})
             rung = pipe.get("rung") or state.get("resolution_effective") or "?"
