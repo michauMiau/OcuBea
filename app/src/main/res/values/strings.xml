@@ -34,7 +34,7 @@
     <string name="status_offline">Offline</string>
     <string name="status_stopped">Stopped</string>
     <string name="status_port_taken">Port %1$d taken by another app</string>
-    <string name="status_bind_failed">%1$s — change the port or close the other app</string>
+    <string name="status_bind_failed">%1$s. Change the port or close the other app.</string>
     <string name="status_offline_reason">No connection (%1$s)</string>
     <string name="torch_on">Torch on</string>
     <string name="torch_off">Torch off</string>
@@ -96,10 +96,10 @@
 
     <string name="btn_restart_camera">Restart camera</string>
     <string name="btn_show_log">Show log</string>
-    <string name="addr_web_ui">Web UI: –</string>
-    <string name="addr_stream">Stream: –</string>
-    <string name="addr_snapshot">Snapshot: –</string>
-    <string name="addr_audio">Audio: –</string>
+    <string name="addr_web_ui">Web UI: ...</string>
+    <string name="addr_stream">Stream: ...</string>
+    <string name="addr_snapshot">Snapshot: ...</string>
+    <string name="addr_audio">Audio: ...</string>
 
     <!-- Addresses filled in from code. Padded with spaces: these are TextViews
          in a fixed-width block, not a table, and the column has to line up. -->

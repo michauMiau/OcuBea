@@ -89,6 +89,22 @@ main {
   aspect-ratio: 16/9;
   object-fit: contain;
 }
+/* The HLS <video> needs the same box as the MJPEG <img>, stated on both
+   elements rather than on the container.
+   Measured: with aspect-ratio only on .stream img, switching the mode button
+   from MJPEG to HLS changed the picture box from 16/9 to the browser's default
+   video proportions, which read as 4:3 next to the same stream one click
+   earlier. The container cannot carry it because .stream is position:relative
+   for the overlay controls and a ratio there would fight the absolutely
+   positioned .streamctl row. object-fit:contain matters for the same reason it
+   is on the img: the stream is 1280x720 but the effective resolution is
+   reported separately and can be a smaller rung. */
+.stream video {
+  width: 100%;
+  display: block;
+  aspect-ratio: 16/9;
+  object-fit: contain;
+}
 .stream .off {
   position: absolute;
   inset: 0;
@@ -572,7 +588,7 @@ code {
 
 /* Clip grid. Thumbnails are <video preload=metadata> rather than <img>
      because a clip's first frame is inside the first mdat, not in the init
-     segment — there is no separate poster image to point an <img> at. */
+     segment; there is no separate poster image to point an <img> at. */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -731,6 +747,40 @@ footer {
 }
 .audio-row .tgl {
   flex: 0 0 auto;
+  /* The toggle had no style rule at all: only .audio-row .tgl existed, with
+     `flex: 0 0 auto` and nothing else. The button rendered with the UA default
+     chrome and an empty body, so what the user saw was an unlabelled control
+     next to the audio line, and the speaker glyph that was supposed to be
+     inside it was not in the markup at all. A toggle that reads as broken is
+     worse than no toggle, so it gets the same box as .streamctl .ico plus the
+     on/off states, and the glyph comes from the markup rather than from
+     generated content, so it is announced by the accessibility tree too. */
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgba(13, 17, 23, 0.72);
+  color: var(--fg);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.audio-row .tgl.on {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: var(--acc);
+  color: var(--acc);
+}
+.audio-row .tgl:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.audio-row .tgl:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
 }
 
 /* Buttons on the picture. Absolutely positioned inside .stream (which is
@@ -762,6 +812,14 @@ footer {
   line-height: 1;
   cursor: pointer;
   backdrop-filter: blur(6px);
+  /* The overlay glyphs are not text: ⛶, ▶ and ♪ all sit on the text baseline,
+     so with only width/height/line-height the glyph rendered high in the box
+     and the row read as misaligned. A centred flex box puts the glyph in the
+     middle regardless of how tall the font's ascent happens to be. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 .streamctl .ico:hover:not(:disabled) {
   background: rgba(13, 17, 23, 0.92);
@@ -909,17 +967,23 @@ Schedule: ${c.map(m=>Ye(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
     onClick=${()=>e(!n)}
     aria-label=${t}
     aria-pressed=${n}
-  ></button>
-`;function yp({codec:n,enabled:e,running:t}){let s=Yt(null),[i,r]=Le(!1),[a,o]=Le(null),c=t&&e&&n&&n!=="none";return Ft(()=>{let l=s.current;if(!l)return;if(!c){l.pause(),l.src="",l.load(),o(null);return}l.src="/audio."+n+"?nocache="+Date.now(),l.load();let u=l.play();u&&u.catch&&u.catch(d=>{o(d&&d.name==="NotAllowedError"?"audio: the browser blocked autoplay \u2014 press the speaker button":"audio: "+(d&&d.name?d.name:"the stream did not start"))})},[c,n]),Ft(()=>{let l=s.current;l&&(i&&l.paused&&l.play().catch(()=>r(!1)),!i&&!l.paused&&l.pause())},[i]),ue` <div class="audio-row">
+    title=${t}
+  >
+    <span aria-hidden="true">${n?"🔘":"⚪"}</span>
+  </button>
+`;function yp({codec:n,enabled:e,running:t}){let s=Yt(null),[i,r]=Le(!1),[a,o]=Le(null),c=t&&e&&n&&n!=="none";return Ft(()=>{let l=s.current;if(!l)return;if(!c){l.pause(),l.src="",l.load(),o(null);return}l.src="/audio."+n+"?nocache="+Date.now(),l.load();let u=l.play();u&&u.catch&&u.catch(d=>{o(d&&d.name==="NotAllowedError"?"audio: the browser blocked autoplay, press the speaker button":"audio: "+(d&&d.name?d.name:"the stream did not start"))})},[c,n]),Ft(()=>{let l=s.current;l&&(i&&l.paused&&l.play().catch(()=>r(!1)),!i&&!l.paused&&l.pause())},[i]),ue` <div class="audio-row">
     <audio ref=${s} preload="none"></audio>
     <button
       id="bAud"
       class=${"tgl"+(i?" on":"")}
-      aria-label=${P("audio")}
+      aria-label=${i?P("audioMuted"):P("audioOn")}
       aria-pressed=${i}
-      title=${P("audio")}
+      title=${i?P("audioMuted"):P("audioOn")}
+      disabled=${!c}
       onClick=${()=>r(!i)}
-    ></button>
+    >
+      <span aria-hidden="true">${i?"🔇":"🔊"}</span>
+    </button>
     <span class="dim" id="audioState">
       ${a||(c?i?P("audioOn"):P("audioMuted"):P("audioOff"))}
     </span>
@@ -963,7 +1027,7 @@ Schedule: ${c.map(m=>Ye(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
         running=${e}
       />
       ${!e&&ue`<div class="off">${P("streamOffline")}</div>`}
-      ${d&&ue`<div class="badge">HLS unsupported here — MJPEG</div>`}
+      ${d&&ue`<div class="badge">HLS unsupported here - MJPEG</div>`}
       ${l==="hls_warming"&&ue`<div class="off">${P("hlsWarming")}</div>`}
       ${l&&!d&&l!=="hls_warming"&&e&&ue`<div class="off">${Xu(l)}</div>`}
     </div>
@@ -1406,7 +1470,7 @@ Schedule: ${c.map(m=>Ye(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
             class="text"
             type="password"
             value=${T}
-            placeholder="—"
+            placeholder="..."
             onInput=${O=>_(O.target.value)}
             onChange=${O=>{Mu(O.target.value),_(O.target.value)}}
           />

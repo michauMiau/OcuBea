@@ -1417,7 +1417,7 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
             if (hls.initSegment() == null) {
                 return newFixedLengthResponse(
                     Status.SERVICE_UNAVAILABLE, "text/plain",
-                    "Encoder warming up — no first keyframe after ${WARMUP_TIMEOUT_NANOS / 1_000_000_000}s"
+                    "Encoder warming up: no first keyframe after ${WARMUP_TIMEOUT_NANOS / 1_000_000_000}s"
                 )
             }
         }
@@ -1782,7 +1782,7 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
 
     private fun handleStartVideo(session: IHTTPSession): Response {
         if (!motionRecorder.enabled) {
-            return badRequest("motion recording is disabled — enable it in settings first")
+            return badRequest("motion recording is disabled, enable it in settings first")
         }
         if (!cameraManager.isStreaming) {
             return newFixedLengthResponse(
@@ -1849,7 +1849,7 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
     private fun requestOrigin(session: IHTTPSession): String? = session.headers["origin"]?.takeIf { it.isNotBlank() }
 
     private fun describe(): String = buildString {
-        appendLine("OcuBea ${telemetry.versionName()} — IP Webcam compatible IP camera")
+        appendLine("OcuBea ${telemetry.versionName()}, IP Webcam compatible IP camera")
         appendLine("stream:      /video  /shot.jpg  /audio.wav")
         appendLine("status:      /status.json  /sensors.json  /config.json")
         appendLine("controls:    /focus  /ptz?zoom=  /torchon  /torchoff  /settings/<name>?set=<v>")

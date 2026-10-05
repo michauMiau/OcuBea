@@ -27,7 +27,7 @@
     <string name="status_offline">Brak połączenia</string>
     <string name="status_stopped">Zatrzymane</string>
     <string name="status_port_taken">Port %1$d zajęty przez inną aplikację</string>
-    <string name="status_bind_failed">%1$s — zmień port lub zamknij inną aplikację</string>
+    <string name="status_bind_failed">%1$s. Zmień port lub zamknij inną aplikację.</string>
     <string name="status_offline_reason">Brak połączenia (%1$s)</string>
     <string name="torch_on">Latarka włączona</string>
     <string name="torch_off">Latarka wyłączona</string>
@@ -88,10 +88,10 @@
 
     <string name="btn_restart_camera">Restartuj kamerę</string>
     <string name="btn_show_log">Pokaż log</string>
-    <string name="addr_web_ui">Web UI: –</string>
-    <string name="addr_stream">Strumień: –</string>
-    <string name="addr_snapshot">Zrzut: –</string>
-    <string name="addr_audio">Audio: –</string>
+    <string name="addr_web_ui">Web UI: ...</string>
+    <string name="addr_stream">Strumień: ...</string>
+    <string name="addr_snapshot">Zrzut: ...</string>
+    <string name="addr_audio">Audio: ...</string>
 
     <!-- Adresy wypełniane z kodu. Wyrównanie spacjami: to TextView o stałej
          szerokości, bez tabeli, i kolumna ma się zgadzać wizualnie. -->

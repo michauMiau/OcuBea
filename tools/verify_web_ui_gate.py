@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""Gate for the shipped web UI.
+
+Six defects reported from the browser on the A6 phone, each of which is a
+property of the file rather than a runtime behaviour that can be observed from
+outside:
+
+  1. The HLS <video> had no aspect-ratio, so switching the mode button from
+     MJPEG to HLS changed the picture box from 16/9 to the browser default.
+     Measured on the phone: the same stream read as 16:9 in one mode and 4:3
+     one click later. The CSS stated the ratio on `.stream img` only.
+  2. The overlay glyphs sat high in their buttons. `.streamctl .ico` had
+     width/height/line-height but no centring, and ⛶, ▶ and ♪ are glyphs that
+     resolve on the text baseline.
+  3. The audio toggle had no style rule at all -- `.audio-row .tgl` existed with
+     `flex: 0 0 auto` and nothing else -- and its markup was an empty <button>.
+     What the user saw was an unlabelled control.
+  4. The audio toggle carried no glyph, so even styled it had nothing to show.
+  5. Em dashes and en dashes in user-visible text. Reported as "get rid of all
+     the em dashes on the page".
+  6. The toggle's aria-label and title said "audio" in both states, so a
+     screen reader announced the same thing before and after the click that
+     changed the state.
+
+The gate reads the file that is actually shipped (`app/src/main/assets/
+index.html`, copied into the APK verbatim) and the compiled string resources,
+because a comment in Kotlin is not what the user sees and a Kotlin source string
+is not what the user sees either.
+
+Every check below has a matching mutation in MUTATIONS, and the gate runs each
+one against a temporary copy to prove the check can fail. A check that has never
+been seen red is not a check.
+"""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HTML = os.path.join(ROOT, "app/src/main/assets/index.html")
+VALUES = os.path.join(ROOT, "app/src/main/res/values/strings.xml")
+VALUES_PL = os.path.join(ROOT, "app/src/main/res/values-pl/strings.xml")
+SERVER = os.path.join(ROOT, "app/src/main/java/com/ocubea/server/StreamServer.kt")
+
+# Dashes that must never reach a user. U+2014 em dash, U+2013 en dash,
+# U+2012 figure dash, U+2212 minus sign used as a dash, U+2010..U+2015 the rest
+# of the general punctuation dashes.
+DASHES = {
+    "U+2014 em dash": "—",
+    "U+2013 en dash": "–",
+    "U+2012 figure dash": "‒",
+    "U+2015 horizontal bar": "―",
+    "U+2010 hyphen": "‐",
+    "U+2011 non-breaking hyphen": "‑",
+}
+
+failures = []
+notes = []
+
+
+def fail(check, detail):
+    failures.append(f"{check}: {detail}")
+
+
+def css_rule(text, selector):
+    """Return the declaration body of the first rule for `selector`.
+
+    A selector can span several rules (.stream img, .stream video, ...) and a
+    comma-separated list can put several selectors in one rule, so this matches
+    the selector list and then splits it. The first version of this function
+    used a `[^{}]*` prefix, which swallowed the `}` of the rule before it and
+    matched `.pill.off .stream img {` as a single selector -- the gate then
+    reported a rule that plainly exists as missing. A checker that cannot find
+    the thing it checks will always find something wrong.
+    """
+    for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", text):
+        selectors = [s.strip() for s in m.group(1).split(",")]
+        if selector in selectors:
+            return m.group(2)
+    return None
+
+
+def strip_css_comments(text):
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+
+
+def strip_html_comments(text):
+    return re.sub(r"<!--.*?-->", "", text, flags=re.S)
+
+
+def check_aspect_ratio(html, css):
+    """Both the MJPEG <img> and the HLS <video> must state the same box."""
+    for sel, el in ((".stream img", "MJPEG <img>"), (".stream video", "HLS <video>")):
+        body = css_rule(css, sel)
+        if body is None:
+            fail("aspect-ratio", f"{el} has no CSS rule at all ({sel})")
+            continue
+        if "aspect-ratio" not in body:
+            fail("aspect-ratio", f"{el} ({sel}) states no aspect-ratio, so it "
+                                f"falls back to the browser default")
+        elif "16/9" not in body:
+            fail("aspect-ratio", f"{el} ({sel}) states aspect-ratio "
+                                f"{body.split('aspect-ratio:')[1].split(';')[0].strip()!r}, not 16/9")
+        if "object-fit" not in body:
+            fail("aspect-ratio", f"{el} ({sel}) has no object-fit")
+
+
+def check_icon_centering(css):
+    body = css_rule(css, ".streamctl .ico")
+    if body is None:
+        fail("icon-centering", ".streamctl .ico has no CSS rule")
+        return
+    for prop in ("display: flex", "align-items: center", "justify-content: center"):
+        if prop not in " ".join(body.split()):
+            fail("icon-centering", f".streamctl .ico lacks {prop!r}, so the glyph "
+                                   f"sits on the text baseline instead of centred")
+
+
+def check_toggle_styled(css):
+    body = css_rule(css, ".audio-row .tgl")
+    if body is None:
+        fail("toggle-styled", ".audio-row .tgl has no CSS rule")
+        return
+    flat = " ".join(body.split())
+    # A box the user can see and hit.
+    for prop in ("width:", "height:", "border:", "background:"):
+        if prop not in flat:
+            fail("toggle-styled", f".audio-row .tgl lacks {prop!r}")
+    for prop in ("display: flex", "align-items: center", "justify-content: center"):
+        if prop not in flat:
+            fail("toggle-styled", f".audio-row .tgl lacks {prop!r}")
+
+
+def check_toggle_glyph(html):
+    """Every .tgl button must carry a glyph in its markup.
+
+    Generated content (::after) would satisfy the eye and not the accessibility
+    tree, so the glyph has to be a child element.
+    """
+    # The audio toggle, by id.
+    m = re.search(r'<button[^>]*id="bAud"[^>]*>(.*?)</button>', html, re.S)
+    if not m:
+        fail("toggle-glyph", 'no <button id="bAud"> found')
+    elif "<span" not in m.group(1):
+        fail("toggle-glyph", "the audio toggle has an empty body: no glyph in the "
+                             "markup, so it renders as an unlabelled control")
+
+    # The generic toggle helper, which was the other empty one.
+    m2 = re.search(r'as=\(\{on:\w+,[^}]*\}\)\s*=>\s*ue`(.*?)`', html, re.S)
+    if m2:
+        if "<span" not in m2.group(1):
+            fail("toggle-glyph", "the generic as() toggle has an empty body")
+        if "aria-hidden" not in m2.group(1):
+            fail("toggle-glyph", "the generic as() toggle glyph is not marked "
+                                 "aria-hidden, so it is announced twice")
+
+    # No .tgl button may be empty anywhere.
+    for mm in re.finditer(r'<button[^>]*class="tgl[^"]*"[^>]*>\s*</button>', html):
+        fail("toggle-glyph", f"empty .tgl button at offset {mm.start()}")
+
+
+def check_state_labels(html):
+    """The audio toggle must name the action, not the feature, in both states."""
+    m = re.search(r'<button[^>]*id="bAud"(.*?)</button>', html, re.S)
+    if not m:
+        return
+    attrs = m.group(1)
+    if 'aria-label=${P("audio")}' in attrs:
+        fail("state-labels", 'the audio toggle aria-label is P("audio") in both '
+                             'states, so the state change is not announced')
+    if "audioMuted" not in attrs or "audioOn" not in attrs:
+        fail("state-labels", "the audio toggle does not distinguish the two states "
+                             "in its label or title")
+
+
+def check_no_dashes(label, text, is_html):
+    """Dashes are banned in user-visible text."""
+    if is_html:
+        text = strip_third_party_bundle(text)
+    for name, dash in DASHES.items():
+        n = text.count(dash)
+        if n:
+            i = text.find(dash)
+            ctx = " ".join(text[max(0, i - 70):i + 35].split())
+            fail("no-dashes", f"{label} contains {n}x {name}: ...{ctx}...")
+
+
+def strip_third_party_bundle(text):
+    """Return the page's own text, without the vendored hls.js payload.
+
+    The first version of this cut the whole <script> block, which is where all
+    the UI lives: the page is htm/Preact, so every visible string is a template
+    literal inside the inline script. Cutting the script put 100% of the
+    product's text outside the check and the gate went green on a page carrying
+    an em dash -- the exact failure this gate exists to catch.
+
+    The structure measured in this file:
+      0..572      <style> with the CSS
+      ~22375      <script> opens; the hls.js bundle and the app code share it
+      55918       "hls.js v1.7.3" banner, inside the bundle
+      641408      the "HLS unsupported here" badge, in the app code
+
+    So the cut is the CSS block, which is not rendered as text, plus everything
+    between the <script> opener and the bundle's own banner. What remains is the
+    app code, which is what the check is about.
+    """
+    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.S)
+    banner = text.find("hls.js v")
+    if banner >= 0:
+        # Everything from the <script> up to the banner is vendored code.
+        opener = text.rfind("<script", 0, banner)
+        if opener >= 0:
+            text = text[:opener] + text[banner:]
+    return text
+
+
+def check_server_strings():
+    """Kotlin strings that reach the browser or an API client.
+
+    Comments are not filtered: the check is on string literals, and finding a
+    dash in a comment is not a finding about the user.
+    """
+    src = open(SERVER, encoding="utf-8").read()
+    # Strip line comments and block comments, then look at what is left.
+    stripped = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    stripped = re.sub(r"//[^\n]*", "", stripped)
+    for name, dash in DASHES.items():
+        for m in re.finditer(re.escape(dash), stripped):
+            ln = stripped[:m.start()].count("\n") + 1
+            ctx = " ".join(stripped[max(0, m.start() - 70):m.start() + 35].split())
+            fail("no-dashes", f"StreamServer.kt non-comment line {ln} has {name}: "
+                              f"...{ctx}...")
+
+
+def check_string_resources():
+    for path in (VALUES, VALUES_PL):
+        if not os.path.exists(path):
+            continue
+        src = open(path, encoding="utf-8").read()
+        body = re.sub(r"<!--.*?-->", "", src, flags=re.S)
+        for name, dash in DASHES.items():
+            n = body.count(dash)
+            if n:
+                i = body.find(dash)
+                m = re.search(r'<string name="([^"]+)"[^>]*>[^<]*' + re.escape(dash),
+                              body)
+                which = m.group(1) if m else "?"
+                fail("no-dashes", f"{os.path.basename(os.path.dirname(path))}/"
+                                  f"{os.path.basename(path)} string {which!r} has "
+                                  f"{n}x {name}")
+
+
+MUTATIONS = [
+    ("aspect-ratio: remove .stream video rule",
+     lambda t: t.replace(".stream video {", ".stream videoDISABLED {", 1)),
+    ("aspect-ratio: change video ratio to 4/3",
+     lambda t: re.sub(r"(\.stream video \{[^}]*aspect-ratio:\s*)16/9", r"\g<1>4/3", t, count=1)),
+    ("aspect-ratio: remove aspect-ratio from .stream img",
+     lambda t: re.sub(r"(\.stream img \{[^}]*?)aspect-ratio:\s*16/9;\s*", r"\g<1>", t, count=1, flags=re.S)),
+    ("icon-centering: drop display:flex from .streamctl .ico",
+     lambda t: re.sub(r"(\.streamctl \.ico \{[^}]*?)display: flex;", r"\g<1>", t, count=1, flags=re.S)),
+    ("icon-centering: drop justify-content from .streamctl .ico",
+     lambda t: re.sub(r"(\.streamctl \.ico \{[^}]*?)justify-content: center;", r"\g<1>", t, count=1, flags=re.S)),
+    ("toggle-styled: strip .audio-row .tgl back to bare flex",
+     lambda t: re.sub(r"(\.audio-row \.tgl \{).*?(\})", r"\1 flex: 0 0 auto;\2", t, count=1, flags=re.S)),
+    ("toggle-styled: remove background from .audio-row .tgl",
+     lambda t: re.sub(r"(\.audio-row \.tgl \{[^}]*?)background:[^;]+;\s*", r"\g<1>", t, count=1, flags=re.S)),
+    ("toggle-glyph: empty the audio toggle body",
+     # Two traps in this pattern, both measured rather than guessed.
+     # re.S: the button is written across seven lines, so a single-line pattern
+     #   matches nothing and the mutation reports "did not change the file".
+     # [^>]*: the attribute list contains `onClick=${()=>r(!i)}`, and the arrow's
+     #   `>` ends the tag as far as the character class is concerned, so
+     #   `<button[^>]*id="bAud"[^>]*>` never reaches the body. Matching the span
+     #   and its closing tag instead of the attributes sidesteps both.
+     lambda t: re.sub(r'(<span aria-hidden="true">\$\{i\?"[^"]*":"[^"]*"\}</span>\s*)',
+                      "", t, count=1)),
+    ("toggle-glyph: remove aria-hidden from as() glyph",
+     lambda t: t.replace('<span aria-hidden="true">${n?', '<span>${n?', 1)),
+    ("state-labels: revert aria-label to P(\"audio\")",
+     lambda t: t.replace('aria-label=${i?P("audioMuted"):P("audioOn")}',
+                         'aria-label=${P("audio")}', 1)),
+    ("no-dashes: put an em dash in the HLS badge",
+     lambda t: t.replace("HLS unsupported here - MJPEG",
+                         "HLS unsupported here — MJPEG", 1)),
+    ("no-dashes: put an em dash in a string resource",
+     None),  # handled against values/strings.xml
+]
+
+
+def run_all():
+    """Return the list of failure strings for the current files."""
+    global failures
+    failures = []
+    html = open(HTML, encoding="utf-8").read()
+    css = strip_css_comments(html)
+    visible = strip_html_comments(html)
+    check_aspect_ratio(html, css)
+    check_icon_centering(css)
+    check_toggle_styled(css)
+    check_toggle_glyph(visible)
+    check_state_labels(visible)
+    check_no_dashes("index.html (visible)", visible, is_html=True)
+    check_server_strings()
+    check_string_resources()
+    return list(failures)
+
+
+def main():
+    if not os.path.exists(HTML):
+        print(f"FAIL brak {HTML}")
+        return 1
+
+    base = run_all()
+    if base:
+        print("FAIL na czystym drzewie -- bramka zglasza blad tam gdzie go nie ma:")
+        for f in base:
+            print(f"  - {f}")
+        return 1
+
+    print("  czysty build: wszystkie sprawdzenia przechodza")
+
+    # Every mutation must turn this gate red.
+    caught = 0
+    for name, mut in MUTATIONS:
+        if mut is None:
+            continue
+        original = open(HTML, encoding="utf-8").read()
+        mutated = mut(original)
+        if mutated == original:
+            print(f"FAIL mutacja '{name}' nie zmienila pliku -- bramka nie umie "
+                  f"jej zlapac")
+            return 1
+        with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(mutated)
+            tmp = fh.name
+        try:
+            globals()["HTML"] = tmp
+            res = run_all()
+            globals()["HTML"] = original_path
+        finally:
+            os.unlink(tmp)
+        if res:
+            caught += 1
+            print(f"  zlapano: {name}")
+            print(f"      -> {res[0][:150]}")
+        else:
+            print(f"FAIL mutacja '{name}' przeszla zielono -- to nie jest bramka")
+
+    # The string-resource mutation runs against values/, not the HTML.
+    v = open(VALUES, encoding="utf-8").read()
+    m = re.search(r'(<string name="status_offline">)([^<]*)(</string>)', v)
+    if m:
+        open(VALUES, "w", encoding="utf-8").write(
+            v.replace(m.group(0), m.group(1) + m.group(2) + " — dash" + m.group(3), 1))
+        try:
+            res = run_all()
+            if res:
+                caught += 1
+                print("  zlapano: no-dashes: em dash in a string resource")
+                print(f"      -> {res[0][:150]}")
+            else:
+                print("FAIL mutacja 'em dash w string resource' przeszla zielono")
+        finally:
+            open(VALUES, "w", encoding="utf-8").write(v)
+
+    total = len([m for m in MUTATIONS if m[1] is not None]) + 1
+    if caught != total:
+        print(f"\nFAIL zlapano {caught}/{total} mutacji")
+        return 1
+
+    print(f"\nbramka web UI: {total} mutacji zlapanych, czysty build przechodzi "
+          f"-- proporcje HLS, centrowanie ikon, toggle audio, etykiety stanow, "
+          f"zero em-dashow w tekstach uzytkownika")
+    return 0
+
+
+original_path = HTML
+
+if __name__ == "__main__":
+    sys.exit(main())
