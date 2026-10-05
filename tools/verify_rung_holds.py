@@ -31,8 +31,26 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-ADB_SERIAL = "RQ3002EA5J"
-BASE = "http://192.168.1.184:8080"
+# The Sony F3311 (Android 6) is wired to the DietPi box, not to this machine,
+# so a bare `adb` here finds nothing. It has to go over SSH -- and it must be
+# addressed by -s, because both phones sit on that same adb server and an
+# unqualified `adb shell` fails with "more than one device/emulator".
+#
+# Both serials, so the gate can be pointed at either phone:
+#   ea79444a  Redmi Note 12 Pro, 22101320G, Android 16 / API 36, 192.168.1.29
+#   RQ3002EA5J Sony F3311, Android 6 / API 23, 192.168.1.184
+#
+# BASE follows the serial, because the two phones answer on different IPs and
+# hardcoding one made this gate silently measure nothing but A6.
+DEVICES = {
+    "ea79444a": "http://192.168.1.29:8080",
+    "RQ3002EA5J": "http://192.168.1.184:8080",
+}
+ADB_SERIAL = sys.argv[2] if len(sys.argv) > 2 else "RQ3002EA5J"
+BASE = DEVICES.get(ADB_SERIAL, "http://127.0.0.1:8080")
+DIETPI = ["sshpass", "-p", "REDACTED", "ssh",
+          "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=8",
+          "dietpi@192.168.1.199"]
 PKG = "com.ocubea"
 ACTIVITY = f"{PKG}/.MainActivity"
 USER_RUNG = "1280x720"
@@ -41,10 +59,9 @@ DURATION = int(sys.argv[1]) if len(sys.argv) > 1 else 90
 
 
 def adb(*args: str, timeout: int = 20) -> str:
-    return subprocess.run(
-        ["adb", "-s", ADB_SERIAL, *args],
-        capture_output=True, text=True, timeout=timeout,
-    ).stdout
+    cmd = DIETPI + [f"adb -s {ADB_SERIAL} " + " ".join(args)]
+    return subprocess.run(cmd, capture_output=True, text=True,
+                          timeout=timeout).stdout
 
 
 def status(retries: int = 4) -> dict | None:

@@ -24,10 +24,37 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(REPO, "tools", "ktlint_gate.py")
 KTJAR = "/tmp/ktlint.jar"
+KTLINT_URL = "https://github.com/pinterest/ktlint/releases/download/1.5.0/ktlint"
+
+
+def ensure_ktlint():
+    """Fetches ktlint if the jar is gone, and refuses to run without it.
+
+    /tmp is a scratch directory and gets pruned, so the jar disappears between
+    sessions. Without this the gate still ran: every mutation "passed", and the
+    summary read BRAK: 6 z 7 spraw -- six checks that could not have failed,
+    reported in the same voice as real coverage. ktlint_gate.py does fail
+    loudly on a broken invocation, but only for the run it makes itself; the
+    mutation harness interpreted the missing jar as six clean files.
+
+    So the jar is a precondition, not a nicety: fetch it, or exit non-zero
+    before touching the target.
+    """
+    if os.path.exists(KTJAR):
+        return True
+    print(f"  brak {KTJAR}, pobieram ktlint 1.5.0...")
+    try:
+        urllib.request.urlretrieve(KTLINT_URL, KTJAR)
+    except Exception as e:
+        print(f"BLAD: nie da sie pobrac ktlint: {e}")
+        print("      bramka ktlint jest bezczynna, a nie zielona")
+        return False
+    return os.path.exists(KTJAR)
 
 # Chosen because it has every feature the six mutations need: six imports, so
 # two can be swapped; a bare $identifier, so the string-template rule can be
@@ -94,6 +121,8 @@ def run_gate(pattern=None, jar=KTJAR):
 
 
 def main():
+    if not ensure_ktlint():
+        return 1
     if shutil.which("java") is None:
         print("brak java - nie da sie zweryfikowac bramy")
         return 1
