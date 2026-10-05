@@ -24,6 +24,7 @@ Usage: python3 tools/verify_rung_holds.py [seconds]
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -48,9 +49,21 @@ DEVICES = {
 }
 ADB_SERIAL = sys.argv[2] if len(sys.argv) > 2 else "RQ3002EA5J"
 BASE = DEVICES.get(ADB_SERIAL, "http://127.0.0.1:8080")
-DIETPI = ["sshpass", "-p", "REDACTED", "ssh",
-          "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=8",
-          "dietpi@192.168.1.199"]
+
+# The ADB host's password is not in this repository. Export DIETPI_SSH_PASSWORD
+# (or drop an ~/.ssh key for dietpi@ and skip sshpass entirely) before running
+# this gate. A password baked into a gate is a published password: it reaches
+# the remote log of every clone, and rotating it afterwards does not remove it
+# from the one already there.
+DIETPI_HOST = os.environ.get("DIETPI_SSH_HOST", "192.168.1.199")
+DIETPI_USER = os.environ.get("DIETPI_SSH_USER", "dietpi")
+DIETPI_PASSWORD = os.environ.get("DIETPI_SSH_PASSWORD", "")
+SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=8"]
+if DIETPI_PASSWORD:
+    DIETPI = ["sshpass", "-e", "ssh", *SSH_OPTS, f"{DIETPI_USER}@{DIETPI_HOST}"]
+else:
+    DIETPI = ["ssh", *SSH_OPTS, f"{DIETPI_USER}@{DIETPI_HOST}"]
+
 PKG = "com.ocubea"
 ACTIVITY = f"{PKG}/.MainActivity"
 USER_RUNG = "1280x720"
