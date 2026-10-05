@@ -26,6 +26,9 @@
     <string name="status_live">● %1$d fps · %2$d widzów · %3$d klatek</string>
     <string name="status_offline">Brak połączenia</string>
     <string name="status_stopped">Zatrzymane</string>
+    <string name="status_port_taken">Port %1$d zajęty przez inną aplikację</string>
+    <string name="status_bind_failed">%1$s — zmień port lub zamknij inną aplikację</string>
+    <string name="status_offline_reason">Brak połączenia (%1$s)</string>
     <string name="torch_on">Latarka włączona</string>
     <string name="torch_off">Latarka wyłączona</string>
     <string name="torch_missing">To urządzenie nie ma latarki</string>

@@ -42,6 +42,15 @@ class MainActivity : AppCompatActivity() {
         private const val PERMS_REQUEST = 1001
 
         /**
+         * How often to look for StreamService.instance.frameHub while waiting for
+         * the service to come up. The hub appears within a frame or two of the
+         * service starting, so this only ever runs a handful of times; it is a
+         * short retry because a preview that stays black while the camera runs
+         * is indistinguishable from a broken app.
+         */
+        private const val PREVIEW_ATTACH_RETRY_MS = 250L
+
+        /**
          * Compiled status-field patterns, built on first use and kept.
          *
          * The field names are a fixed set this class itself passes, so this
@@ -77,6 +86,12 @@ class MainActivity : AppCompatActivity() {
     private var zoom = 1f
     private var maxZoom = 1f
     private var pollBusy = false
+    // Written on the poll worker, read on the main thread. Without volatile the
+    // main thread can keep reading a stale null after a failure, which is the
+    // same class of bug as the black preview: a value written and never seen.
+    @Volatile
+    private var lastPollError: String? = null
+    private var runningButtonLabel: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -241,7 +256,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun pollOnce() {
-        val url = baseUrl() ?: return
+        val url = loopbackUrl()
         if (pollBusy) return
         if (worker.isShutdown || isFinishing || isDestroyed) return
         pollBusy = true
@@ -254,8 +269,12 @@ class MainActivity : AppCompatActivity() {
                     conn.readTimeout = 2000
                     result = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
-                } catch (_: Exception) {
-                    // server down or restarting
+                } catch (e: Exception) {
+                    // The reason has to travel with the failure. A cleartext
+                    // block, a wrong IP and a server that is off all arrive here
+                    // as the same null body, and "no connection" is a lie for
+                    // two of them.
+                    lastPollError = "${e.javaClass.simpleName}: ${e.message}"
                 }
                 val body = result
                 handler.post {
@@ -266,9 +285,30 @@ class MainActivity : AppCompatActivity() {
                     // is a HOME candidate recreated whenever the user leaves.
                     if (isFinishing || isDestroyed) return@post
                     if (body == null) {
+                        // Before this, "no answer on our port" always meant the
+                        // red offline text, even when the port was answered by a
+                        // different app entirely, or when our own server had
+                        // failed to bind. Reading the service's own last error
+                        // separates the two with no second network round trip.
+                        val svc = StreamService.instance
+                        if (svc != null) {
+                            val last = svc.lastError
+                            if (last != null && last.contains("failed to bind")) {
+                                showServiceError(last)
+                                return@post
+                            }
+                        }
                         tvStatus.text = getString(R.string.status_offline)
                         tvStatus.setTextColor(0xFFFF5252.toInt())
+                        // A cleartext block is not a disconnected server, and the
+                        // user is the only one who can fix it, so the reason has to
+                        // be on screen instead of swallowed into a null body.
+                        tvStatus.text = getString(
+                            R.string.status_offline_reason,
+                            lastPollError ?: getString(R.string.status_offline)
+                        )
                     } else {
+                        lastPollError = null
                         applyStatus(body)
                     }
                 }
@@ -281,6 +321,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyStatus(json: String) {
+        // Something answered on our port but it is not us. Another IP-webcam app
+        // holding 8080 replies with its own status.json, and numField() finds
+        // none of our fields, so the screen showed a confident green
+        // "0 fps, 0 viewers, 0 frames" for a camera that was streaming fine one
+        // port over. Measured on the Android 6 phone, where com.pas.webcam owns
+        // 8080 and this app can only reach its own RTSP port.
+        if (!json.contains("\"pipeline\"")) {
+            tvStatus.text = getString(R.string.status_port_taken, config.port)
+            tvStatus.setTextColor(0xFFFF9800.toInt())
+            return
+        }
+        // A live server is proof the service exists, which the button label is
+        // about, not just about the number. renderStopped() ran on the resume
+        // that lost the startService() race, and nothing since then corrected
+        // the label -- so the screen said "Start" over a running stream.
+        // Compared against a held string: getString() in the condition would run
+        // a resource lookup every poll, every 2s, forever.
+        if (runningButtonLabel == null) runningButtonLabel = getString(R.string.stop_stream)
+        if (btnToggle.text != runningButtonLabel) btnToggle.text = runningButtonLabel
         val fps = numField(json, "fps")
         val viewers = numField(json, "viewers")
         val frames = numField(json, "frames")
@@ -326,6 +385,43 @@ class MainActivity : AppCompatActivity() {
         preview.start()
     }
 
+    /**
+     * Points the on-screen preview at the service's FrameHub so it shows the
+     * exact frames remote viewers get, without a second camera session.
+     *
+     * startService() is asynchronous: on the first launch StreamService.instance
+     * is still null when renderRunning() runs, so this hub is null the first
+     * time and only that time. The preview thread reads the hub once at start
+     * and gave up on null, so the view stayed black for the rest of the session
+     * while the camera was streaming fine -- measured on the Android 6 phone,
+     * where a fresh launch showed a black preview with the server reporting
+     * frames.
+     */
+    private fun attachPreviewHub() {
+        val hub = StreamService.instance?.frameHub
+        if (hub != null) {
+            preview.frameHub = hub
+        } else {
+            // Wait for the service to publish its hub rather than giving up on it.
+            // Bound to the activity lifetime: a callback into a destroyed window
+            // throws, and this is the window the app is recreated into.
+            handler.postDelayed(retryAttachPreviewHub, PREVIEW_ATTACH_RETRY_MS)
+        }
+    }
+
+    private val retryAttachPreviewHub = object : Runnable {
+        override fun run() {
+            if (isFinishing || isDestroyed) return
+            val hub = StreamService.instance?.frameHub
+            if (hub != null) {
+                preview.frameHub = hub
+                preview.start()
+            } else {
+                handler.postDelayed(this, PREVIEW_ATTACH_RETRY_MS)
+            }
+        }
+    }
+
     private fun renderStopped() {
         tvStatus.text = getString(R.string.status_stopped)
         tvStatus.setTextColor(0xFF9E9E9E.toInt())
@@ -336,14 +432,6 @@ class MainActivity : AppCompatActivity() {
         tvUrl.text = baseUrl() ?: getString(R.string.no_wifi)
     }
 
-    /**
-     * Points the on-screen preview at the service's FrameHub so it shows the
-     * exact frames remote viewers get, without a second camera session.
-     */
-    private fun attachPreviewHub() {
-        val hub = StreamService.instance?.frameHub
-        if (hub != null) preview.frameHub = hub
-    }
 
     override fun onResume() {
         super.onResume()
@@ -363,12 +451,50 @@ class MainActivity : AppCompatActivity() {
         motionOn = config.securityEnabled
         torchOn = config.torchOn
         updateUrlLabel()
+        // The service reports a failed bind -- "Server failed to bind port 8080"
+        // -- to its log, its notification and this listener list, and the list had
+        // no subscriber. So the one failure that makes the whole app useless (the
+        // HTTP port is already taken by another app on the device) surfaced as a
+        // bare red "no connection", identical to the server being switched off.
+        // Measured on the Android 6 phone, where another IP-webcam app owns 8080.
+        StreamService.instance?.let { svc ->
+            svc.errorListeners.add(serviceErrorListener)
+            svc.lastError?.let { showServiceError(it) }
+        }
         if (StreamService.instance != null) {
             renderRunning()
             schedulePolling()
         } else {
             renderStopped()
+            // The service is created by an asynchronous startService() from
+            // onCreate, so onResume almost always wins the race and sees
+            // instance == null. Nothing was scheduled in that branch, so the
+            // status text kept whatever the layout shipped with -- on the
+            // Android 6 phone that read as a confident red "no connection"
+            // while the server was up and answering. Polling has to start
+            // regardless; the poll itself is what discovers the service.
+            schedulePolling()
         }
+    }
+
+    private val serviceErrorListener: (String) -> Unit = { msg ->
+        handler.post {
+            if (isFinishing || isDestroyed) return@post
+            showServiceError(msg)
+        }
+    }
+
+    /**
+     * Shows a service-reported failure where the user is already looking.
+     *
+     * Only a bind failure earns the red text. A camera restart failure is
+     * transient and recovers on its own, and a permanent-looking error that
+     * clears itself teaches the user to ignore the error colour.
+     */
+    private fun showServiceError(msg: String) {
+        if (!msg.contains("failed to bind")) return
+        tvStatus.text = getString(R.string.status_bind_failed, msg)
+        tvStatus.setTextColor(0xFFFF5252.toInt())
     }
 
     override fun onPause() {
@@ -379,6 +505,10 @@ class MainActivity : AppCompatActivity() {
         // an "Ok" for a flag on a window nobody can see.
         KeepScreenOn.setVisible(window, false)
         handler.removeCallbacks(pollTask)
+        // Symmetry with the subscription in onResume: this Activity is a HOME
+        // candidate, so it is recreated constantly, and a listener that only
+        // ever grows makes every past window a leak that still receives errors.
+        StreamService.instance?.errorListeners?.remove(serviceErrorListener)
         // Keep streaming, but stop burning CPU and radio on the on-screen preview
         preview.stop()
     }
@@ -405,6 +535,29 @@ class MainActivity : AppCompatActivity() {
         return if (ip == "0.0.0.0") null else "http://$ip:${config.port}"
     }
 
+    /**
+     * URL the app uses to talk to its own HTTP server.
+     *
+     * Deliberately 127.0.0.1 and not the LAN address that baseUrl() reports. The
+     * cleartext policy in network_security_config.xml permits cleartext for the
+     * loopback interface only, and the app's own server is reached from inside
+     * the app, so a self-request over the LAN address is blocked by the platform
+     * before a byte leaves: measured on the Android 6 phone, where
+     * HttpURLConnection threw
+     *
+     *     UnknownServiceException: CLEARTEXT communication not supported: []
+     *
+     * and the status line read a red "no connection" for a server that was up
+     * and answering from every other client on the network.
+     *
+     * The LAN address stays in baseUrl() and is still what tvUrl shows the
+     * user, because that is the address other machines have to use. Widening the
+     * cleartext policy to the LAN to make this work would be the wrong fix: it
+     * would let the app send anything in cleartext to any host, to work around a
+     * self-request that has no reason to leave the device.
+     */
+    private fun loopbackUrl(): String = "http://127.0.0.1:${config.port}"
+
     private fun localIpAddress(): String {
         try {
             for (nif in NetworkInterface.getNetworkInterfaces()) {
@@ -420,7 +573,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Fire-and-forget API call on a background thread. */
     private fun callServer(path: String, onDone: (Boolean) -> Unit = {}) {
-        val url = baseUrl() ?: return onDone(false)
+        val url = loopbackUrl()
         try {
             worker.execute {
                 var ok = false

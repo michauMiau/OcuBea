@@ -33,6 +33,46 @@ Deliberately not set:
     exactly the kind of app where that matters.
 -->
 <network-security-config>
+    <!--
+    Cleartext is denied by default and permitted only for the loopback interface.
+
+    The base stays false on purpose: this app is a camera server, it serves the
+    LAN, and it never sends a request to a remote host. Verified by reading
+    every URL in the source, not by assuming:
+
+  - ClipAdapter, ClipThumbs, MainActivity, SettingsActivity all reach the app's
+    own server on 127.0.0.1.
+  - OnvifSoap and OnvifDiscovery carry XML namespace URIs (schemas.xmlsoap.org,
+    www.onvif.org, www.w3.org). Those are identifiers inside the SOAP envelope
+    and WSDL, not fetches. Nothing resolves or dials them.
+  - ONVIF discovery probes multicast on the LAN, which network security config
+    does not govern at all.
+
+The LAN clients the user points a browser or a VMS at are outside this app's
+control: the server binds a socket and serves them, which no manifest attribute
+can restrict. So scoping cleartext to loopback costs nothing.
+
+The <domain> entries below are hostnames, which is what a domain-config matches.
+An IP literal is not a reliable way to exempt an address: measured on the
+Android 6 phone (API 23), a request to the app's own server at
+http://127.0.0.1:8080/status.json failed with
+
+    UnknownServiceException: CLEARTEXT communication not supported: []
+
+with these entries present and the base set to false. MainActivity therefore
+reads its own status from StreamService instead of over HTTP; see
+loopbackUrl() for why the self-request is not the fix.
+
+Deliberately not set:
+
+  - A base config with cleartextTrafficPermitted="true" would be the lazy fix
+    and is the one change that would let this app send anything in cleartext to
+    any host, to work around a self-request that has no reason to leave the
+    device. It was tried, and rejected for that reason.
+  - No debug overrides block permitting cleartext "just for testing". That is
+    the most common way a release build ships permissive cleartext, and this is
+    exactly the kind of app where that matters.
+-->
     <base-config cleartextTrafficPermitted="false" />
     <domain-config cleartextTrafficPermitted="true">
         <!-- The app's own HTTP server, reached from inside the app. -->

@@ -32,7 +32,28 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.OcuBea"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
+        <!--
+        usesCleartextTraffic is a boolean and a domain-config cannot override it.
+        On the Android 6 phone (API 23) the app's own request to
+        http://127.0.0.1:8080/status.json failed with
+
+            UnknownServiceException: CLEARTEXT communication not supported: []
+
+with network_security_config.xml present and its loopback domain-config
+carving out 127.0.0.1, localhost and 10.0.2.2, and with this attribute set to
+false. The cleartext decision on that device follows this manifest attribute;
+the per-domain file does not loosen it.
+
+So the attribute is true and the narrowing lives in one place: the file. Setting
+this to false is the change that silently permits cleartext to every host the
+app might ever reach, which is why the file exists at all.
+
+The LAN risk is unchanged either way and is not something this attribute can
+express: OcuBea *is* the camera server, so the peers are browsers and VMS
+clients outside this app, and a socket the app binds and serves is not
+restricted by any manifest flag.
+        -->
 
         <activity
             android:name=".MainActivity"

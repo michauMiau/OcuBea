@@ -33,6 +33,9 @@
     <string name="status_live">● %1$d fps · %2$d viewers · %3$d frames</string>
     <string name="status_offline">Offline</string>
     <string name="status_stopped">Stopped</string>
+    <string name="status_port_taken">Port %1$d taken by another app</string>
+    <string name="status_bind_failed">%1$s — change the port or close the other app</string>
+    <string name="status_offline_reason">No connection (%1$s)</string>
     <string name="torch_on">Torch on</string>
     <string name="torch_off">Torch off</string>
     <string name="torch_missing">This device has no torch</string>
