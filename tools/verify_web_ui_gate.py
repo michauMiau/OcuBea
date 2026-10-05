@@ -148,31 +148,54 @@ def check_toggle_glyph(html):
         fail("toggle-glyph", "the audio toggle has an empty body: no glyph in the "
                              "markup, so it renders as an unlabelled control")
 
-    # The icon tile helper, which is what Toggle became. Searched for the
-    # helper by name rather than by a fixed body: the old anchor was the
-    # as() spelling, so this branch silently stopped running when as() was
-    # replaced by bt() and reported nothing while checking nothing.
-    # Matched by the body, not by the helper name: the minifier renames
-    # Tile to whatever is free (it was bt in the source and Yt in the bundle),
-    # so a check anchored on the identifier silently stopped running.
+    # The icon tile helper, which is what Toggle became.
+    #
     # Anchored on the tile's own CSS class, which the minifier cannot rewrite,
-    # and read forward to the end of the template literal. Anchoring on the
-    # helper identifier was wrong twice over: the minifier renames Tile (bt in
-    # the source, Yt in the bundle), and it also collapses the destructured
-    # parameter list, so the shape a reader expects is not in the file.
-    m2 = re.search(r'class=\{"tilebtn".*?`(.*?)`', html, re.S)
+    # because the helper identifier is renamed (Tile is `bt` in the source and
+    # `Yt` in the bundle) and the destructured parameter list is collapsed.
+    #
+    # TWO THINGS WERE WRONG HERE, and both made the check silently pass over a
+    # clean file and report nothing:
+    #
+    #  1. The pattern was r'class=\{"tilebtn".*?`(.*?)`'. A bare `{` in a regex
+    #     is not "an opening brace", it is a quantifier with nothing to
+    #     quantify, so that branch could never match anything. esbuild emits
+    #     class=${"tilebtn"+...}, and the `$` was missing. The check reported
+    #     "no icon-tile helper found in the bundle" for a bundle that contains
+    #     the helper, one line above it.
+    #  2. `(.*?)` up to the FIRST backtick is wrong even once it matches. The
+    #     Tile template contains a nested html`aria-pressed=${on}` inside a
+    #     spread, so the first backtick is the middle of the expression, not the
+    #     end of the template. The captured "body" was the 17 characters
+    #     `aria-pressed=${e}`, which contains no <svg>, no .cap and no
+    #     aria-hidden, so all three sub-checks below reported "missing" for a
+    #     tile that has all three. A check whose capture window ends in the
+    #     middle of its subject is not a check.
+    #
+    # So: anchor on the class, capture to the template's own closing backtick,
+    # which is the one after </button>. `\s*` because esbuild puts a newline
+    # between the last child and the terminator.
+    m2 = re.search(r'class=\$\{"tilebtn".*?</button>\s*`', html, re.S)
     if not m2:
         fail("toggle-glyph", "no icon-tile helper found in the bundle")
     else:
-        body = m2.group(1)
+        body = m2.group(0)
         if "<svg" not in body:
             fail("toggle-glyph", "the icon tile has no <svg> in its markup, so it "
                                  "renders as a caption with no icon")
-        if 'class="cap"' not in body:
-            fail("toggle-glyph", "the icon tile has no .cap caption element")
-        if 'aria-hidden' not in body:
+        # Scoped to the CAPTION, not the whole body: the <svg> carries
+        # aria-hidden too, so a whole-body test for "aria-hidden" is still true
+        # after the caption loses it, and the mutation that removes it from the
+        # caption -- the one that matters, because the caption text and the
+        # accessible name are the same word and an unhidden caption announces the
+        # button twice -- passed.
+        if not re.search(r'<span class="cap" aria-hidden="true">', body):
             fail("toggle-glyph", "the icon tile caption is not marked aria-hidden, "
                                  "so it is announced twice on top of aria-label")
+        # The caption must exist before it can be hidden: a mutation that drops
+        # the class as well must not pass by satisfying the check above.
+        if '<span class="cap"' not in body:
+            fail("toggle-glyph", "the icon tile has no .cap caption element")
 
     # No .tgl button may be empty anywhere.
     for mm in re.finditer(r'<button[^>]*class="tgl[^"]*"[^>]*>\s*</button>', html):
@@ -230,6 +253,52 @@ def decode_js_escapes(text):
         out.append(ch)
         i += 1
     return "".join(out)
+
+
+def check_htm_comment_text(html):
+    """No `{/* ... */}` in an html`` template literal. It is NOT a comment there.
+
+    htm has no comment syntax. Inside html`...`, a bare `{` starts LITERAL TEXT,
+    which htm then parses as markup. So a JSX-style comment copied over from a
+    .jsx file renders its own source into the page. Measured, not assumed:
+
+        html`<div>before{/* just words */}after</div>`
+          -> <div>before{/* just words */}after</div>     (text is visible)
+
+    and a comment that contains an opening tag opens a real element the template
+    never closes:
+
+        html`<div>before{/* It was a <section> of its own */}after</div>`
+          -> divbefore{/* It was a <section> of its own */}after</section>
+
+    The unbalanced tag leaves a hole in htm's parse tree and Preact then calls
+    insertBefore(undefined) -> TypeError on every render. This shipped: 68
+    identical "insertBefore: parameter 1 is not of type 'Node'" errors on the
+    A6, and the section's children silently failed to render.
+
+    The correct form is a JS comment inside an INTERPOLATION with an explicit
+    null: ${/* ... */ null}, which htm evaluates to a child it skips.
+
+    The minifier strips the comment text but leaves `${null}` where the safe form
+    was, so the buggy form is what appears verbatim in the bundle: search for the
+    marker text, not for a count of ${null}.
+    """
+    vis = strip_html_comments(html)
+    # Only app code: the vendored hls.js payload is inside <script> but has no
+    # template literals of ours, and cutting it is what strip_third_party_bundle
+    # already does for the dash checks.
+    vis = strip_third_party_bundle(vis)
+    n = 0
+    for m in re.finditer(r"\{/\*", vis):
+        n += 1
+        if n > 5:
+            break
+        ln = vis[:m.start()].count("\n") + 1
+        ctx = " ".join(vis[m.start():m.start() + 90].split())
+        fail("htm-comment", f"index.html line {ln} has a JSX-style comment inside "
+                           f"a template literal, which htm renders as visible "
+                           f"text: ...{ctx}...")
+    return n
 
 
 def check_no_dashes(label, text, is_html):
@@ -390,6 +459,13 @@ MUTATIONS = [
     # reported it as uncaught.
     ("no-dashes: put an escaped en dash in a dd fallback",
      lambda t: t.replace('${N.available||P("off")}', '${N.available||"\\u2013"}', 1)),
+    # The defect that shipped: htm has no comment syntax, so `{/* */}` in a
+    # template literal renders its own source into the page. Anchored on the
+    # ${null} the minifier left where the safe form used to be, because the
+    # comment text itself does not survive minification.
+    ("htm-comment: turn the safe ${null} back into a JSX-style comment",
+     lambda t: t.replace("${null}\n      <div class=\"statusbar\">",
+                         "{/* a comment */}\n      <div class=\"statusbar\">", 1)),
     ("no-dashes: put an em dash in a string resource",
      None),  # handled against values/strings.xml
 ]
@@ -407,6 +483,7 @@ def run_all():
     check_toggle_styled(css)
     check_toggle_glyph(visible)
     check_state_labels(visible)
+    check_htm_comment_text(visible)
     check_no_dashes("index.html (visible)", visible, is_html=True)
     check_no_dashes_strict("index.html (visible)", visible, is_html=True)
     check_server_strings()

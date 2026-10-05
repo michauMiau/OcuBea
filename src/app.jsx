@@ -804,10 +804,10 @@ function App() {
         ${lang.toUpperCase()}
       </button>
     </header>
-      {/* The status row lives in the top bar, above the picture. It was a
+      ${/* The status row lives in the top bar, above the picture. It was a
           <section> of its own after the stream, so the encoder readout was
           under the video the user was watching. Same dt/dd pairs, rendered as
-          inline chips so the bar is one line rather than a second card. */}
+          inline chips so the bar is one line rather than a second card.*/ null}
       <div class="statusbar">
         <dl class="chips">
           <span class="chip">
@@ -843,9 +843,9 @@ function App() {
     </div>
 
     <main>
-      {/* Picture and audio in one box: the speaker control belongs next to the
+      ${/* Picture and audio in one box: the speaker control belongs next to the
           stream it controls, not three sections further down under the
-          security panel. */}
+          security panel.*/ null}
       <div class="stage">
         <${Stream}
           mode=${mode}
@@ -952,11 +952,11 @@ function App() {
             momentary=${true}
             icon="M12 18v-3M12 6V3M6 12H3M21 12h-3M7 7l1.8-1.8M15.2 7l1.8-1.8M7 17l1.8 1.8M15.2 17l1.8 1.8"
           />
-          {/* ffc is the one endpoint that genuinely implements "toggle": it
+          ${/* ffc is the one endpoint that genuinely implements "toggle": it
               reads the camera state and inverts it (StreamServer.kt:890).
               "front"/"back" are NOT accepted -- the arm checks value == "on",
               so set=front answers "ok" and changes nothing, which is a second
-              way of getting a dead-looking control. Verified on the phone. */}
+              way of getting a dead-looking control. Verified on the phone.*/ null}
           <${Tile}
             id="bFlip"
             on=${!!s.front_camera}
@@ -1006,9 +1006,9 @@ function App() {
           options=${(s.avail && s.avail.orientation) || ORIENTATIONS}
           onChange=${(v) => act(setSetting, 'orientation', v, poll)}
         />
-        {/* The image section used to be a card of its own for three
+        ${/* The image section used to be a card of its own for three
             read-only numbers, which the user called useless. It is now three
-            chips on the end of the optics row: same dl data, no separate box. */}
+            chips on the end of the optics row: same dl data, no separate box.*/ null}
         <dl class="chips">
           <span class="chip">
             <dt>${t('bitrate')}</dt>
@@ -1027,8 +1027,8 @@ function App() {
 
       <section>
         <h2>${t('security')}</h2>
-        <div class="tiles">
-          {/* onChange receives the NEXT state, not the current one. These two
+        <div class="tiles cols-2">
+          ${/* onChange receives the NEXT state, not the current one. These two
               call sites used to discard it and send the literal string
               "toggle", which the phone reads as a fixed value: for
               night_vision ("value != off") that is always ON, for
@@ -1036,7 +1036,7 @@ function App() {
               could not be turned off and motion could not be turned back on
               -- the button looked fine and did the opposite of what its label
               said. Sending the real state works for every setting and needs no
-              server-side toggle. */}
+              server-side toggle.*/ null}
           <${Tile}
             id="bNight"
             on=${!!s.night_vision}
@@ -1098,7 +1098,7 @@ function App() {
 
       <section>
         <h2>${t('audio')}</h2>
-        <div class="tiles solo">
+        <div class="tiles cols-1">
           <${Tile}
             id="bAudOn"
             on=${!!audio.enabled}
@@ -1134,7 +1134,7 @@ function App() {
 
       <section class="files">
         <h2>${t('recordings')} ${recordings.length}</h2>
-        <div class="tiles solo">
+        <div class="tiles cols-1">
           <${Tile}
             id="bRec"
             on=${!!recording.enabled}

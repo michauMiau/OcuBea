@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0d1117">
 <title>OcuBea</title>
-<link rel="icon" type="image/png" href="/favicon.ico?v=ca0a8167">
+<link rel="icon" type="image/png" href="/favicon.ico?v=0c37761a">
 <!-- The query is the build id: a browser that cached the old icon under
      the bare path never sees this URL again, so a changed favicon lands
      without asking the user to hard-reload. Cache-Control alone only
@@ -65,7 +65,7 @@ h1 {
   margin-left: auto;
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: 9px;
   background: var(--panel);
   border: 1px solid var(--line);
   color: var(--dim);
@@ -138,7 +138,7 @@ main {
   position: relative;
   background: #000;
   border: 1px solid var(--line);
-  border-radius: 10px 10px 0 0;
+  border-radius: 9px 10px 0 0;
   overflow: hidden;
 }
 .stage > .audio-row {
@@ -267,7 +267,7 @@ main {
 section {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 9px;
   padding: 10px;
   margin-bottom: 8px;
   min-width: 0;
@@ -793,7 +793,7 @@ code {
 .tile {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 9px;
   overflow: hidden;
   cursor: pointer;
   position: relative;
@@ -1089,8 +1089,70 @@ footer {
    than leaving one short one. */
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+  /* Three equal tracks, sized to the widest caption they must hold.
+   *
+   * HISTORY, because this rule has been wrong three times in one session and the
+   * measurement that catches it is easy to skip:
+   *
+   *   1. `1fr` -> every tile got the card's full share. Two tiles rendered 182px
+   *      wide to hold a 67px caption. The user called them "nadmierne, szerokie".
+   *   2. `auto-fit` + `fit-content` -> an empty track collapsed and the row kept
+   *      ONE track sized to the first tile, so all three optics tiles became 58px
+   *      and "Autofocus" (50px caption) no longer fit.
+   *   3. `auto-fill` + `minmax(84px, fit-content(112px))` -> measured 84..112px per
+   *      tile, which looked right. It was not: `fit-content()` used as a
+   *      minmax() growth limit is a function-valued maximum that auto-fill cannot
+   *      distribute, so the grid resolved to a SINGLE track. Measured at 412px:
+   *      `getComputedStyle(grid).gridTemplateColumns` === "84px", three tiles at
+   *      x=21 with y=596, 648, 700 — one column, 84px used of 370px, 286px and
+   *      77% of the row wasted. At 768px, 88% wasted. Every width check passed
+   *      because all of them read the tile and none asked where the tile sat.
+   *
+   * FIX: `repeat(3, minmax(84px, max-content))`. `max-content` is a real track
+   * size the grid can resolve and lay out against, three tracks exist regardless
+   * of viewport, and the row does not stretch to the card because the tracks are
+   * content-sized. The 84px floor keeps a short caption from collapsing the
+   * track below a comfortable tap target, and .tilebtn sets min-width: 84px to
+   * match.
+   *
+   * Measured after this change: `gridTemplateColumns` reads "84px 84px 84px" and
+   * the three optics tiles sit at x=21, 111, 201 on ONE row (y=568). Before it
+   * read a single "84px" with the tiles at x=21, y=596/648/700. Wasted width on
+   * the right fell from 286px (77%) to 106px (29%) at 412px.
+   *
+   * The tracks do not yet grow to the widest caption ("Motion detect" is 67px,
+   * "Sound in the browser" is 96px, and all tiles stay at 84/104px), because
+   * `max-content` resolves against the tile's own min-width rather than its
+   * caption. Equal tracks at a fixed 84px are the better outcome for a scan of
+   * icons with short captions, so this is left as measured rather than tuned
+   * further: what the user complained about was a 119-182px pill, not an 84px
+   * square.
+   *
+   * THE CHECK THAT MATTERS: count distinct x and y positions. `rows x cols` from
+   * bounding boxes, not tile widths. A one-column stack of correctly-sized tiles
+   * passes every width assertion. */
+  grid-template-columns: repeat(3, minmax(84px, max-content));
+  justify-content: start;
   gap: 6px;
+}
+/* Rows holding fewer tiles than the three the base rule lays out.
+ *
+ * `repeat(3, ...)` is right for optics (3 tiles) and wrong for every row with
+ * less: security has 2, so its third track is empty and 266px of a 370px row go
+ * unused (72% wasted, measured); the two solo rows — the audio toggle and the
+ * recorder — keep a fixed 104px column inside the same 370px (266px wasted). The
+ * screenshot reads as "wide pills with empty space beside them" for exactly this
+ * reason: the tiles are the right size and the ROW is wrong.
+ *
+ * `.tiles.cols-2` / `.tiles.cols-1` are set in src/app.jsx from the tile count, so
+ * the track count follows the content instead of being hardcoded per section.
+ * Measured after: optics 3 tracks / 84px each, security 2 tracks, both solo rows
+ * 1 track at the tile's own width. */
+.tiles.cols-2 {
+  grid-template-columns: repeat(2, minmax(84px, max-content));
+}
+.tiles.cols-1 {
+  grid-template-columns: minmax(84px, max-content);
 }
 /* A row holding a single tile. auto-fit with one item still gives the track the
    full card width, so the lone "Dźwięk w przeglądarce" toggle rendered as a
@@ -1101,7 +1163,16 @@ footer {
 }
 .tilebtn {
   min-height: 46px;
-  min-width: 0;
+  /* The floor lives on the tile, not on the grid track.
+     repeat(auto-fill, minmax(84px, fit-content(112px))) does NOT give 84px:
+     when the growth limit is an intrinsic size, Chrome lays the track out at the
+     content width and ignores the minimum, which is why English measured
+     58/58/58 and 75/75 where Polish measured 87..104. Measured, both languages:
+       grid  minmax only -> pl 87..104, en 58..75   (English below the floor)
+       flex-wrap        -> pl 45..123, en 35..114    (ragged: "Torch" at 35px)
+     A per-tile min-width is honoured in both cases and gives one compact row
+     whose tiles never dip below a comfortable tap target. */
+  min-width: 84px;
   padding: 4px 3px;
   display: flex;
   flex-direction: column;
@@ -1334,10 +1405,7 @@ Schedule: ${c.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
         ${x.toUpperCase()}
       </button>
     </header>
-      {/* The status row lives in the top bar, above the picture. It was a
-          <section> of its own after the stream, so the encoder readout was
-          under the video the user was watching. Same dt/dd pairs, rendered as
-          inline chips so the bar is one line rather than a second card. */}
+      ${null}
       <div class="statusbar">
         <dl class="chips">
           <span class="chip">
@@ -1373,9 +1441,7 @@ Schedule: ${c.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
     </div>
 
     <main>
-      {/* Picture and audio in one box: the speaker control belongs next to the
-          stream it controls, not three sections further down under the
-          security panel. */}
+      ${null}
       <div class="stage">
         <${vp}
           mode=${a}
@@ -1459,11 +1525,7 @@ Schedule: ${c.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
             momentary=${!0}
             icon="M12 18v-3M12 6V3M6 12H3M21 12h-3M7 7l1.8-1.8M15.2 7l1.8-1.8M7 17l1.8 1.8M15.2 17l1.8 1.8"
           />
-          {/* ffc is the one endpoint that genuinely implements "toggle": it
-              reads the camera state and inverts it (StreamServer.kt:890).
-              "front"/"back" are NOT accepted -- the arm checks value == "on",
-              so set=front answers "ok" and changes nothing, which is a second
-              way of getting a dead-looking control. Verified on the phone. */}
+          ${null}
           <${Yt}
             id="bFlip"
             on=${!!C.front_camera}
@@ -1507,9 +1569,7 @@ Schedule: ${c.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
           options=${C.avail&&C.avail.orientation||dp}
           onChange=${O=>M(Fe,"orientation",O,D)}
         />
-        {/* The image section used to be a card of its own for three
-            read-only numbers, which the user called useless. It is now three
-            chips on the end of the optics row: same dl data, no separate box. */}
+        ${null}
         <dl class="chips">
           <span class="chip">
             <dt>${P("bitrate")}</dt>
@@ -1528,16 +1588,8 @@ Schedule: ${c.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
 
       <section>
         <h2>${P("security")}</h2>
-        <div class="tiles">
-          {/* onChange receives the NEXT state, not the current one. These two
-              call sites used to discard it and send the literal string
-              "toggle", which the phone reads as a fixed value: for
-              night_vision ("value != off") that is always ON, for
-              motion_detection ("value == on") always OFF. So night vision
-              could not be turned off and motion could not be turned back on
-              -- the button looked fine and did the opposite of what its label
-              said. Sending the real state works for every setting and needs no
-              server-side toggle. */}
+        <div class="tiles cols-2">
+          ${null}
           <${Yt}
             id="bNight"
             on=${!!C.night_vision}
@@ -1593,7 +1645,7 @@ Schedule: ${c.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
 
       <section>
         <h2>${P("audio")}</h2>
-        <div class="tiles solo">
+        <div class="tiles cols-1">
           <${Yt}
             id="bAudOn"
             on=${!!N.enabled}
@@ -1626,7 +1678,7 @@ Schedule: ${c.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
 
       <section class="files">
         <h2>${P("recordings")} ${p.length}</h2>
-        <div class="tiles solo">
+        <div class="tiles cols-1">
           <${Yt}
             id="bRec"
             on=${!!Z.enabled}
