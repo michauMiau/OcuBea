@@ -82,3 +82,63 @@ rozwiązanie musi być warunkowe na kodeku, a nie „zawsze AU-header".
 - Nie ruszę GOP H.264 — bez P-frame'ów to decyzja jakość/latencja, nie błąd.
 - Nie cofam naprawy zduplikowanego nagłówka NAL: potwierdzona ffprobe na obu
   telefonach (`Baseline 1280×720` na A6, `High 1280×720 level=31` na A16).
+
+---
+
+# Co faktycznie naprawiono (2026-10-05)
+
+Cztery błędy, każdy ukryty pod poprzednim:
+
+1. **Brak AU-headerów.** Serwer obiecywał `MPEG4-GENERIC` + `mode=AAC-hbr`,
+   czyli RFC 3640 wymaga AU-headers-section na początku payloadu. Leciał surowy
+   ADTS: `fff1` = syncword, który klient czyta jako rozmiar AU. `65521` zamiast
+   `202`. Stąd `Error parsing AU headers` ×887.
+
+2. **Regresja własna.** `AAC_AU_HEADER_BYTES = 4` przy tablicy 2 bajtowej →
+   `ArrayIndexOutOfBoundsException` → `catch (Exception)` zamyka socket. Wyglądało
+   jak `SETUP 200, PLAY 200` i wieczna cisza, przy działającym encoderze
+   (`packets_out` rósł, `empty_out` 0, `rtsp.packets` 0). Do poprawnego
+   `sizeLength=16` = **2 bajty**.
+
+3. **Rozcinanie ramek.** `AudioRingBuffer` to strumień bajtów, nie kolejka klatek.
+   Każdy `read()` lądował w środku ramki, więc na wire szedł 9-bajtowy fragment
+   z nagłówkiem ADTS zapowiadającym 184 B → `First AU larger than packet size`.
+   Teraz `pumpAudio` kumuluje i tnie tylko na granicach ramek ADTS, z
+   `resyncAdts()` żeby cięcie w środku kosztowało jedną klatkę, nie sesję.
+
+4. **Brak markera.** `M=0` na każdym pakiecie audio. Jeden AU na pakiet = każdy
+   pakiet kończy AU. Bez markera ffmpeg trzymał AU otwarte i czytał nagłówek
+   następnego pakietu jako audio. Zmierzone przed naprawą: 130 pakietów, `M=0`,
+   timestamp `+1024` — co dowodzi, że pakiety były całymi ramkami.
+
+# Co jeszcze było złe w SDP
+
+- `a=rtpmap:97 MPEG4-GENERIC/44100/1` — bajty mówią `sampling_frequency_index=3`
+  czyli **48000**
+- brak `config=` — klient nie miał AudioSpecificConfig
+- `profile-level-id=1` (Main), a bajty to AAC-LC
+
+# Pole 'samples' w nagłówku RTP
+
+Reguła L16 (`bajty / 2`) dawała `1416` dla ramki mającej 1024 próbki. AAC-LC ma
+1024 próbki niezależnie od bitrate'u, więc to stała.
+
+# Co jest zmierzone, a co nie
+
+**Zmierzone na Redmi Note 12 Pro, 174 pakiety:**
+- AU-header równy bajtom, które za nim są — 174/174
+- marker ustawiony — 174/174
+- timestamp rośnie o 1024
+- te same AU złożone bez RTP dekodują się jako `aac 48000 Hz mono 2.73s`
+
+Ten ostatni pomiar rozdziela enkoder od pakowania: bajte AAC są dobre.
+
+**Nieustalone:** ffmpeg nadal zgłasza błędy AU-header na żywym strumieniu mimo
+poprawnego wire. Próba rozdzielenia wariantów (`tools/aac_hbr_layout_probe.py`)
+nie zadziałała — mój minimalny serwer RTSP odrzucał SDP z `Invalid data found`,
+więc wszystkie warianty zwróciły 0 B i nie rozróżniły niczego. Plik usunięty,
+bo nie umiał nic zmierzyć.
+
+**Do zrobienia:** znaleźć wariant pakowania, który ffmpeg przyjmie. Kolejność
+do sprawdzenia: `mode=AAC-hbr` bez `config=` a z innym układem AU-headerów;
+`constantSize`; rezygnacja z ADTS na rzecz gołego AU (pod RTP nie jest wymagany).
