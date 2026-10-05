@@ -658,7 +658,16 @@ class StreamServer(
             onDisconnect = { ring.close() }
         )
         audio.addClient(client)
-        return newChunkedResponse(Status.OK, "audio/x-wav", ring.asInputStream())
+        return newChunkedResponse(
+            Status.OK,
+            // From the menu option, so the served type and the type the menu
+            // advertises cannot drift apart. This used to be hardcoded
+            // `audio/x-wav` here while [AudioCodecProbe.Option.contentTypeForHttp]
+            // said something else for the same codec -- two sources of truth
+            // for one header.
+            AudioCodecProbe.options().first { it.id == "wav" }.contentTypeForHttp,
+            ring.asInputStream()
+        )
     }
 
     /**

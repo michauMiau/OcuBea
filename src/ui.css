@@ -23,28 +23,36 @@ body {
     sans-serif;
   padding-bottom: 40px;
 }
-header {
+/* The top strip: the title row and the status row inside ONE sticky block.
+   They were two siblings each with position:sticky;top:0, so whichever came
+   second painted over the first the moment the page scrolled, and the
+   complaint from the phone was that the top bar wastes all this space.
+   One wrapper means one bar. It is taller than the old header because the
+   status moved out of the page body and into it. */
+.topbar {
   position: sticky;
   top: 0;
   z-index: 20;
-  background: rgba(13, 17, 23, 0.95);
+  background: rgba(13, 17, 23, 0.96);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
-  padding: 12px 16px;
+}
+header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  padding: 6px 12px 4px;
 }
 h1 {
-  font-size: 20px;
+  font-size: 16px;
   color: var(--acc);
   font-weight: 700;
 }
 .pill {
   margin-left: auto;
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 12px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
   background: var(--panel);
   border: 1px solid var(--line);
   color: var(--dim);
@@ -57,20 +65,99 @@ h1 {
   color: var(--warn);
   border-color: var(--warn);
 }
+/* the status bar: above the picture, not under it. The values were a <dl> in a
+   full section further down the page, so the two things the user checks most
+   often, is it live and is the encoder keeping up, were below the fold and
+   under the video. Same dt/dd pairs, one wrapping row, one border, inside the
+   sticky top bar so it is on screen at every scroll position. */
+.statusbar {
+  padding: 0 12px 6px;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 5px;
+  margin: 0;
+}
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 7px;
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  min-width: 0;
+}
+.chip dt {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--dim);
+  white-space: nowrap;
+}
+/* The encoder name is the one value long enough to matter, c2.android.avc
+   encoder, so this chip wraps rather than clips. A clipped value is a value the
+   user cannot read, and layout_verify reports an overflowed dd as a layout
+   failure. */
+.chip dd {
+  text-align: left;
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  overflow: visible;
+}
 main {
   max-width: 860px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 10px;
+}
+/* The picture and the audio control are ONE box. The audio toggle used to live
+   in a section of its own further down, under the security panel, so the sound
+   control for this stream was three screens away from the stream it controls.
+   .stage welds the strip to the picture's bottom edge: shared border radius, no
+   gap, one border between them. */
+.stage {
+  margin-bottom: 8px;
 }
 .stream {
   position: relative;
   background: #000;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px 10px 0 0;
   overflow: hidden;
-  margin-bottom: 16px;
+}
+.stage > .audio-row {
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  background: var(--panel);
+  margin: 0;
+  padding: 5px 8px;
+  gap: 8px;
+}
+.stage > .audio-row .dim {
+  margin: 0;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 .stream img {
+  width: 100%;
+  display: block;
+  aspect-ratio: 16/9;
+  object-fit: contain;
+}
+/* The HLS <video> had NO rule here while the <img> above did, so switching
+   between MJPEG and HLS changed the height of the picture box: the img is
+   pinned to 16/9 and the video was left to the browser's default intrinsic
+   ratio. The user saw the layout jump the moment HLS switched on. Same four
+   declarations as the img, on both elements. */
+.stream video {
   width: 100%;
   display: block;
   aspect-ratio: 16/9;
@@ -167,9 +254,9 @@ main {
 section {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 12px;
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 8px;
   min-width: 0;
 }
 /* A section that exists only to list files gets its own identity: the file
@@ -185,20 +272,20 @@ section.files:has(.preview-open) {
   max-height: none;
 }
 h2 {
-  font-size: 12px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--dim);
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   font-weight: 600;
 }
 /* A hairline under the heading separates it from the rows without adding
      another box: the section already has a border, and a second one reads as
      a nested card. */
 h2 {
-  padding-bottom: 8px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--line);
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 /* ── file rows ──────────────────────────────────────────────────────────
      A grid, not a flex row. With flex the size, the download link and the
@@ -339,7 +426,7 @@ a.ctl:hover {
 /* The HLS quality readout sits in the big-button row as a read-only box: it
      gets the same height and the same 44% track as the buttons, so the row has
      one rhythm, and it may give width back. */
-/* padding 0 6px and no nowrap: at 360px the track is 92px and "Jakość HLS: –"
+/* padding 0 6px and no nowrap: at 360px the track is 92px and "Jakość HLS: wył."
      needs 96px at 13px, so it was being clipped. The label wraps to two lines
      inside a 44px box instead, which is why the box is 44px tall. */
 .row > .badge {
@@ -490,9 +577,134 @@ input[type='number'] {
   font-size: 13px;
   font-family: inherit;
 }
+/* the slider: THE WHITE BALL. There is exactly one <input type="range"> on
+   this page and before this rule the CSS never mentioned appearance at all, so
+   Chrome painted its own thumb: a white round knob with a drop shadow, the
+   brightest thing on a dark page. It got prominent rather than appearing when
+   0de6279 gave .ctl height:36px, which stretched the short input to 36px and
+   pushed that default knob outside the track it belonged to. It was never a new
+   element, it was an unstyled one.
+
+   The fix has to be all four parts. appearance:none alone removes the UA thumb
+   and leaves nothing to grab; a styled thumb with no appearance:none is
+   ignored; and Firefox needs ::-moz-range-thumb, which does not accept
+   -webkit-appearance:none, so both engines are covered. Colours come from the
+   existing palette only: the track is --line, the thumb is --acc with a --bg
+   ring so it reads on both. */
 input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
   width: 100%;
+  height: 22px;
+  margin: 0;
+  background: transparent;
   accent-color: var(--acc);
+  cursor: pointer;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  border: 1px solid #21262d;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--acc);
+  border: 2px solid #0d1117;
+  box-shadow: 0 0 0 1px var(--acc);
+}
+input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px var(--acc), 0 0 0 4px rgba(76, 175, 80, 0.35);
+}
+input[type='range']::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  border: 1px solid #21262d;
+}
+input[type='range']::-moz-range-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--acc);
+}
+input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--acc);
+  border: 2px solid #0d1117;
+  box-shadow: 0 0 0 1px var(--acc);
+}
+/* the codec radio: A SECOND WHITE BALL, same defect as the slider thumb. These
+   six <input type="radio"> kept appearance:auto, so Chrome painted its own
+   control, a white filled circle for the selected codec, on a dark card. Same
+   fix as the slider, minus the track: a ring in --line with a --acc dot when it
+   is checked. */
+input[type='radio'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  margin: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: #0d1117;
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+}
+input[type='radio']::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--acc);
+  transform: scale(0);
+  transition: 0.15s;
+}
+input[type='radio']:checked {
+  border-color: var(--acc);
+}
+input[type='radio']:checked::before {
+  transform: scale(1);
+}
+input[type='radio']:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
+}
+/* select, sized to its content. The three dropdowns (orientation, effect,
+   quality) carried class="ctl", and `select` had width:100%, so each one
+   stretched the full width of the row and then had to fight .row .ctl
+   {flex:1 1 120px} for it. The user read that as an oversized dropdown. A
+   select already sizes itself from its widest option, so the fix is to stop
+   overriding that: width:auto, the same 32px height as the neighbouring
+   controls, and a cap so a long option list cannot push the row past the
+   viewport.
+   The first selector is ".row select.ctl" and not "select.ctl" on purpose:
+   .row .ctl is two classes, so a bare select.ctl loses to it on flex and
+   display and the dropdown stays full width. */
+.row select.ctl,
+select.ctl {
+  width: auto;
+  max-width: 100%;
+  flex: 0 1 auto;
+  display: block;
+  align-items: baseline;
+  gap: 0;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+  border-radius: 8px;
+}
+select.ctl:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 1px;
 }
 table {
   width: 100%;
@@ -718,6 +930,40 @@ footer {
 }
 .audio-row .tgl {
   flex: 0 0 auto;
+  /* The toggle had no style rule at all: only .audio-row .tgl existed, with
+     `flex: 0 0 auto` and nothing else. The button rendered with the UA default
+     chrome and an empty body, so what the user saw was an unlabelled control
+     next to the audio line, and the speaker glyph that was supposed to be
+     inside it was not in the markup at all. A toggle that reads as broken is
+     worse than no toggle, so it gets the same box as .streamctl .ico plus the
+     on/off states, and the glyph comes from the markup rather than from
+     generated content, so it is announced by the accessibility tree too. */
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgba(13, 17, 23, 0.72);
+  color: var(--fg);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.audio-row .tgl.on {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: var(--acc);
+  color: var(--acc);
+}
+.audio-row .tgl:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.audio-row .tgl:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
 }
 
 /* Buttons on the picture. Absolutely positioned inside .stream (which is
@@ -749,6 +995,18 @@ footer {
   line-height: 1;
   cursor: pointer;
   backdrop-filter: blur(6px);
+  /* Without these three the glyph rides the text baseline and sits visibly low
+     and left of centre in its 34px box. The glyph is a single character in a
+     <span>, not an SVG, so it has to be laid out as a centred flex box rather
+     than centred by its own metrics. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.streamctl .ico:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
 }
 .streamctl .ico:hover:not(:disabled) {
   background: rgba(13, 17, 23, 0.92);
@@ -802,4 +1060,79 @@ footer {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+/* the icon tile. One button language for optics, security, audio and
+   recording: an icon, a small caption UNDER it, and an equal-width cell. The
+   complaint from the phone was three separate things with one cause, the
+   buttons were wide text pills of different lengths, "Latarka", "Autofokus",
+   "Odwróć kamery", so their edges did not line up and neither did their
+   captions. A grid of equal columns with the icon over the caption makes the
+   whole row share one rhythm whatever the label says, in Polish or English.
+
+   The caption is var(--dim), never dimmer: --dim on --panel is about 5.5:1,
+   which reads. What makes it quiet is its size and line-height, not its
+   colour. min-height rather than height, so a caption that needs two lines
+   grows its tile and the grid row stretches every other tile to match rather
+   than leaving one short one. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
+  gap: 6px;
+}
+/* A row holding a single tile. auto-fit with one item still gives the track the
+   full card width, so the lone "Dźwięk w przeglądarce" toggle rendered as a
+   318px wide pill, which is the oversized button the tiles were meant to end.
+   Pinning the column to the tile width is the only thing that changes it. */
+.tiles.solo {
+  grid-template-columns: 104px;
+}
+.tilebtn {
+  min-height: 46px;
+  min-width: 0;
+  padding: 4px 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  text-align: center;
+}
+.tilebtn svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* The caption wraps rather than truncates. An ellipsis here would satisfy
+   layout_verify by clipping the text out of its own box, which hides the label
+   the icon does not carry: "Odwróć kamery" is two words and one of them is
+   the whole meaning. */
+.tilebtn .cap {
+  font-size: 11px;
+  line-height: 1.15;
+  color: var(--dim);
+  letter-spacing: 0.01em;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  overflow: visible;
+}
+.tilebtn.on .cap {
+  color: var(--acc);
+}
+.tilebtn:hover:not(:disabled) .cap {
+  color: var(--txt);
+}
+.tilebtn:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
+}
+/* The on-state fill is the existing green, so a running setting is legible
+   without a label change. */
+.tilebtn.on {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: var(--acc);
 }

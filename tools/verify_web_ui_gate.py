@@ -148,14 +148,31 @@ def check_toggle_glyph(html):
         fail("toggle-glyph", "the audio toggle has an empty body: no glyph in the "
                              "markup, so it renders as an unlabelled control")
 
-    # The generic toggle helper, which was the other empty one.
-    m2 = re.search(r'as=\(\{on:\w+,[^}]*\}\)\s*=>\s*ue`(.*?)`', html, re.S)
-    if m2:
-        if "<span" not in m2.group(1):
-            fail("toggle-glyph", "the generic as() toggle has an empty body")
-        if "aria-hidden" not in m2.group(1):
-            fail("toggle-glyph", "the generic as() toggle glyph is not marked "
-                                 "aria-hidden, so it is announced twice")
+    # The icon tile helper, which is what Toggle became. Searched for the
+    # helper by name rather than by a fixed body: the old anchor was the
+    # as() spelling, so this branch silently stopped running when as() was
+    # replaced by bt() and reported nothing while checking nothing.
+    # Matched by the body, not by the helper name: the minifier renames
+    # Tile to whatever is free (it was bt in the source and Yt in the bundle),
+    # so a check anchored on the identifier silently stopped running.
+    # Anchored on the tile's own CSS class, which the minifier cannot rewrite,
+    # and read forward to the end of the template literal. Anchoring on the
+    # helper identifier was wrong twice over: the minifier renames Tile (bt in
+    # the source, Yt in the bundle), and it also collapses the destructured
+    # parameter list, so the shape a reader expects is not in the file.
+    m2 = re.search(r'class=\{"tilebtn".*?`(.*?)`', html, re.S)
+    if not m2:
+        fail("toggle-glyph", "no icon-tile helper found in the bundle")
+    else:
+        body = m2.group(1)
+        if "<svg" not in body:
+            fail("toggle-glyph", "the icon tile has no <svg> in its markup, so it "
+                                 "renders as a caption with no icon")
+        if 'class="cap"' not in body:
+            fail("toggle-glyph", "the icon tile has no .cap caption element")
+        if 'aria-hidden' not in body:
+            fail("toggle-glyph", "the icon tile caption is not marked aria-hidden, "
+                                 "so it is announced twice on top of aria-label")
 
     # No .tgl button may be empty anywhere.
     for mm in re.finditer(r'<button[^>]*class="tgl[^"]*"[^>]*>\s*</button>', html):
@@ -176,10 +193,52 @@ def check_state_labels(html):
                              "in its label or title")
 
 
+def decode_js_escapes(text):
+    r"""Resolve \uXXXX escapes, which is what the browser does before rendering.
+
+    THE SECOND DASH BLIND SPOT. This gate counted LITERAL dash characters, and
+    the page carried 16 of them only as `\u2013` and `\u2014` escape sequences
+    inside JS string literals -- 4 em dashes and 12 en dashes, all in template
+    literals, e.g. C.encoder||"\u2013" and the popupBlocked message. JavaScript
+    turns those into a real U+2014 and a real U+2013 before the text reaches the
+    DOM, so the browser drew 16 dashes while this check reported zero. The gate
+    was green on exactly the file it was written to catch.
+
+    Decoding on the raw text is safe here and needs no JS parser: a \uXXXX in
+    this file only ever appears inside a string. The backslash cases are
+    handled explicitly rather than trusted, so a future literal backslash
+    cannot silently eat the following four characters.
+    """
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "u" and re.fullmatch(r"[0-9a-fA-F]{4}", text[i + 2:i + 6]):
+                out.append(chr(int(text[i + 2:i + 6], 16)))
+                i += 6
+                continue
+            if nxt == "\n":            # line continuation: nothing rendered
+                i += 2
+                continue
+            if nxt in '"\'`\\/':       # an escape that renders as itself
+                out.append(nxt)
+                i += 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def check_no_dashes(label, text, is_html):
-    """Dashes are banned in user-visible text."""
+    """Dashes are banned in user-visible text, literal or escape-encoded."""
     if is_html:
         text = strip_third_party_bundle(text)
+    # Then decode, then count. Order matters: decoding first is what makes
+    # \u2014 visible to the same DASHES table that catches a typed one.
+    text = decode_js_escapes(text)
     for name, dash in DASHES.items():
         n = text.count(dash)
         if n:
@@ -215,6 +274,25 @@ def strip_third_party_bundle(text):
         if opener >= 0:
             text = text[:opener] + text[banner:]
     return text
+
+
+def check_no_dashes_strict(label, text, is_html):
+    """Ban the whole U+2010..U+2015 punctuation-dash block, not six names.
+
+    The DASHES table above lists the six dashes actually seen so far, which is
+    a list of what was looked for rather than of what is forbidden: U+2011 (non
+    breaking hyphen) was only caught because somebody remembered to write it
+    down. The IETF dash block is a closed range, so it is stated as one here and
+    cannot be extended by forgetting.
+    """
+    if is_html:
+        text = strip_third_party_bundle(text)
+    text = decode_js_escapes(text)
+    for cp in sorted({ord(c) for c in text if 0x2010 <= ord(c) <= 0x2015}):
+        i = text.find(chr(cp))
+        ctx = " ".join(text[max(0, i - 70):i + 35].split())
+        fail("no-dashes", f"{label} contains U+{cp:04X} from the "
+                          f"U+2010..U+2015 dash block: ...{ctx}...")
 
 
 def check_server_strings():
@@ -278,14 +356,40 @@ MUTATIONS = [
      #   and its closing tag instead of the attributes sidesteps both.
      lambda t: re.sub(r'(<span aria-hidden="true">\$\{i\?"[^"]*":"[^"]*"\}</span>\s*)',
                       "", t, count=1)),
-    ("toggle-glyph: remove aria-hidden from as() glyph",
-     lambda t: t.replace('<span aria-hidden="true">${n?', '<span>${n?', 1)),
+    # Anchored to the tile glyph, not the old Toggle glyph: Toggle was replaced
+    # by Tile, so the previous anchor searched for markup that no longer
+    # exists, matched nothing, and the gate reported the mutation as uncaught.
+    # The check this mutation is for is "the glyph is aria-hidden": the caption
+    # text and the accessible name are the same word, so an unhidden caption
+    # makes the button announce itself twice.
+    ("toggle-glyph: remove aria-hidden from the tile glyph",
+     lambda t: t.replace('<span class="cap" aria-hidden="true">',
+                         '<span class="cap"', 1)),
     ("state-labels: revert aria-label to P(\"audio\")",
      lambda t: t.replace('aria-label=${i?P("audioMuted"):P("audioOn")}',
                          'aria-label=${P("audio")}', 1)),
     ("no-dashes: put an em dash in the HLS badge",
-     lambda t: t.replace("HLS unsupported here - MJPEG",
+     lambda t: t.replace("HLS unsupported here, MJPEG",
                          "HLS unsupported here — MJPEG", 1)),
+    # The escape-encoded one. This is the mutation the old gate could not see:
+    # after it the source file still contains no dash character at all, only the
+    # six ASCII characters of an escape, so a checker that counts literal
+    # dashes passes and the browser still renders an em dash.
+    ("no-dashes: put an escaped em dash in a template literal",
+     # The badge is a <div>, not a <span>: the first draft of this mutation
+     # searched for the span form, matched nothing, and the gate reported the
+     # mutation as uncaught rather than as "did not change the file" for what
+     # was really a wrong search string.
+     lambda t: t.replace('<div class="badge">HLS unsupported here, MJPEG</div>',
+                         '<div class="badge">HLS unsupported here \\u2014 MJPEG</div>', 1)),
+    # The en dash, escaped, in a status chip fallback: the exact shape that was
+    # in this file 12 times and was never caught.
+    # Anchored to the en dash that is actually still in the file (the audio
+    # codec list fallback). The first draft of this mutation searched for a
+    # placeholder that has since been replaced, matched nothing, and the gate
+    # reported it as uncaught.
+    ("no-dashes: put an escaped en dash in a dd fallback",
+     lambda t: t.replace('${N.available||P("off")}', '${N.available||"\\u2013"}', 1)),
     ("no-dashes: put an em dash in a string resource",
      None),  # handled against values/strings.xml
 ]
@@ -304,6 +408,7 @@ def run_all():
     check_toggle_glyph(visible)
     check_state_labels(visible)
     check_no_dashes("index.html (visible)", visible, is_html=True)
+    check_no_dashes_strict("index.html (visible)", visible, is_html=True)
     check_server_strings()
     check_string_resources()
     return list(failures)

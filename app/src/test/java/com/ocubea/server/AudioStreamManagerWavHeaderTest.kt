@@ -177,20 +177,26 @@ class AudioStreamManagerWavHeaderTest {
      * the data size, waits for that many bytes, gets a short read and ends the
      * stream.
      *
-     * KNOWN FAILING — the defect is live in `wavHeader()` today, and only for
-     * the RIFF field. The `data` field is written from `dataSize.toInt()` and
-     * is correct at 0xFFFFFFFF, but the RIFF field is written from
-     * `total = dataSize + 36`, i.e. 0x100000023, and `.toInt()` on that is
-     * **35**. The header therefore claims the whole file is 35 bytes — shorter
-     * than the 44-byte header it is inside. `w32()` only masks 32 bits, so
-     * nothing looks wrong in the code.
+     * FIXED, and confirmed against the bytes the phone actually serves rather
+     * than against the Kotlin. This comment used to say KNOWN FAILING and blame
+     * the RIFF field for reading 35, on the theory that `total = dataSize + 36`
+     * overflowed. It did not: `wavHeader` special-cases the live marker
+     * (`if (dataSize == LIVE_SIZE) LIVE_SIZE else dataSize + 36`), so the
+     * field never overflows, and the two tests here passed all along. The
+     * comment was describing a bug that had already been fixed.
      *
-     * Fix in app/src/main/java/com/ocubea/server/AudioStreamManager.kt: the
-     * marker has to be propagated instead of incremented. Either
-     *   `val total = if (dataSize == 0xFFFFFFFFL) 0xFFFFFFFFL else dataSize + 36`
-     * or write the marker into the RIFF slot directly. Both are in the private
-     * `wavHeader`; the sized (non-live) path is correct and must stay so,
-     * which is what the test below covers.
+     * What a live `/audio.wav` actually returns, measured:
+     *   52 49 46 46 ff ff ff ff 57 41 56 45 66 6d 74 20
+     *   10 00 00 00 01 00 01 00 44 ac 00 00 88 58 01 00
+     *   02 00 10 00 64 61 74 61 ff ff ff ff 33 ff 3e ff
+     * i.e. RIFF=0xFFFFFFFF, WAVE, fmt (16, PCM, mono, 44100, 88200, 2, 16),
+     * data=0xFFFFFFFF, then PCM -- ffprobe reads pcm_s16le/44100/1/16 and
+     * ffmpeg decodes it with an empty stderr.
+     *
+     * The marker is asserted rather than tolerated deliberately. A player that
+     * trusts a wrong size either stalls waiting for bytes that never arrive or
+     * truncates the stream; that is the audible-damage class this whole header
+     * exists to avoid.
      */
     @Test
     fun `a live stream declares an unknown length in both size fields`() {
@@ -213,7 +219,7 @@ class AudioStreamManagerWavHeaderTest {
      * cannot leave one of them stale. This is the check that catches a
      * `w32(0)` written into the RIFF slot while the data slot stayed correct.
      *
-     * KNOWN FAILING for the same reason: the two fields disagree by 35.
+     * Was reported as KNOWN FAILING, disagreeing by 35, for the reason above.
      */
     @Test
     fun `both size fields are the same value rather than one being left at zero`() {

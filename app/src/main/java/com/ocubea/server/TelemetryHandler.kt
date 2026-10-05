@@ -200,6 +200,15 @@ class TelemetryHandler(
             append(audioCodecs.options().joinToString(",") { o ->
                 "{\"id\":\"${o.id}\",\"label\":\"${o.label}\"," +
                     "\"bitrate\":${o.bitrate},\"container\":\"${o.container}\"," +
+                    // Measured browser capability, per served container, in
+                    // Chromium 148 against the bytes this server emits. The
+                    // picker needs it to avoid offering a path the browser
+                    // cannot take, and it needs `content_type` because a
+                    // client that trusts the type has to get the truth about
+                    // the container rather than the MediaCodec mime.
+                    "\"content_type\":\"${o.contentTypeForHttp}\"," +
+                    "\"browser_playable\":${o.browserPlayable}," +
+                    "\"mse_capable\":${o.mseCapable}," +
                     "\"note\":\"${o.note.escapeIt()}\"}"
             })
             append("],")

@@ -57,8 +57,33 @@ class AudioEncoder private constructor(
     companion object {
         private const val TAG = "OcuBeaAudioEnc"
 
-        /** PCM the encoder consumes: 48 kHz mono, 16-bit. */
-        const val ENCODER_SAMPLE_RATE = 48_000
+        /**
+         * The rate the encoder is actually configured at, in samples per second.
+         *
+         * This used to be a separate `48_000` constant from the rate the encoder
+         * is *fed*, and that mismatch was a live defect rather than a cosmetic
+         * one. The capture path hands the encoder
+         * [AudioStreamManager.SAMPLE_RATE] (44.1 kHz) because that is what the
+         * microphone records; this constant was then used for the ADTS header
+         * written in front of every AAC frame, so the header declared 48 kHz
+         * while the samples behind it were 44.1 kHz.
+         *
+         * Measured on the phone from the bytes actually downloaded:
+         * the encoder's own head-of-stream buffer is an AudioSpecificConfig
+         * whose `samplingFrequencyIndex` is 4 -- 44.1 kHz -- sitting inside a
+         * 9-byte ADTS frame whose header says rate index 3, 48 kHz. A player
+         * that believes the header plays every AAC-LC frame (a fixed 1024
+         * samples) at 44100/48000 of the right speed, so the stream runs about
+         * 8% slow and roughly a semitone and a half flat.
+         *
+         * The encoder is configured from this same value
+         * (`AudioEncoderFanOut` passes the capture rate into
+         * `start()`, and `start()` is called with `SAMPLE_RATE`), so there is
+         * now exactly ONE rate in the system and the container cannot disagree
+         * with the codec again. Anything genuinely needing a different rate has
+         * to resample the PCM, which is not something this app does.
+         */
+        const val ENCODER_SAMPLE_RATE = AudioStreamManager.SAMPLE_RATE
 
         /**
          * MediaCodec hands the Opus encoder's configuration to the output queue
@@ -260,6 +285,19 @@ class AudioEncoder private constructor(
                     codec.releaseOutputBuffer(outIdx, false)
                     return ByteArray(0)
                 }
+                // Same mistake, different codec: the AAC encoder's first output
+                // buffer is a bare AudioSpecificConfig, and framing it as audio
+                // put a 9-byte first ADTS frame at the head of the stream.
+                // Measured on the download, that frame is the only one under
+                // 16 bytes in 282, and it is the single source of ffmpeg's
+                // `Error submitting packet to decoder`. Dropped here rather
+                // than repaired, because ADTS has no header slot for it and a
+                // client that needs the ASC has it in every ADTS header's rate
+                // and channel fields anyway.
+                if (codecId == "aac" && isAacConfigPayload(payload)) {
+                    codec.releaseOutputBuffer(outIdx, false)
+                    return ByteArray(0)
+                }
                 // Granule position is the number of 48 kHz samples that END on
                 // this page, and the FIRST audio page is the exception: it ends
                 // ZERO samples, because nothing has finished playing yet.
@@ -312,6 +350,16 @@ class AudioEncoder private constructor(
         }
         return true
     }
+
+    /**
+     * True for [payload] when it is a bare AudioSpecificConfig rather than an
+     * AAC access unit. Delegates to [AdtsFrame.isAudioSpecificConfig], which
+     * owns the rule and holds the reasoning.
+     */
+    internal fun isAacConfigPayload(
+        payload: ByteArray,
+        channels: Int = this.channels
+    ): Boolean = AdtsFrame.isAudioSpecificConfig(payload, channels)
 
     private fun copyPayload(
         codec: MediaCodec,

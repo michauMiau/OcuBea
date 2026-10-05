@@ -95,4 +95,92 @@ class AudioCodecProbeTest {
         assertTrue(s, "flac=false" in s)
         assertTrue(s, "default=aac" in s)
     }
+
+    /**
+     * `wav` has to be IN the summary, and it is the one capability that is
+     * never false.
+     *
+     * This is the regression test for "wav nie wytestuję bo się nie pokazuje" --
+     * WAV does not show up in the UI so it cannot be tested. The WebUI builds
+     * its codec picker by treating this string as a whitelist of ids that
+     * appear as `id=true`, so an id missing from here is a codec the user
+     * cannot select, however healthy its endpoint is. `wav` was absent; the
+     * picker offered none/aac/flac; the endpoint had been serving valid
+     * bytes the entire time and was unreachable from the menu.
+     *
+     * Replayed in the browser against the shipped page, which is where the
+     * filter itself comes from:
+     *   without wav -> ['none','aac','flac']
+     *   with wav    -> ['none','aac','flac','wav']
+     */
+    @Test
+    fun theSummaryAdvertisesWavBecauseTheWebUiTreatsItAsAWhitelist() {
+        val s = AudioCodecProbe.summary(result(opus = false, aac = true, amr = false, flac = true))
+        assertTrue(
+            "the WebUI shows only codecs named 'id=true' in this string, so a " +
+                "missing wav makes the endpoint unreachable from the menu: $s",
+            "wav=true" in s
+        )
+        // Not merely present: a client reading this string must be able to
+        // serve it. WAV needs no MediaCodec, so it is never unavailable.
+        assertTrue("wav must never be reported unavailable", AudioCodecProbe.canWav)
+    }
+
+    /**
+     * Every id the WebUI can offer must also be servable, or the menu offers a
+     * 501. The summary is the client's only view of the menu, so an id that is
+     * in the menu but not servable is the defect this catches.
+     */
+    @Test
+    fun everyOptionInTheMenuIsServableAndAppearsInTheSummary() {
+        for (probe in listOf(
+            result(opus = true, aac = true, amr = true, flac = true),
+            result(opus = false, aac = true, amr = false, flac = true),
+            result(opus = false, aac = false, amr = false, flac = false),
+        )) {
+            val s = AudioCodecProbe.summary(probe)
+            val menu = AudioCodecProbe.options(probe)
+            assertTrue("a menu must never be empty", menu.isNotEmpty())
+            for (o in menu) {
+                assertTrue(
+                    "menu entry '${o.id}' is offered but the summary a client " +
+                        "reads to build the same menu does not offer it: $s",
+                    Regex("(^| )${o.id}=true( |\$)").containsMatchIn(s)
+                )
+            }
+            // And the reverse: nothing in the summary may claim a codec the
+            // menu omits, or a client picks from the string and gets a 501.
+            for (id in listOf("aac", "opus", "amrnb", "flac", "wav")) {
+                val claimed = Regex("(^| )$id=true( |\$)").containsMatchIn(s)
+                assertEquals(
+                    "'$id' is offered in the summary but not in the menu: $s",
+                    claimed, menu.any { it.id == id }
+                )
+            }
+        }
+    }
+
+    /**
+     * The HTTP content type is what a client trusts before it has seen a byte,
+     * so it has to be the registered form. `audio/x-wav` was being served and
+     * is not an IANA audio type.
+     */
+    @Test
+    fun everyOptionSaysWhatItActuallyIs() {
+        val menu = AudioCodecProbe.options(result(opus = true, aac = true, amr = true, flac = true))
+        val expected = mapOf(
+            "wav" to "audio/wav",
+            "flac" to "audio/flac",
+            "aac" to "audio/aac",
+            "opus" to "audio/ogg; codecs=opus",
+            "amrnb" to "audio/amr",
+        )
+        for (o in menu) {
+            assertEquals(
+                "the Content-Type of /audio.${o.id} must state the container it " +
+                    "actually carries",
+                expected[o.id], o.contentTypeForHttp
+            )
+        }
+    }
 }

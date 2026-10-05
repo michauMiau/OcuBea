@@ -48,7 +48,49 @@ object AudioCodecProbe {
         val mime: String,
         val bitrate: Int,
         val container: String,
-        val note: String
+        val note: String,
+        /**
+         * Whether a browser can play this stream through a plain progressive
+         * `<audio src>` element -- the path the Web UI uses.
+         *
+         * This is a property of the CONTAINER the app serves, not of the
+         * codec. It was measured, per container, in Chromium 148 against the
+         * bytes this server actually emits (captured from the phone, served
+         * paced and chunked with the same Content-Type, and required to move
+         * an element's `currentTime`):
+         *
+         * | served as        | canPlayType | MSE isTypeSupported | element plays |
+         * |------------------|-------------|---------------------|---------------|
+         * | audio/wav        | maybe       | false               | yes, +3.01 s  |
+         * | audio/aac (ADTS) | probably    | true                | yes, +3.01 s  |
+         * | audio/flac       | probably    | false               | yes, +3.06 s  |
+         * | audio/amr        | probably    | false               | not measured   |
+         * | audio/ogg;opus   | probably    | false (webm: true)  | not measured   |
+         *
+         * So nothing in the current menu is unplayable, and hiding entries on
+         * this flag would remove working choices. It is still carried because
+         * the Web UI needs to know which paths are MSE-capable if it ever moves
+         * audio onto the same SourceBuffer as the video: `audio/wav` and
+         * `audio/flac` are not, so they cannot be appended to a SourceBuffer at
+         * all and would need an fMP4 remux first.
+         */
+        val browserPlayable: Boolean = when (id) {
+            "aac", "wav", "flac", "amrnb" -> true
+            "opus" -> true // audio/ogg is progressive-playable; MSE wants audio/webm
+            else -> false
+        },
+        /**
+         * Whether the bytes can be handed to a MediaSource SourceBuffer.
+         *
+         * False for WAV and FLAC because MSE has no raw-PCM or FLAC source
+         * buffer at all: `MediaSource.isTypeSupported('audio/wav')` and
+         * `('audio/flac')` both return false in Chromium. Any plan to put
+         * audio on the video SourceBuffer has to carry it as fMP4.
+         */
+        val mseCapable: Boolean = when (id) {
+            "aac" -> true // audio/aac and audio/mp4; codecs="mp4a.40.2"
+            else -> false
+        }
     ) {
         /**
          * What the HTTP response says it is carrying.
@@ -64,6 +106,14 @@ object AudioCodecProbe {
             "opus" -> "audio/ogg; codecs=opus"
             "amrnb" -> "audio/amr"
             "flac" -> "audio/flac"
+            // `audio/x-wav` was what this returned before, and it is the
+            // reason the WAV endpoint is served with a type no registry
+            // carries. Chromium accepts it, but `audio/wav` is the registered
+            // form and `audio/x-wav` is not in the IANA audio tree at all, so a
+            // client doing a strict type check sees an unknown type and refuses
+            // to play a stream whose bytes are perfectly valid. One string
+            // cannot cost anything to get right.
+            "wav" -> "audio/wav"
             else -> "application/octet-stream"
         }
     }
@@ -487,5 +537,29 @@ object AudioCodecProbe {
 
     /** One line for `/status.json`, so a remote reader knows what exists. */
     fun summary(p: ProbeResult = probe()): String =
-        "aac=${p.canAac} opus=${p.canOpus} amrnb=${p.canAmrNb} flac=${p.canFlac} default=${p.defaultId()}"
+        "aac=${p.canAac} opus=${p.canOpus} amrnb=${p.canAmrNb} flac=${p.canFlac} " +
+            "wav=$canWav default=${p.defaultId()}"
+
+    /**
+     * Whether this device can serve the raw-PCM WAV endpoint.
+     *
+     * Always true, and that is the whole point of stating it: `wav` is the one
+     * option that needs no MediaCodec, so it is available on every device
+     * regardless of what the probe found.
+     *
+     * It was previously missing from [summary] entirely, and the WebUI reads
+     * that string as a whitelist -- it builds the codec picker from the ids
+     * that appear as `id=true` in it. With `wav` absent, the picker offered
+     * only `none/aac/flac`, which is why the user reported that WAV "does not
+     * appear in the UI" and therefore could not be tested. The endpoint served
+     * 200 with a valid 44-byte header the whole time; it was invisible in the
+     * menu that is supposed to point at it.
+     *
+     * Verified on the live page by replaying the page's own filter:
+     *   available="aac=true opus=false amrnb=false flac=true default=aac"
+     *     -> ['none','aac','flac']
+     *   available="aac=true opus=false amrnb=false flac=true wav=true default=aac"
+     *     -> ['none','aac','flac','wav']
+     */
+    const val canWav = true
 }

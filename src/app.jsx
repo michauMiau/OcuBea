@@ -238,7 +238,7 @@ const HlsQuality = () => {
     id="bHQ"
     title=${'segment_ms=' + (p && p.segment_ms) + ' keyframe_sec=' + (p && p.keyframe_sec)}
   >
-    ${t('hlsQuality')}: ${p ? p.profile : '–'}
+    ${t('hlsQuality')}: ${p ? p.profile : t('off')}
   </span>`;
 };
 
@@ -250,6 +250,45 @@ const Toggle = ({ on, onChange, label, id }) => html`
     aria-label=${label}
     aria-pressed=${on}
   ></button>
+`;
+
+// The icon tile: one button language for optics, security, audio and
+// recording. It replaces the Toggle above, whose empty body and emoji pair
+// read as a mix of drawing styles rather than one control set, and it replaces
+// the Field row that used to wrap each setting, which made every setting a
+// full width labelled field stacked one per line.
+//
+// The caption is always rendered, not a tooltip: the icon alone is not self
+// evident for "Odwróć kamery". It is var(--dim), about 5.5:1 on --panel, and
+// it is what makes the row's rhythm readable. aria-label and title carry the
+// same word so the accessible name does not depend on the visible text being
+// read out, and the SVG is aria-hidden decoration.
+//
+// momentary: autofocus is a button, not a switch. Announcing aria-pressed on
+// it would promise a state it does not have, so a momentary tile gets neither
+// aria-pressed nor the !on flip.
+const Tile = ({ id, on, onChange, label, icon, momentary }) => html`
+  <button
+    id=${id}
+    class=${'tilebtn' + (on && !momentary ? ' on' : '')}
+    onClick=${() => (momentary ? onChange() : onChange(!on))}
+    aria-label=${label}
+    title=${label}
+    ...${momentary ? '' : html`aria-pressed=${on}`}
+  >
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d=${icon} />
+    </svg>
+    <span class="cap" aria-hidden="true">${label}</span>
+  </button>
 `;
 
 // ── live video ──────────────────────────────────────────────────────────────
@@ -309,7 +348,7 @@ function LiveAudio({ codec, enabled, running }) {
       p.catch((e) => {
         setErr(
           e && e.name === 'NotAllowedError'
-            ? 'audio: the browser blocked autoplay — press the speaker button'
+            ? 'audio: the browser blocked autoplay, press the speaker button'
             : 'audio: ' + (e && e.name ? e.name : 'the stream did not start'),
         );
       });
@@ -330,11 +369,14 @@ function LiveAudio({ codec, enabled, running }) {
     <button
       id="bAud"
       class=${'tgl' + (on ? ' on' : '')}
-      aria-label=${t('audio')}
+      aria-label=${on ? t('audioMuted') : t('audioOn')}
       aria-pressed=${on}
-      title=${t('audio')}
+      title=${on ? t('audioMuted') : t('audioOn')}
+      disabled=${!have}
       onClick=${() => setOn(!on)}
-    ></button>
+    >
+      <span aria-hidden="true">${on ? '\u{1F507}' : '\u{1F50A}'}</span>
+    </button>
     <span class="dim" id="audioState">
       ${err ? err : have ? (on ? t('audioOn') : t('audioMuted')) : t('audioOff')}
     </span>
@@ -614,7 +656,7 @@ function Stream({ mode, running, lowLatency, audioCodec, audioEnabled }) {
         running=${running}
       />
       ${!running && html`<div class="off">${t('streamOffline')}</div>`}
-      ${fellBack && html`<div class="badge">HLS unsupported here — MJPEG</div>`}
+      ${fellBack && html`<div class="badge">HLS unsupported here, MJPEG</div>`}
       ${hlsError === 'hls_warming' && html`<div class="off">${t('hlsWarming')}</div>`}
       ${hlsError &&
       !fellBack &&
@@ -741,7 +783,8 @@ function App() {
   const motion = s.motion || {};
 
   return html`
-    <header>
+    <div class="topbar">
+      <header>
       <h1>OcuBea</h1>
       <span class=${'pill ' + (running ? 'on' : 'off')}>
         ${running ? '● ' + t('live') : '○ ' + t('stopped')}
@@ -761,16 +804,58 @@ function App() {
         ${lang.toUpperCase()}
       </button>
     </header>
+      {/* The status row lives in the top bar, above the picture. It was a
+          <section> of its own after the stream, so the encoder readout was
+          under the video the user was watching. Same dt/dd pairs, rendered as
+          inline chips so the bar is one line rather than a second card. */}
+      <div class="statusbar">
+        <dl class="chips">
+          <span class="chip">
+            <dt>FPS</dt>
+            <dd>${s.fps || 0}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('encoder')}</dt>
+            <dd>${hls.codec || s.encoder || t('off')}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('viewers')}</dt>
+            <dd>${s.viewers || 0}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('resolution')}</dt>
+            <dd>${s.resolution || t('off')}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('segments')}</dt>
+            <dd>${hls.active ? hls.segments || 0 : t('off')}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('uptime')}</dt>
+            <dd>${uptime(s.uptime_s || 0)}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('dropped')}</dt>
+            <dd>${(s.pipeline && s.pipeline.dropped_saturated) || s.dropped || 0}</dd>
+          </span>
+        </dl>
+      </div>
+    </div>
 
     <main>
-      <${Stream}
-        mode=${mode}
-        running=${running}
-        lowLatency=${lowLatency}
-        audioCodec=${audio.codec}
-        audioEnabled=${!!audio.enabled}
-      />
-      <${LiveAudio} codec=${audio.codec} enabled=${!!audio.enabled} running=${running} />
+      {/* Picture and audio in one box: the speaker control belongs next to the
+          stream it controls, not three sections further down under the
+          security panel. */}
+      <div class="stage">
+        <${Stream}
+          mode=${mode}
+          running=${running}
+          lowLatency=${lowLatency}
+          audioCodec=${audio.codec}
+          audioEnabled=${!!audio.enabled}
+        />
+        <${LiveAudio} codec=${audio.codec} enabled=${!!audio.enabled} running=${running} />
+      </div>
 
       ${flash && html`<div class="flash">${flash}</div>`}
 
@@ -832,24 +917,6 @@ function App() {
       </section>
 
       <section>
-        <h2>${t('status')}</h2>
-        <dl>
-          <dt>FPS</dt>
-          <dd>${s.fps || 0}</dd>
-          <dt>${t('encoder')}</dt>
-          <dd>${hls.codec || s.encoder || '–'}</dd>
-          <dt>${t('segments')}</dt>
-          <dd>${hls.active ? hls.segments || 0 : '–'}</dd>
-          <dt>${t('resolution')}</dt>
-          <dd>${s.resolution || '–'}</dd>
-          <dt>${t('uptime')}</dt>
-          <dd>${uptime(s.uptime_s || 0)}</dd>
-          <dt>${t('dropped')}</dt>
-          <dd>${(s.pipeline && s.pipeline.dropped_saturated) || s.dropped || 0}</dd>
-        </dl>
-      </section>
-
-      <section>
         <h2>${t('optics')}</h2>
         <${Row} label=${t('zoom')}>
           <${Slider}
@@ -869,35 +936,35 @@ function App() {
           />
           <span class="val">${zoomLevel.toFixed(1)}×</span>
         <//>
-        <${Row} label=${t('torch')}>
-          <${Toggle}
+        <div class="tiles">
+          <${Tile}
             id="bTorch"
             on=${!!s.torch}
             label=${t('torch')}
             onChange=${(v) => act(setSetting, 'torch', v ? 'on' : 'off', poll)}
+            icon="M12 3v3M12 18v3M5 12H2M22 12h-3M7.1 7.1L4.9 4.9M19.1 19.1l-2.2-2.2M7.1 16.9l-2.2 2.2M19.1 4.9l-2.2 2.2"
           />
-        <//>
-        <${Row} label=${t('autofocus')}>
-          <button id="bFocus" class="ctl" onClick=${() => act(focus, 0.5, 0.5)}>
-            ${t('autofocus')}
-          </button>
-        <//>
-        <${Row} label=${t('flip')}>
-          <!-- ffc is the one endpoint that genuinely implements "toggle": it
-               reads the camera state and inverts it (StreamServer.kt:890).
-               "front"/"back" are NOT accepted -- the arm checks value == "on",
-               so set=front answers "ok" and changes nothing, which is a second
-               way of getting a dead-looking control. Verified on the phone.
-               The comment is HTML, not /* */ inside the attribute list: htm
-               treats that as a child, and the button then gets a non-function
-               handler and throws "e is not a function" on click. -->
-          <${Toggle}
+          <${Tile}
+            id="bFocus"
+            on=${false}
+            label=${t('autofocus')}
+            onChange=${() => act(focus, 0.5, 0.5)}
+            momentary=${true}
+            icon="M12 18v-3M12 6V3M6 12H3M21 12h-3M7 7l1.8-1.8M15.2 7l1.8-1.8M7 17l1.8 1.8M15.2 17l1.8 1.8"
+          />
+          {/* ffc is the one endpoint that genuinely implements "toggle": it
+              reads the camera state and inverts it (StreamServer.kt:890).
+              "front"/"back" are NOT accepted -- the arm checks value == "on",
+              so set=front answers "ok" and changes nothing, which is a second
+              way of getting a dead-looking control. Verified on the phone. */}
+          <${Tile}
             id="bFlip"
             on=${!!s.front_camera}
             label=${t('flip')}
             onChange=${() => act(setSetting, 'ffc', 'toggle', poll)}
+            icon="M4 8V5a1 1 0 011-1h3M20 8V5a1 1 0 00-1-1h-3M4 16v3a1 1 0 001 1h3M20 16v3a1 1 0 01-1 1h-3M4 12h16"
           />
-        <//>
+        </div>
         <${Row} label=${t('effect')}>
           <select
             id="effect"
@@ -939,50 +1006,52 @@ function App() {
           options=${(s.avail && s.avail.orientation) || ORIENTATIONS}
           onChange=${(v) => act(setSetting, 'orientation', v, poll)}
         />
-        <${Row} label=${t('viewers')}>
-          <span class="val">${s.viewers || 0}</span>
-        <//>
-      </section>
-
-      <section>
-        <h2>${t('image')}</h2>
-        <dl>
-          <dt>${t('bitrate')}</dt>
-          <dd>${s.video_bitrate_kbps ? s.video_bitrate_kbps + ' kbps' : '–'}</dd>
-          <dt>${t('frames')}</dt>
-          <dd>${s.frames != null ? s.frames : '–'}</dd>
-          <dt>${t('effect')}</dt>
-          <dd>${s.effect || '–'}</dd>
+        {/* The image section used to be a card of its own for three
+            read-only numbers, which the user called useless. It is now three
+            chips on the end of the optics row: same dl data, no separate box. */}
+        <dl class="chips">
+          <span class="chip">
+            <dt>${t('bitrate')}</dt>
+            <dd>${s.video_bitrate_kbps ? s.video_bitrate_kbps + ' kbps' : t('off')}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('frames')}</dt>
+            <dd>${s.frames != null ? s.frames : t('off')}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('effect')}</dt>
+            <dd>${s.effect || t('off')}</dd>
+          </span>
         </dl>
       </section>
 
       <section>
         <h2>${t('security')}</h2>
-        <${Row} label=${t('nightVision')}>
-          <!-- onChange receives the NEXT state, not the current one. These
-               three call sites used to discard it and send the literal string
-               "toggle", which the phone reads as a fixed value: for
-               night_vision ("value != off") that is always ON, for
-               motion_detection ("value == on") always OFF. So night vision
-               could not be turned off and motion could not be turned back on
-               -- the button looked fine and did the opposite of what its label
-               said. Sending the real state works for every setting and needs no
-               server-side toggle. -->
-          <${Toggle}
+        <div class="tiles">
+          {/* onChange receives the NEXT state, not the current one. These two
+              call sites used to discard it and send the literal string
+              "toggle", which the phone reads as a fixed value: for
+              night_vision ("value != off") that is always ON, for
+              motion_detection ("value == on") always OFF. So night vision
+              could not be turned off and motion could not be turned back on
+              -- the button looked fine and did the opposite of what its label
+              said. Sending the real state works for every setting and needs no
+              server-side toggle. */}
+          <${Tile}
             id="bNight"
             on=${!!s.night_vision}
             label=${t('nightVision')}
             onChange=${(v) => act(setSetting, 'night_vision', v ? 'on' : 'off', poll)}
+            icon="M20 14.5A8.5 8.5 0 019.5 4a8.5 8.5 0 1010.5 10.5zM17 5.5h.01M19 8.5h.01"
           />
-        <//>
-        <${Row} label=${t('motion')}>
-          <${Toggle}
+          <${Tile}
             id="bMotion"
             on=${!!motion.enabled}
             label=${t('motion')}
             onChange=${(v) => act(setSetting, 'motion_detection', v ? 'on' : 'off', poll)}
+            icon="M3 12h4l2-6 4 12 2-6h6"
           />
-        <//>
+        </div>
         <${Row} label=${t('sensitivity')}>
           <${Slider}
             value=${motion.sensitivity != null ? motion.sensitivity : 5}
@@ -993,7 +1062,7 @@ function App() {
             label=${t('sensitivity')}
             onInput=${(v) => act(setSetting, 'motion_sensitivity', v, poll)}
           />
-          <span class="val">${motion.sensitivity != null ? motion.sensitivity : '–'}</span>
+          <span class="val">${motion.sensitivity != null ? motion.sensitivity : t('off')}</span>
         <//>
         <${Row} label=${t('preRecord')}>
           <${Slider}
@@ -1029,15 +1098,16 @@ function App() {
 
       <section>
         <h2>${t('audio')}</h2>
-        <${Row} label=${t('audioEnabled')}>
-          <${Toggle}
+        <div class="tiles solo">
+          <${Tile}
             id="bAudOn"
             on=${!!audio.enabled}
             label=${t('audioEnabled')}
             onChange=${(v) => act(setSetting, 'audio_enabled', v ? 'on' : 'off', poll)}
+            icon="M4 9v6h4l5 4V5L8 9H4zM17 8.5a5 5 0 010 7M19.5 6a8.5 8.5 0 010 12"
           />
-          <span class="dim">${audio.enabled ? t('audioOn') : t('audioOff')}</span>
-        <//>
+        </div>
+        <span class="dim">${audio.enabled ? t('audioOn') : t('audioOff')}</span>
         ${AudioCodecs(audio.available).map(
           ([id, key]) =>
             html` <${Row} label=${t(key)}>
@@ -1058,14 +1128,14 @@ function App() {
           <dt>${t('audioCodec')}</dt>
           <dd>${audio.enabled ? audio.codec : t('off')}</dd>
           <dt>${t('available')}</dt>
-          <dd>${audio.available || '–'}</dd>
+          <dd>${audio.available || t('off')}</dd>
         </dl>
       </section>
 
       <section class="files">
         <h2>${t('recordings')} ${recordings.length}</h2>
-        <${Row} label=${t('recording')}>
-          <${Toggle}
+        <div class="tiles solo">
+          <${Tile}
             id="bRec"
             on=${!!recording.enabled}
             label=${t('recording')}
@@ -1074,8 +1144,9 @@ function App() {
                 await poll();
                 await loadLists();
               })}
+            icon="M12 14a2 2 0 100-4 2 2 0 000 4zM5.5 8.5h13l1 10h-15l1-10zM9 5l3-2 3 2"
           />
-        <//>
+        </div>
         <div class="row">
           <button id="bRefreshRec" class="ctl" onClick=${() => act(loadLists)}>
             ${t('refresh')}
@@ -1203,15 +1274,15 @@ function App() {
         <h2>${t('device')}</h2>
         <dl>
           <dt>Model</dt>
-          <dd>${sensorsDev.model || '–'}</dd>
+          <dd>${sensorsDev.model || t('off')}</dd>
           <dt>${t('recording')}</dt>
           <dd>${recording.enabled ? (recording.active ? '● ' + t('on') : t('idle')) : t('off')}</dd>
           <dt>${t('audio')}</dt>
           <dd>${audio.enabled ? audio.codec : t('off')}</dd>
           <dt>${t('battery')}</dt>
-          <dd>${sensors && sensors.battery ? sensors.battery.level + '%' : '–'}</dd>
+          <dd>${sensors && sensors.battery ? sensors.battery.level + '%' : t('off')}</dd>
           <dt>${t('storage')}</dt>
-          <dd>${sensors && sensors.storage ? bytes(sensors.storage.free_mb * 1048576) : '–'}</dd>
+          <dd>${sensors && sensors.storage ? bytes(sensors.storage.free_mb * 1048576) : t('off')}</dd>
         </dl>
       </section>
 
@@ -1242,7 +1313,7 @@ function App() {
             class="text"
             type="password"
             value=${token}
-            placeholder="—"
+            placeholder="..."
             onInput=${(e) => setTokenState(e.target.value)}
             onChange=${(e) => {
               setToken(e.target.value);
