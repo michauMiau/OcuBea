@@ -544,6 +544,13 @@ class RtspServer(
         sink: java.util.concurrent.atomic.AtomicBoolean,
     ) {
         val buf = ByteArray(PCM_CHUNK_BYTES)
+        val aac = config.audioCodec.equals("aac", ignoreCase = true)
+        // Bytes held back because they are the start of an access unit that has
+        // not arrived whole. Only AAC needs this: an ADTS frame states its own
+        // total length in the header, so the ring can be cut anywhere and the
+        // pieces reassembled. L16 has no frames to find.
+        var pending = ByteArray(AAC_PENDING_BYTES)
+        var pendingLen = 0
         while (running && !sink.get()) {
             val avail = try {
                 audio.available()
@@ -569,11 +576,124 @@ class RtspServer(
             // socket between the wait and here, and writing to a closed socket
             // from this thread would kill the session with no trace.
             if (sink.get()) return
-            writeRtp(output, channel, PTYPE_PCM, buf, 0, read)
-            // L16 timestamps count samples at 44.1 kHz, not 90 kHz ticks.
-            audioTs.addAndGet((read / BYTES_PER_SAMPLE).toLong())
-            packetsSent.incrementAndGet()
+            if (!aac) {
+                writeRtp(output, channel, PTYPE_PCM, buf, 0, read)
+                // L16 timestamps count samples at 44.1 kHz, not 90 kHz ticks.
+                audioTs.addAndGet((read / BYTES_PER_SAMPLE).toLong())
+                packetsSent.incrementAndGet()
+                continue
+            }
+
+            // RFC 3640, mode=AAC-hbr: the payload starts with the AU-headers
+            // section, not the access unit. A client reads the first bytes as the
+            // AU-headers length and refuses the packet if that number is absurd --
+            // shipping raw ADTS here made ffmpeg print `Error parsing AU headers`
+            // for every frame while SETUP and PLAY both answered 200 OK, so the
+            // probe gate stayed green over a stream nobody could decode.
+            //
+            // One AU per packet with sizeLength=16, indexLength=0 and
+            // indexDeltaLength=0: a single 16-bit size field, big-endian.
+            //
+            // The AU must be WHOLE. Slicing the ring by however many bytes
+            // happened to be available put a 9-byte stub on the wire whose ADTS
+            // header claimed 184, and ffmpeg answered `First AU larger than
+            // packet size`: the ring is a byte stream, not a frame queue, so its
+            // reads land mid-frame.
+            if (pendingLen + read > pending.size) {
+                pending = ByteArray(pending.size * 2)
+            }
+            System.arraycopy(buf, 0, pending, pendingLen, read)
+            pendingLen += read
+
+            while (pendingLen >= ADTS_HEADER_BYTES && !sink.get()) {
+                val frame = adtsFrameLength(pending, pendingLen)
+                // 0 means no syncword here: the bytes held are not the start of an
+                // ADTS frame, and resynchronising on the next one is the only way
+                // out of a ring that was cut mid-frame.
+                if (frame == 0) {
+                    pendingLen = resyncAdts(pending, pendingLen)
+                    break
+                }
+                if (pendingLen < frame) break
+                writeRtp(output, channel, PTYPE_PCM,
+                    byteArrayOf(
+                        ((frame shr 8) and 0xFF).toByte(),
+                        (frame and 0xFF).toByte(),
+                    ), 0, AAC_AU_HEADER_BYTES,
+                    // Marker set: one AU per packet means every packet ends an
+                    // access unit. With it clear, ffmpeg kept the AU open, read
+                    // the next packet's AU-header as audio, and answered
+                    // `First AU larger than packet size` -- measured 130 packets
+                    // with M=0 on the wire, all rejected. Timestamps advanced by
+                    // exactly 1024 each, which is the proof that each packet was
+                    // a whole frame and not a fragment.
+                    marker = true,
+                    samplesOverride = AAC_LC_FRAME_SAMPLES,
+                    extraBody = pending, extraBodyLength = frame)
+                // AAC-LC is 1024 samples per frame whatever the bitrate did to the
+                // byte count, so this is a constant and not bytes/2. Deriving it
+                // from the ADTS frame length gave 1416 for a frame holding 1024,
+                // which paces a player at the wrong speed.
+                audioTs.addAndGet(AAC_LC_FRAME_SAMPLES.toLong())
+                packetsSent.incrementAndGet()
+                pendingLen -= frame
+                if (pendingLen > 0) {
+                    System.arraycopy(pending, frame, pending, 0, pendingLen)
+                }
+            }
         }
+    }
+
+    /**
+     * Total ADTS frame length from its 7-byte header, or 0 if [buf] does not
+     * start with an ADTS syncword.
+     *
+     * `aac_frame_length` is 13 bits at offset 30: the low 2 bits of byte 3, all
+     * of byte 4, and the high 3 bits of byte 5. The syncword is twelve 1 bits
+     * followed by a layer id of 0, hence the 0xF6 mask.
+     */
+    private fun adtsFrameLength(buf: ByteArray, available: Int): Int {
+        if (available < ADTS_HEADER_BYTES) return 0
+        if ((buf[0].toInt() and 0xFF) != 0xFF) return 0
+        if ((buf[1].toInt() and 0xF6) != 0xF0) return 0
+        val frame = ((buf[3].toInt() and 0x03) shl 11) or
+            ((buf[4].toInt() and 0xFF) shl 3) or
+            ((buf[5].toInt() and 0xFF) shr 5)
+        // A frame is never shorter than its own header, and anything past a few
+        // seconds means the length field was misread.
+        return if (frame in ADTS_HEADER_BYTES..MAX_AAC_FRAME_BYTES) frame else 0
+    }
+
+    /**
+     * Drops bytes until a syncword is at the front, so a ring read that started
+     * mid-frame does not wedge the stream forever.
+     *
+     * Without this the pump would hold the same broken bytes indefinitely, since
+     * `frame == 0` also means "wait for more data". A malformed header must cost
+     * at most one frame, not the rest of the session.
+     */
+    private fun resyncAdts(pending: ByteArray, pendingLen: Int): Int {
+        var skip = 1
+        while (skip + ADTS_HEADER_BYTES <= pendingLen) {
+            if ((pending[skip].toInt() and 0xFF) == 0xFF &&
+                (pending[skip + 1].toInt() and 0xF6) == 0xF0
+            ) {
+                break
+            }
+            skip++
+        }
+        if (skip + ADTS_HEADER_BYTES > pendingLen) {
+            // No syncword at all in what is held, and the last ADTS_HEADER_BYTES-1
+            // bytes could still be the start of one, so keep those.
+            skip = pendingLen - (ADTS_HEADER_BYTES - 1)
+            if (skip < 1) skip = pendingLen
+        }
+        val keep = pendingLen - skip
+        if (keep > 0) System.arraycopy(pending, skip, pending, 0, keep)
+        if (keep > 0) {
+            android.util.Log.w("OcuBeaRtsp", "AAC resync: dropped $skip B, kept $keep B")
+        }
+        return keep
     }
 
     /**
@@ -681,8 +801,16 @@ class RtspServer(
         offset: Int,
         length: Int,
         marker: Boolean = false,
+        // For mode=AAC-hbr the RTP packet is AU-headers-section followed by the
+        // access unit, so `payload` alone is not the body: it is the prefix.
+        samplesOverride: Int? = null,
+        extraBody: ByteArray? = null,
+        extraBodyLength: Int = 0,
     ) = synchronized(writeLock) {
-        writeRtpLocked(output, channel, payloadType, payload, offset, length, marker)
+        writeRtpLocked(
+            output, channel, payloadType, payload, offset, length, marker,
+            samplesOverride, extraBody, extraBodyLength,
+        )
     }
 
     private fun writeRtpLocked(
@@ -693,6 +821,9 @@ class RtspServer(
         offset: Int,
         length: Int,
         marker: Boolean = false,
+        samplesOverride: Int? = null,
+        extraBody: ByteArray? = null,
+        extraBodyLength: Int = 0,
     ) {
         if (length <= 0) return
 
@@ -700,7 +831,7 @@ class RtspServer(
         // payload-only length is 12 short, so a reader takes the last 12 bytes of
         // this NAL as the head of the next frame and the stream desynchronises one
         // frame in -- silently, with no error anywhere.
-        val packetLength = length + RTP_HEADER_BYTES
+        val packetLength = length + extraBodyLength + RTP_HEADER_BYTES
         if (packetLength > 0xFFFF) return
 
         val hdr = ByteArray(12)
@@ -722,7 +853,13 @@ class RtspServer(
         hdr[6] = ((t shr 8) and 0xFF).toByte()
         hdr[7] = (t and 0xFF).toByte()
         // Samples per packet, 0 for video: each access unit is its own instant.
-        val samples = if (payloadType == PTYPE_PCM) length / BYTES_PER_SAMPLE else 0
+        //
+        // `length` is the prefix length here, so dividing it by 2 is only right
+        // for L16 and only when the whole payload is PCM. For AAC the caller
+        // passes the frame's real sample count, because the AU-headers prefix
+        // is not audio at all and would drag the number down.
+        val samples = samplesOverride
+            ?: (if (payloadType == PTYPE_PCM) length / BYTES_PER_SAMPLE else 0)
         hdr[8] = ((samples shr 24) and 0xFF).toByte()
         hdr[9] = ((samples shr 16) and 0xFF).toByte()
         hdr[10] = ((samples shr 8) and 0xFF).toByte()
@@ -743,6 +880,11 @@ class RtspServer(
         output.write(packetLength and 0xFF)
         output.write(hdr)
         output.write(payload, offset, length)
+        // The AU-headers prefix, then the access unit it describes. Order is the
+        // whole point of RFC 3640 here, so it is not optional.
+        if (extraBody != null && extraBodyLength > 0) {
+            output.write(extraBody, 0, extraBodyLength)
+        }
         output.flush()
     }
 
@@ -844,7 +986,7 @@ class RtspServer(
             // returned L16/44100/1 while logcat showed c2.android.aac.encoder
             // producing 216 frames per 5 s.
             val audioRtpmap = when (config.audioCodec) {
-                "aac" -> "MPEG4-GENERIC/$PCM_SAMPLE_RATE/1"
+                "aac" -> "MPEG4-GENERIC/$AAC_RTP_SAMPLE_RATE/$AAC_RTP_CHANNELS"
                 "opus" -> "OPUS/$PCM_SAMPLE_RATE/2"
                 "amrnb" -> "AMR/$PCM_SAMPLE_RATE/1"
                 "flac" -> "FLAC/$PCM_SAMPLE_RATE/1"
@@ -852,9 +994,19 @@ class RtspServer(
             }
             body.append("m=audio 0 RTP/AVP 97\r\n")
             body.append("a=rtpmap:97 $audioRtpmap\r\n")
-            // AAC over RTP needs the mode and profile that MP4 carries in esds.
+            // AAC over RTP needs the mode and profile that MP4 carries in esds, plus the
+            // AU-header field widths. Without sizeLength a client falls back to
+            // the 16-bit default for every AU, which happens to match here, but
+            // it is not stated -- so a reader has to guess how many bytes of
+            // header to skip, and getting that wrong is exactly the
+            // `Error parsing AU headers` this server used to cause. sizelength=16
+            // says out loud that each AU is preceded by one 16-bit size field.
             if (config.audioCodec == "aac") {
-                body.append("a=fmtp:97 mode=AAC-hbr;profile-level-id=1\r\n")
+                body.append(
+                    "a=fmtp:97 mode=AAC-hbr;profile-level-id=$AAC_PROFILE_LEVEL_ID;" +
+                        "sizelength=16;indexlength=0;indexdeltalength=0;" +
+                        "config=$AAC_CONFIG_HEX\r\n",
+                )
             }
             body.append("a=control:trackID=1\r\n")
         }
@@ -1014,6 +1166,64 @@ class RtspServer(
         const val PCM_SAMPLE_RATE = 44100
         const val PCM_CHUNK_BYTES = 2048
         const val BYTES_PER_SAMPLE = 2
+        /**
+         * RFC 3640 AU-headers-section for one AAC AU: sizeLength=16 bits = 2
+         * bytes, with indexLength=0 and indexDeltaLength=0 contributing none.
+         *
+         * This must equal the length of the byte array pumpAudio passes as the
+         * prefix. It did not once: the constant said 4 while the array held 2
+         * bytes, so `write(payload, 0, 4)` threw ArrayIndexOutOfBoundsException,
+         * startAudioPump caught it as a generic Exception and closed the socket --
+         * measured as SETUP 200, PLAY 200, then zero RTP packets forever, with
+         * the encoder still producing (`packets_out` climbing, `empty_out` 0).
+         */
+        const val AAC_AU_HEADER_BYTES = 2
+        const val ADTS_HEADER_BYTES = 7
+        /**
+         * What AAC-hbr packets on this wire actually are, read out of the ADTS
+         * header rather than assumed.
+         *
+         * The SDP used to say 44100 and profile-level-id=1 (Main). Measured from
+         * the bytes c2.android.aac.encoder produces: sampling_frequency_index=3,
+         * which is 48000 Hz, and profile=1 in the ADTS `profile` field, which is
+         * also Main but is a different field from profile-level-id. So the
+         * declared rate was wrong by a factor that changes playback speed, and
+         * nothing in the server noticed -- the RTP payload was well formed and
+         * still came out of a player at the wrong pitch.
+         *
+         * Configured to match: AudioEncoder feeds the codec at 48 kHz and the
+         * ADTS header on the wire says the same. If either side changes, this
+         * constant and that configuration have to move together.
+         */
+        const val AAC_RTP_SAMPLE_RATE = 48000
+        const val AAC_RTP_CHANNELS = 1
+        /** AAC-LC, object type 2. */
+        const val AAC_PROFILE_LEVEL_ID = 1
+        /**
+         * AudioSpecificConfig for AAC-LC at 48 kHz mono, as hex for a=fmtp.
+         *
+         * Bit layout: 5 bits object type (2 = LC), 4 bits sampling frequency
+         * index (3 = 48000), 4 bits channel configuration (1 = mono), 3 bits
+         * GASpecificConfig (0) -- 16 bits total, so 0001 0001 1000 1000.
+         *
+         * Without `config=` a client has no AudioSpecificConfig at all, and
+         * ffmpeg's AAC-hbr demuxer rejects the stream with
+         * `Error parsing AU headers`: it cannot tell an object type from the
+         * ADTS header because under Aac-hbr the ADTS header is not required.
+         * The RTP payload was already well formed -- 173 packets, M=1 on every
+         * one, timestamps +1024, AU size matching the bytes that follow -- and
+         * still nothing decoded.
+         */
+        const val AAC_CONFIG_HEX = "1188"
+        /** AAC-LC, 1024 samples per frame at every bitrate and sample rate, so
+         *  RTP's "samples" field is a constant here. Reading it out of the ADTS
+         *  frame length gave 1416 for a frame holding 1024 samples, because the
+         *  byte count grows with the bitrate while the frame does not. */
+        const val AAC_LC_FRAME_SAMPLES = 1024
+        /** Enough for two frames before the first grow, then it doubles as needed. */
+        const val AAC_PENDING_BYTES = 4096
+        /** Past this the 13-bit length field was misread; 64 kB is already absurd. */
+        const val MAX_AAC_FRAME_BYTES = 65535
         /** RFC 3550: V=2, no padding, no extension, 12 bytes with no CSRC list. */
         const val RTP_HEADER_BYTES = 12
 
