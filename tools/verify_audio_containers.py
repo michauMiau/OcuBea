@@ -592,6 +592,20 @@ def check_aac(path: str, expect_rate: int | None) -> list[str]:
         idx = adts_rate_index(raw, pos)
         if idx >= len(ADTS_RATES):
             raise Failure(f"aac header at {pos} carries rate index {idx}, off the table")
+        # Every frame contributes, not only the truncated one.
+        #
+        # `rates.add(...)` used to sit only on the `break` path below, i.e. it ran
+        # only when the capture's last frame was cut short. A capture whose frames
+        # all happen to be whole therefore left `rates` EMPTY, and the check two
+        # lines later reported `aac frames declare several rates: []` -- a red
+        # gate blaming a stream that declared one rate consistently on every
+        # single frame. Which one of those two states is reachable depends on
+        # where the client stopped reading, so the gate was a coin flip.
+        #
+        # The rate assertion is only meaningful if it saw every frame, and that
+        # is exactly what collecting here gives it: one code path, no dependence
+        # on where the capture ended.
+        rates.add(ADTS_RATES[idx])
         frame_len = adts_frame_length(raw, pos)
         if frame_len < 7:
             raise Failure(f"aac header at {pos} declares {frame_len} bytes, under the 7-byte header")
@@ -618,7 +632,8 @@ def check_aac(path: str, expect_rate: int | None) -> list[str]:
                     f"ADTS header, so this is malformed framing rather than a "
                     f"truncated final frame"
                 )
-            rates.add(ADTS_RATES[idx])
+            # Deliberately not `rates.add(...)` here: the header was already
+            # recorded above, on the only path that reaches it.
             chans.add(adts_channel_config(raw, pos))
             break
         chans.add(adts_channel_config(raw, pos))
