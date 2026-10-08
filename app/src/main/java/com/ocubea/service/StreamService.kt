@@ -413,6 +413,31 @@ class StreamService : LifecycleService() {
         }
     }
 
+    /**
+     * Whether the camera is currently open, which is exactly what /status.json
+     * reports as `camera_active`.
+     *
+     * Exposed because MainActivity's Start/Stop button has to decide which way to
+     * send a tap, and for a long time it used `instance != null` as that test. That
+     * is wrong by construction: `stopCameraOnly()` stops the camera but deliberately
+     * leaves the service alive so the WebUI keeps answering /status.json, so the
+     * instance stays non-null while the camera is off and the Start button becomes
+     * unreachable -- every tap lands on Stop again.
+     *
+     * Reading the flag the activity already polls is the honest version of that
+     * test. It cannot disagree with what the status endpoint says the camera is
+     * doing, because it is the same value.
+     *
+     * `cameraRunning` is the service's own intent (set by startCamera and cleared by
+     * stopCameraOnly); `cameraManager.isStreaming` is the camera's actual state, set
+     * when CameraX reports OPEN. The OR covers the window between asking for the
+     * camera and the device delivering a frame: during that window the intent is
+     * true and the camera is not yet open, and the button should already read
+     * "Stop" because a Stop would be meaningful.
+     */
+    val isCameraActive: Boolean
+        get() = cameraRunning.get() || (::cameraManager.isInitialized && cameraManager.isStreaming)
+
     fun restartCameraNow() = restartCamera()
 
     private fun reportError(msg: String) {

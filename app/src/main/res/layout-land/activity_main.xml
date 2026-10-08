@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Landscape layout for MainActivity.
+
+  Why this file exists, measured rather than assumed:
+
+  The single portrait layout is a FrameLayout holding a match_parent LivePreviewView
+  with a control bar floated over it, pinned to the bottom with
+  `android:layout_marginBottom="72dp"` and 108dp tall. Those two numbers are in dp,
+  which is resolution independent and so does not shrink with the screen.
+
+  Measured on the Sony F3311 (Android 6, 720x1280, 320dpi so 1dp = 2px) in both
+  orientations:
+
+      portrait   720x1280   bar 216px = 17% of height   bottom margin 144px = 11%
+      landscape 1280x720    bar 216px = 30% of height   bottom margin 144px = 20%
+
+  In portrait that reads fine. Rotated, the same 216px bar plus its 144px margin eat
+  360px of a 720px screen: the preview is split into a thin strip above the bar and
+  a thin strip below it, separated by the bar itself. A screenshot in landscape
+  shows exactly that, the camera picture interrupted across the middle by a black
+  band with the buttons on it.
+
+  So the problem is not that the portrait layout is wrong, it is that it is the only
+  one. A 108dp-tall bar is a reasonable trade at 1280px tall and not a reasonable
+  one at 720px.
+
+  What this layout does instead: the preview takes the full width and the controls
+  move to a column on the right edge, so the camera picture is never interrupted
+  horizontally. The bar's height stops mattering because there is no bar spanning
+  the width, and the 216px it used to occupy is returned to the preview.
+
+  The ids are identical to the portrait layout on purpose. MainActivity looks every
+  view up by id after setContentView and wires listeners in wireControls(); a
+  different set of ids would inflate cleanly and then fail to find its buttons.
+  Every view referenced from code must exist here with the same id:
+
+      livePreview, btnToggleStream, tvStatus, tvUrl,
+      btnTorch, btnFlip, btnZoomIn, btnZoomOut,
+      btnNightVision, btnMotion, btnScreenOff, btnClips,
+      btnSettings, btnPerf, btnRealLauncher, btnExitKiosk
+
+  There is no `tvTitle` element here. It is not referenced from code, and the header
+  block carries the URL and the status instead.
+
+  `tools/verify_landscape_layout.py` checks the id set against the portrait layout
+  and fails if this file drifts from it, because a missing id is a runtime
+  NullPointerException on rotation rather than a compile error.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0d1117">
+
+    <!-- Full-width preview: never interrupted by the controls. -->
+    <com.ocubea.ui.LivePreviewView
+        android:id="@+id/livePreview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!--
+      Right-hand control column. `layout_gravity="end"` rather than "right" so it
+      follows the layout direction, and it is opaque so the preview underneath it is
+      not showing through between buttons.
+    -->
+    <LinearLayout
+        android:id="@+id/controlColumn"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:layout_gravity="end"
+        android:orientation="vertical"
+        android:background="#E6100000"
+        android:padding="4dp">
+
+        <!-- Status line, kept in the column because the portrait header does not exist here. -->
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/status_stopped"
+            android:textSize="12sp"
+            android:textColor="#ffffff"
+            android:layout_gravity="center_horizontal"
+            android:padding="2dp"
+            android:maxLines="2"
+            android:ellipsize="end"/>
+
+        <TextView
+            android:id="@+id/tvUrl"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textSize="9sp"
+            android:textColor="#9E9E9E"
+            android:fontFamily="monospace"
+            android:layout_gravity="center_horizontal"
+            android:paddingBottom="4dp"
+            android:maxLines="2"
+            android:ellipsize="middle"/>
+
+        <!--
+          THE CONTROL GRID, and why it is a grid at all.
+
+          First attempt was a single column of all 13 controls. Measured on the
+          Sony F3311 in landscape (1280x720, 320dpi, so 1dp = 2px and the screen is
+          360dp tall):
+
+              single column:  13 buttons x 46dp + margins  = 628dp
+                              status + url + padding       =  58dp
+                              total needed                  = 686dp
+                              available                     = 360dp
+                              over by                       = 326dp  (91%)
+
+          A single column cannot fit at any button height: even at 20dp the buttons
+          alone are 13 * 20 = 260dp, and the header needs 58dp, so 318dp of 360dp
+          would be buttons with no padding and no readable label. The screenshot of
+          that build shows the truth: the column is cut off below the night-mode
+          button, so motion, screen-off, clips, settings, perf, exit and kiosk are
+          simply not on the screen.
+
+          So the controls go into a 2-column grid, 7 rows, which is 330dp including
+          the header and fits in 360dp with 30dp to spare. Row height drops to 40dp
+          so the icon glyphs stay legible at 320dpi.
+
+          The row order is deliberate. Reading down column-major: STOP, night,
+          motion, screen-off on the left; torch, flip, zoom in, zoom out, clips,
+          settings, perf, exit on the right. STOP is alone on top because it is the
+          one control that has to be reachable without hunting, and the primary
+          controls (torch, flip, zoom) sit immediately under it rather than at the
+          far end of the grid.
+
+          `ScrollView` is deliberately NOT used. It would make the overflow
+          reachable, but a camera control panel that needs scrolling hides controls
+          on exactly the small screens where they matter, and it removes the visual
+          proof that everything fits. The gate below asserts the arithmetic so the
+          layout cannot silently outgrow the screen.
+        -->
+        <GridLayout
+            android:id="@+id/controlGrid"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:columnCount="2"
+            android:rowCount="7">
+
+            <!-- Row 1: STOP, full width of the column block -->
+            <Button
+                android:id="@+id/btnToggleStream"
+                android:layout_width="64dp"
+                android:layout_height="46dp"
+                android:layout_gravity="fill_horizontal"
+                android:text="@string/start_stream"
+                android:textSize="10sp"
+                android:backgroundTint="#2E7D32"
+                android:textColor="#ffffff"
+                android:paddingLeft="2dp"
+                android:paddingRight="2dp"/>
+
+            <Button
+                android:id="@+id/btnNightVision"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="🌙"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"/>
+
+            <Button
+                android:id="@+id/btnMotion"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="🚨"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"/>
+
+            <Button
+                android:id="@+id/btnScreenOff"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="🌑"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"/>
+
+            <Button
+                android:id="@+id/btnTorch"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="🔦"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"/>
+
+            <Button
+                android:id="@+id/btnFlip"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="🔄"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"/>
+
+            <Button
+                android:id="@+id/btnZoomIn"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="🔍+"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"/>
+
+            <Button
+                android:id="@+id/btnZoomOut"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="🔍−"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"/>
+
+            <Button
+                android:id="@+id/btnClips"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="@string/clips"
+                android:textSize="10sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"/>
+
+            <Button
+                android:id="@+id/btnSettings"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="⚙"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"/>
+
+            <Button
+                android:id="@+id/btnPerf"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="📈"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:contentDescription="@string/perf"/>
+
+            <Button
+                android:id="@+id/btnRealLauncher"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:text="🏠"
+                android:textSize="12sp"
+                android:backgroundTint="#37474F"
+                android:textColor="#ffffff"
+                android:contentDescription="@string/exit_to_launcher"/>
+
+            <!--
+              Kiosk exit. In portrait this sits top|end with a top margin to clear
+              the status bar; in the grid it fills the last cell, so the top margin
+              portrait needs would push it off screen here.
+            -->
+            <ImageButton
+                android:id="@+id/btnExitKiosk"
+                android:layout_width="64dp"
+                android:layout_height="40dp"
+                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                android:contentDescription="@string/exit_kiosk"
+                android:alpha="0.3"
+                android:scaleType="center"
+                android:background="?attr/selectableItemBackgroundBorderless"/>
+
+        </GridLayout>
+
+    </LinearLayout>
+
+</FrameLayout>

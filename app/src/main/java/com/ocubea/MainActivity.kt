@@ -92,6 +92,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile
     private var lastPollError: String? = null
     private var runningButtonLabel: String? = null
+    private var stoppedButtonLabel: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -129,8 +130,28 @@ class MainActivity : AppCompatActivity() {
     // ── Controls ───────────────────────────────────────────────
 
     private fun wireControls() {
+        // WHY THIS NO LONGER CHECKS `StreamService.instance`.
+
+        // It did, and that made the Start button unreachable. Stop deliberately
+        // stops the camera only and leaves the service running so the WebUI can
+        // still answer /status.json -- see StreamService.stopCameraOnly(). So after
+        // a Stop, `instance` is still non-null while the camera is off, and the
+        // condition below sent every subsequent tap to stopStreaming() again.
+        //
+        // Measured on the Sony F3311 (Android 6): click Stop, `camera_active` in
+        // /status.json went true -> false, correctly. Click the button again and
+        // `camera_active` stayed false, and the button label stayed "Zatrzymaj".
+        // The camera never restarted. `StreamService.isCameraActive` is what
+        // /status.json reports as `camera_active`, so it is the same fact the user
+        // is looking at -- asking the camera instead of asking whether a service
+        // object happens to exist. `instance` alone is wrong because Stop keeps the
+        // service alive on purpose; see isCameraActive for the full reasoning.
         btnToggle.setOnClickListener {
-            if (StreamService.instance != null) stopStreaming() else checkPermsAndStart()
+            if (StreamService.instance?.isCameraActive == true) {
+                stopStreaming()
+            } else {
+                checkPermsAndStart()
+            }
         }
 
         findViewById<Button>(R.id.btnTorch).setOnClickListener {
@@ -224,8 +245,45 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Resume streaming after a Stop, or start it the first time.
+     *
+     * WHY THIS SENDS `ACTION_START_CAMERA` AND NOT A BARE INTENT.
+     *
+     * A bare Intent reaches `onStartCommand`'s `else -> startEverything()` branch,
+     * and `startEverything()` begins with
+     *
+     *     if (!started.compareAndSet(false, true)) return
+     *
+     * `started` is only cleared by `stopEverything()`, which a Stop deliberately does
+     * not call -- `stopCameraOnly()` stops the camera and leaves the server up so the
+     * WebUI keeps answering /status.json. So the flag is already true, that compareAndSet
+     * fails, `startEverything()` returns immediately having done nothing, and the Start
+     * button appears dead.
+     *
+     * Measured on the Sony F3311 (Android 6): after a Stop the button label correctly
+     * changed to "Startuj" and the tap changed nothing -- `camera_active` stayed false
+     * in /status.json. Tapping the same button twice in a row was the signature: the
+     * first tap worked, the second never could.
+     *
+     * `ACTION_START_CAMERA` maps to `startCamera()`, which is guarded by
+     * `cameraRunning` instead -- and that flag IS cleared by Stop. So it is the branch
+     * that means "resume the camera", and it is reachable exactly when the user presses
+     * Start after a Stop.
+     *
+     * On a first launch the service is not running yet, so `ACTION_START_CAMERA` would
+     * be handled by a service whose `cameraManager` is not initialised yet and whose
+     * HTTP server does not exist. That is why this still sends the bare intent when
+     * there is no instance: first start needs `startEverything()`, and only a resume
+     * needs the action.
+     */
     private fun startStreaming() {
-        val intent = Intent(this, StreamService::class.java)
+        val svc = StreamService.instance
+        val intent = if (svc != null) {
+            Intent(this, StreamService::class.java).setAction(StreamService.ACTION_START_CAMERA)
+        } else {
+            Intent(this, StreamService::class.java)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
         else startService(intent)
         renderRunning()
@@ -332,14 +390,25 @@ class MainActivity : AppCompatActivity() {
             tvStatus.setTextColor(0xFFFF9800.toInt())
             return
         }
-        // A live server is proof the service exists, which the button label is
-        // about, not just about the number. renderStopped() ran on the resume
-        // that lost the startService() race, and nothing since then corrected
-        // the label -- so the screen said "Start" over a running stream.
-        // Compared against a held string: getString() in the condition would run
-        // a resource lookup every poll, every 2s, forever.
-        if (runningButtonLabel == null) runningButtonLabel = getString(R.string.stop_stream)
-        if (btnToggle.text != runningButtonLabel) btnToggle.text = runningButtonLabel
+        // A live server is proof the service exists, which is not the same as
+                  // the camera running. Stop deliberately leaves the server up (see
+                  // StreamService.stopCameraOnly()) so the WebUI keeps answering, so a
+                  // reachable /status.json means the service is alive, not that the camera
+                  // is streaming. This code used to force the label to "Stop" whenever the
+                  // server replied, which is why a stopped camera kept showing "Zatrzymaj"
+                  // and no tap could ever start it again.
+                  //
+                  // Follow the camera flag the response actually carries. `camera_active`
+                  // is what the service reports from the same `isCameraActive` the button
+                  // click consults, so the label and the next tap cannot disagree.
+                  //
+                  // Compared against a held string: getString() in the condition would run
+                  // a resource lookup every poll, every 2s, forever.
+                  val cameraOn = json.contains("\"camera_active\":true")
+                  if (runningButtonLabel == null) runningButtonLabel = getString(R.string.stop_stream)
+                  if (stoppedButtonLabel == null) stoppedButtonLabel = getString(R.string.start_stream)
+                  val wanted = if (cameraOn) runningButtonLabel else stoppedButtonLabel
+                  if (btnToggle.text != wanted) btnToggle.text = wanted
         val fps = numField(json, "fps")
         val viewers = numField(json, "viewers")
         val frames = numField(json, "frames")
@@ -432,6 +501,67 @@ class MainActivity : AppCompatActivity() {
         tvUrl.text = baseUrl() ?: getString(R.string.no_wifi)
     }
 
+
+    /**
+     * The manifest declares `android:configChanges="orientation|screenSize"`, so the
+     * platform does not recreate the Activity and does not re-inflate its layout.
+     * Everything below exists because of that promise.
+     *
+     * `onCreate` inflates once and `wireControls()` attaches listeners by id. On a
+     * rotation the platform delivers this callback instead of a fresh onCreate, so
+     * without the re-inflate below the portrait layout stayed in place and
+     * `res/layout-land/activity_main.xml` was never loaded at all -- the resource
+     * would resolve correctly in an isolated test and never run on a device.
+     *
+     * What had to happen on rotation, and what did not:
+     *
+     *   1. Re-inflate. Without `configChanges` the framework would do this itself.
+     *      With it declared, only code can.
+     *   2. Re-attach listeners, because the new views are new objects and the ones
+     *      wired in `wireControls()` belonged to the discarded hierarchy.
+     *   3. Re-resolve the cached field references (`preview`, `btnToggle`,
+     *      `tvStatus`, `tvUrl`). They point at the old views, so `renderRunning()`
+     *      and `updateUrlLabel()` would write into detached views and the screen
+     *      would show nothing.
+     *   4. Re-apply the window insets, for the new orientation's bar heights.
+     *      `EdgeToEdgeInsets` is safe to call again on the NEW view -- the base
+     *      padding is captured per view instance, and this is a fresh instance with
+     *      the layout's own padding. See that file for why a repeated call on the
+     *      SAME view used to stack a bar per rotation.
+     *   5. Restore the running/night/motion/torch labels from config, so the buttons
+     *      come back showing the real state instead of the defaults.
+     *
+     * The service, the camera and the HTTP server are untouched by this. Only the
+     * view tree is rebuilt, so streaming does not restart on rotation.
+     *
+     * `super.onConfigurationChanged` is still called first: it is the platform
+     * contract, and the framework uses it to refresh resource-backed state.
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Re-inflate against the new orientation. R.layout.activity_main resolves
+        // to res/layout-land/activity_main.xml under a landscape configuration and
+        // to res/layout/activity_main.xml otherwise, which is what makes the two
+        // layouts possible at all under configChanges.
+        setContentView(R.layout.activity_main)
+        EdgeToEdgeInsets.padForSystemBars(findViewById(android.R.id.content))
+
+        // Cached references from the discarded hierarchy. Re-resolve every one.
+        btnToggle = findViewById(R.id.btnToggleStream)
+        tvStatus = findViewById(R.id.tvStatus)
+        tvUrl = findViewById(R.id.tvUrl)
+        preview = findViewById(R.id.livePreview)
+
+        // The new views have no listeners yet.
+        wireControls()
+
+        // Re-apply state the old views were showing.
+        nightOn = config.nightVision
+        motionOn = config.securityEnabled
+        torchOn = config.torchOn
+        if (StreamService.instance != null) renderRunning() else renderStopped()
+        updateUrlLabel()
+    }
 
     override fun onResume() {
         super.onResume()

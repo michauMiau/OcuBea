@@ -31,6 +31,29 @@ import androidx.core.view.WindowInsetsCompat
 object EdgeToEdgeInsets {
 
     /**
+     * Tag slots holding the padding the LAYOUT set, captured the first time
+     * [padForSystemBars] sees a view.
+     *
+     * View tags are the right store for this because the value is per-view state
+     * that has to survive across calls, and the caller may re-apply the insets on
+     * every rotation. Namespaced with the app's package so nothing else can read
+     * or clobber them.
+     */
+    /**
+     * `setTag(int, Object)` takes an int key -- there is no String-keyed tag API on
+     * View -- so the base padding is stored under resource ids. `0` is not a valid
+     * id and would throw, so these are declared inline rather than added to
+     * res/values/ids.xml, which keeps the fix self-contained in one file.
+     *
+     * Using a fixed arbitrary id rather than a generated one is intentional: the
+     * key must be stable across process death for the same view, or a second call
+     * after a configuration change would re-capture an already-padded value and
+     * reintroduce the accumulation this guard exists to prevent.
+     */
+    private const val TAG_BASE_TOP = 0x7f0a0001
+    private const val TAG_BASE_BOTTOM = 0x7f0a0002
+
+    /**
      * Pad [view]'s top and bottom by the system bar insets, preserving whatever
      * padding the layout already set.
      *
@@ -38,12 +61,46 @@ object EdgeToEdgeInsets {
      * keyboard appearing changes the navigation bar height and a padding set once at
      * onCreate would be wrong afterwards.
      *
+     * SAFE TO CALL MORE THAN ONCE, and that is not automatic. The listener applies
+     * `initialTop + bars.top`, where `initialTop` is the padding captured when this
+     * function runs. Calling it a second time captures the value the first call
+     * already padded:
+     *
+     *     1st: 0 + bars1
+     *     2nd: (0 + bars1) + bars2
+     *     3rd: (0 + bars1 + bars2) + bars3
+     *
+     * So a second call does not re-pad, it stacks another bar's height onto the
+     * first. After a rotation the content would walk down the screen by a bar per
+     * rotation, and after two rotations on a phone with a 94px status bar nearly
+     * 200px of the layout would be pushed off the bottom. The symptom is a slow
+     * drift, not a jump, which is why it reads as a layout bug rather than as
+     * padding applied twice.
+     *
+     * This matters right now because rotation needs the insets RE-APPLIED with the
+     * new orientation's values, and the natural way to write that is a second
+     * call. The guard below makes that safe: the base padding is captured once,
+     * the first time, and every later call reuses it. Re-padding after a rotation
+     * then means exactly what it says -- recompute from the layout's own padding
+     * against the new insets -- instead of accumulating.
+     *
+     * Re-application is done through `requestApplyInsets`, which re-runs the
+     * INSTALLED listener. Re-installing a listener whose closure captured fresh
+     * values would be a different, wrong thing.
+     *
      * @return the view, so callers can chain.
      */
     @JvmStatic
     fun padForSystemBars(view: View): View {
-        val initialTop = view.paddingTop
-        val initialBottom = view.paddingBottom
+        // Captured once per view. A second call finds this already set and keeps
+        // the base, so the listener always computes base + bars rather than
+        // (base + previous bars) + bars.
+        if (view.getTag(TAG_BASE_TOP) == null) {
+            view.setTag(TAG_BASE_TOP, view.paddingTop)
+            view.setTag(TAG_BASE_BOTTOM, view.paddingBottom)
+        }
+        val initialTop = view.getTag(TAG_BASE_TOP) as Int
+        val initialBottom = view.getTag(TAG_BASE_BOTTOM) as Int
         ViewCompat.setOnApplyWindowInsetsListener(view) { target, windowInsets ->
             val bars = windowInsets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),

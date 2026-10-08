@@ -64,6 +64,54 @@ class SettingsActivity : AppCompatActivity() {
     private val RESOLUTIONS = listOf("320×240 (QVGA)", "640×480 (VGA)", "1280×720 (HD)", "1920×1080 (FullHD)")
     private val FPS_VALUES = listOf(5, 10, 15, 20, 30)
 
+    /**
+     * Rotation, and why it needs care rather than a second call to
+     * [EdgeToEdgeInsets.padForSystemBars].
+     *
+     * The manifest declares `configChanges="orientation|screenSize"` here too, so
+     * a rotation resizes the views instead of recreating them. What is missing on
+     * rotation is the system-bar padding: `padForSystemBars` runs once in
+     * [onCreate] and its offsets were computed for the orientation the Activity
+     * started in. Rotated, the status bar moves from the top edge to a side edge
+     * or behind a cutout, so that padding no longer matches the insets -- content
+     * under the clock, or a gap along the edge where the bar used to be.
+     *
+     * Calling `padForSystemBars` again would be WRONG, and the reason is worth
+     * recording because the function looks harmless at the call site. It captures
+     * `initialTop = view.paddingTop` on every call and then adds the insets to
+     * that captured value:
+     *
+     *     target.setPadding(left, initialTop + bars.top, right, initialBottom + bars.bottom)
+     *
+     * So the second call captures the already-padded value and pads again:
+     *
+     *     1st: 0 + bars1
+     *     2nd: (0 + bars1) + bars2
+     *     3rd: (0 + bars1 + bars2) + bars3
+     *
+     * Rotating twice grows the padding by a bar's height each time, so content
+     * walks down the screen and eventually disappears off the bottom. It is not
+     * idempotent despite looking like it should be, and the symptom is a slow
+     * drift rather than an obvious failure, which makes it easy to misread as a
+     * layout bug.
+     *
+     * The right call is `requestApplyInsets`, which re-runs the ALREADY
+     * INSTALLED listener. That listener closes over the original `initialTop`
+     * captured in [onCreate], so it recomputes `initialTop + bars.top` against
+     * the NEW insets from the same base. Idempotent, and no second capture.
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Re-run the installed listener against the new orientation's insets.
+        androidx.core.view.ViewCompat.requestApplyInsets(
+            findViewById(android.R.id.content),
+        )
+        findViewById<android.view.View>(android.R.id.content)?.let { root ->
+            root.requestLayout()
+            root.invalidate()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)

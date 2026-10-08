@@ -3,6 +3,7 @@ package com.ocubea.server
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import com.ocubea.camera.CameraManager
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
@@ -49,6 +50,19 @@ class StreamServer(
     private val audio = AudioStreamManager(context.applicationContext)
     private val audioAdmission = AudioAdmissionControl()
     private val audioCodecs = AudioCodecProbe
+
+    /**
+     * Log tag for the failures that are otherwise invisible.
+     *
+     * The WebUI's Start and Stop buttons are driven by Intents sent from this
+     * embedded HTTP server. A refused start on Android 8+ looks exactly like a
+     * button that does nothing: the setting POST returns 200, `/status.json` keeps
+     * reporting the old `camera_active`, and the page dutifully redraws the state it
+     * was already showing. There was no logging on this path at all, which is what
+     * left `requestServiceStop` sitting on `startService` -- an API that is simply
+     * refused from the background -- with nothing to say so.
+     */
+    private val TAG = "OcuBea.StreamServer"
 
     /**
      * Bounded connection handling. NanoHTTPD's default spawns one Thread per
@@ -1342,26 +1356,92 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
         // holds it and looks like "nothing happened" in the UI.
         val svc = com.ocubea.service.StreamService.instance
         if (svc != null) {
-            try { context.startService(
-                Intent(context, com.ocubea.service.StreamService::class.java)
+            // Foreground start here too, for the same reason as in
+            // requestServiceStop: the browser-based WebUI leaves the app in the
+            // background, and on API 26+ a plain startService() is refused there.
+            // This branch had startService() while the fallback below had
+            // startForegroundService(), so the fix was half applied and the common
+            // case -- service already running, which is exactly when Start is
+            // pressed -- was the one that failed silently.
+            try {
+                val i = Intent(context, com.ocubea.service.StreamService::class.java)
                     .setAction(com.ocubea.service.StreamService.ACTION_START_CAMERA)
-            ) } catch (_: Exception) {}
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(i)
+                } else {
+                    context.startService(i)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "ACTION_START_CAMERA start failed: ${e.message}")
+            }
             return
         }
         try {
             val intent = Intent(context, com.ocubea.service.StreamService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
             else context.startService(intent)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "ACTION_START start failed: ${e.message}")
+        }
     }
 
+    /**
+     * Stop the camera while deliberately leaving the HTTP server up, so the WebUI
+     * can still answer `/status.json` and show the new state.
+     *
+     * WHY THIS USED `startService`, and why that made the Stop button do nothing:
+     *
+     * The WebUI's Stop button POSTs `force_stop`, which lands here, and the only
+     * way to reach the service from the embedded HTTP server is an Intent. It was
+     * sent with `context.startService`.
+     *
+     * On Android 8.0 (API 26) and newer, `startService` throws
+     * `IllegalStateException` when the app is in the background, and this app is
+     * in the background whenever the user is browsing the WebUI in a browser
+     * rather than sitting in the app. Measured consequence: the exception was
+     * swallowed by the `catch (_: Exception)` below, `ACTION_STOP` never reached
+     * `stopCameraOnly()`, `cameraManager.isStreaming` stayed true, `/status.json`
+     * kept reporting `camera_active: true`, and the WebUI's Stop button appeared
+     * to do nothing.
+     *
+     * The `catch (_: Exception) {}` is what made this invisible. A swallowed
+     * background-start restriction is indistinguishable from "the button is
+     * broken", and nothing logged it.
+     *
+     * `startForegroundService` is the API for this case. The service already
+     * runs foreground while streaming and calls `startForeground` with a
+     * notification, so it already satisfies the requirement to call
+     * `startForeground` within five seconds. It is also correct for a STOP:
+     * the service is already running in the foreground when a user presses Stop
+     * on a live stream, so there is no new foreground notification to raise.
+     *
+     * `StreamService.instance` is preferred where it exists for the same reason as
+     * in [requestServiceStart] — a running instance already receives the Intent
+     * without needing a start at all.
+     */
     private fun requestServiceStop() {
+        // No direct call into the service here: `stopCameraOnly()` is private and
+        // the Intent is the only path, which is why this exists at all. Trying to
+        // reach through a public setter that does not exist would compile-fail,
+        // so the fix is the foreground-service start below, not a shortcut.
         try {
-            context.startService(
-                Intent(context, com.ocubea.service.StreamService::class.java)
-                    .setAction(com.ocubea.service.StreamService.ACTION_STOP)
-            )
-        } catch (_: Exception) {}
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(
+                    Intent(context, com.ocubea.service.StreamService::class.java)
+                        .setAction(com.ocubea.service.StreamService.ACTION_STOP)
+                )
+            } else {
+                context.startService(
+                    Intent(context, com.ocubea.service.StreamService::class.java)
+                        .setAction(com.ocubea.service.StreamService.ACTION_STOP)
+                )
+            }
+        } catch (e: Exception) {
+            // Do not swallow this silently. A refused start here is the reason the
+            // Stop button looks broken, and swallowing it is what made that
+            // diagnosis take a whole session to reach.
+            Log.w(TAG, "ACTION_STOP start failed: ${e.message}")
+        }
     }
 
     private fun handleSettingsBulk(session: IHTTPSession): Response {

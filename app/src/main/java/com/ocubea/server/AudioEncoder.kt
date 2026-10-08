@@ -93,6 +93,59 @@ class AudioEncoder private constructor(
         internal val OPUS_CONFIG_MAGIC = "AOPUSHD".toByteArray(Charsets.US_ASCII)
 
         /**
+         * `fLaC`, the FLAC stream marker.
+         *
+         * Its own constant rather than [FlacStreamHeader]'s, which is private
+         * there: this is the app deciding whether an ENCODER's output buffer is
+         * a header, and a byte-comparison is all that test needs. Sharing the
+         * writer's magic would make dropping a config buffer depend on the
+         * writer still existing.
+         */
+        internal val FLAC_SIGNATURE = byteArrayOf(0x66, 0x4C, 0x61, 0x43)
+
+        /**
+         * `MediaCodec.BUFFER_FLAG_CODEC_CONFIG`.
+         *
+         * Named here rather than read off `MediaCodec` so the rule below is a
+         * pure function of two integers and byte arrays, assertable in a plain
+         * JVM test. The value is not invented: it is what the device set on the
+         * FLAC config buffer, and `MediaCodec.java` defines it as
+         * `public static final int BUFFER_FLAG_CODEC_CONFIG = 2;`.
+         */
+        const val FLAG_CODEC_CONFIG = 2
+
+        /**
+         * True when an output buffer is codec configuration rather than audio.
+         *
+         * Two conditions, either one sufficient, because they are what the
+         * platform actually does and the two are not the same signal:
+         *
+         *  - [FLAG_CODEC_CONFIG] is what Android set on the measured API 36
+         *    FLAC config buffer. The Codec2 component puts libFLAC's metadata
+         *    into `C2StreamInitDataInfo`, and `CCodecBufferChannel` materialises
+         *    that as the first output buffer with this flag.
+         *  - The payload beginning `fLaC` is the belt to those braces: it
+         *    proves the bytes are a FLAC header whatever flag was set, so an
+         *    encoder that forgets the flag is still caught.
+         *
+         * A bare FLAC frame starts `0xFF 0xF8`, so it can never begin with the
+         * ASCII `f` and this cannot misfire on audio.
+         */
+        fun isCodecConfigPayload(flags: Int, payload: ByteArray): Boolean {
+            if (flags and FLAG_CODEC_CONFIG != 0) return true
+            return startsWithFlacSignature(payload)
+        }
+
+        /** True when [payload] begins with the four bytes `fLaC`. */
+        fun startsWithFlacSignature(payload: ByteArray): Boolean {
+            if (payload.size < 4) return false
+            for (i in FLAC_SIGNATURE.indices) {
+                if (payload[i] != FLAC_SIGNATURE[i]) return false
+            }
+            return true
+        }
+
+        /**
          * One 20 ms frame at 48 kHz mono, in samples.
          *
          * 960 is what every encoder measured on the validation phone wanted
@@ -272,6 +325,36 @@ class AudioEncoder private constructor(
             if (outIdx < 0) continue
             if (info.size > 0) {
                 val payload = copyPayload(codec, outIdx, info, out)
+                // FLAC: the encoder ships its OWN `fLaC` + STREAMINFO as a
+                // codec-config buffer, and it arrives as ordinary audio unless
+                // the flag is checked. Measured on Android 16 / API 36 with
+                // c2.android.flac.encoder selected (logcat: `CCodec: allocate
+                // (c2.android.flac.encoder)`): the first two output buffers
+                // were 93 bytes, flags=2 (BUFFER_FLAG_CODEC_CONFIG), starting
+                // 664c6143 00000022 -- fLaC, then STREAMINFO plus a VORBIS_COMMENT
+                // -- and every later buffer was a bare frame starting fff8.
+                //
+                // It is 93 bytes, not 42: the Codec2 component publishes all of
+                // libFLAC's metadata as CSD, so the block is followed by a
+                // VORBIS_COMMENT and the STREAMINFO inside it has
+                // last-metadata-block CLEAR. Forwarding those 93 bytes as audio
+                // put a second `fLaC` at offset 42 of the served stream.
+                //
+                // The header this endpoint writes is still mandatory: with it
+                // removed and the codec's own block forwarded instead, the
+                // reference decoder `flac -t` passes but ffmpeg reports
+                // "No filtered frames for output stream" and yields 0 samples,
+                // because the trailing VORBIS_COMMENT is not a frame. What has
+                // to change is that the codec's config bytes are DROPPED, not
+                // that our header is skipped -- see [streamHeader].
+                if (codecId == "flac" && isCodecConfigPayload(info.flags, payload)) {
+                    Log.i(
+                        TAG,
+                        "dropping ${payload.size} B of FLAC codec config; header supplied by us"
+                    )
+                    codec.releaseOutputBuffer(outIdx, false)
+                    return ByteArray(0)
+                }
                 // Opus comes out of MediaCodec with a codec-configuration buffer
                 // that carries "AOPUSHD" and a full copy of OpusHead, mixed into
                 // the data stream. That is a Matroska/EBML-style header, not an
@@ -399,15 +482,25 @@ class AudioEncoder private constructor(
      * states everything a decoder needs, so they get nothing here.
      *
      * FLAC is NOT self-describing, which is the correction this endpoint needed.
-     * MediaCodec's FLAC encoder emits bare frames with no signature and no
-     * metadata, so a body without this header is a headerless bitstream rather
-     * than a FLAC file: ffmpeg warns "Format flac detected only with low score
-     * of 13, misdetection possible!", the decoder has to guess the stream
-     * parameters, and it locates frames by searching for the two-byte `0xFFF8`
-     * sync -- which occurs by chance inside frame payloads (51 times in a
-     * 600 KB capture here, 306 in 1.1 MB). Landing on one mid-subframe produces
+     * MediaCodec's FLAC encoder emits BARE FRAMES into the output stream --
+     * measured on API 36: every non-config buffer began `fff8`, the frame sync
+     * -- so a body without this header is a headerless bitstream rather than a
+     * FLAC file: ffmpeg warns "Format flac detected only with low score of 13,
+     * misdetection possible!", the decoder has to guess the stream parameters,
+     * and it locates frames by searching for the two-byte `0xFFF8` sync --
+     * which occurs by chance inside frame payloads (51 times in a 600 KB
+     * capture here, 306 in 1.1 MB). Landing on one mid-subframe produces
      * exactly the reported symptom, `invalid residual` plus `decode_frame()
      * failed`, intermittently because it depends on the audio content.
+     *
+     * The encoder's own header does NOT replace this one. It arrives as a
+     * codec-config buffer carrying `fLaC` + STREAMINFO + VORBIS_COMMENT with the
+     * STREAMINFO's last-metadata-block flag CLEAR, and is dropped in
+     * [encodeFrame]. Forwarding it instead is not a valid file either: `flac -t`
+     * accepts it but ffmpeg reports "No filtered frames for output stream" and
+     * returns 0 samples, because the VORBIS_COMMENT is not a frame. A header
+     * that ends with a clear last-metadata flag is exactly what this file
+     * refuses to write.
      *
      * MediaMuxer would write this header, but it cannot express "a stream that
      * ends when the HTTP client disconnects", which is the entire point of this

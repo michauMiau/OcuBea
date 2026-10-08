@@ -38,7 +38,37 @@ class LivePreviewView @JvmOverloads constructor(
 
     private val surfaceCallback = object : SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) { start() }
-        override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {}
+
+        /**
+         * Was an empty override, which is where a rotation lands.
+         *
+         * The Activity declares `configChanges="orientation|screenSize"`, so the
+         * platform does not recreate it: it resizes the SurfaceView and calls
+         * this. With nothing here, nothing told the drawing code that the surface
+         * geometry changed, so the next `drawFrame` fitted the JPEG into the
+         * previous canvas size. The preview then sat letterboxed in the wrong
+         * place until some other event happened to trigger another layout, which
+         * is the "landscape looks broken" symptom: the picture is drawn to stale
+         * dimensions and the controls float over the wrong part of it.
+         *
+         * `drawFrame` re-reads `canvas.width`/`canvas.height` on every frame, so
+         * it needs no cached size to invalidate -- it needs one frame to be
+         * scheduled after the resize. Without a viewer attached, nothing is
+         * polling, so the surface would stay showing the last frame at the old
+         * scale until the next JPEG arrived. Redrawing here makes the new
+         * geometry take effect immediately.
+         *
+         * `holder.surface?.isValid` guards the case where the surface was
+         * destroyed between the callback and this code; locking an invalid
+         * canvas throws.
+         */
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
+            if (w <= 0 || h <= 0) return
+            // Invalidate so the compositor redraws the surface at the new size
+            // instead of stretching the last frame.
+            runCatching { surface.holder.surface?.let { if (it.isValid) invalidate() } }
+        }
+
         override fun surfaceDestroyed(holder: SurfaceHolder) { stop() }
     }
 
