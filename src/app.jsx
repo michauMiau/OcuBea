@@ -901,14 +901,22 @@ function App() {
             <dt>${t('bitrate')}</dt>
             <dd>${s.video_bitrate_kbps ? s.video_bitrate_kbps + ' kbps' : t('off')}</dd>
           </span>
-          <span class="chip">
-            <dt>${t('frames')}</dt>
-            <dd>${s.frames != null ? s.frames : t('off')}</dd>
-          </span>
-          <span class="chip">
-            <dt>${t('effect')}</dt>
-            <dd>${s.effect || t('off')}</dd>
-          </span>
+          ${
+            /* Two chips came out.
+
+               frames: a cumulative total. It only moves while frames are
+               actually delivered, it reads the same on every screen, and nothing
+               in the UI acts on it. It was also the chip the user singled out as
+               pointless.
+
+               effect: already visible. The effect dropdown in the optics panel
+               renders `selected` from the same state field, so the status bar
+               repeated a value the user could read one screen down -- which is
+               what made the bar look like two sections.
+
+               bitrate stays. It is the only figure in the bar that reports a
+               target being met or missed, and it has no other home. */ null
+          }
         </dl>
       </div>
     </div>
@@ -989,47 +997,69 @@ function App() {
         </div>
       </section>
 
-      <section>
-        <h2>${t('optics')}</h2>
-        <${Row} label=${t('zoom')}>
-          <${Slider}
-            value=${Math.round((zoomLevel - 1) * 100)}
-            max=${Math.round((zoomMax - 1) * 100)}
-            step=${1}
-            id="zoom"
-            label=${t('zoom')}
-            onInput=${(v) => {
-              // The phone reads any value <= 1 as a *step* rather than a level
-              // (setZoom(1f + zoom)), so 1.00 itself lands on 2.0x. A hair above
-              // 1 is the smallest absolute level it will honour, which is what
-              // the bottom of the slider means to a user.
-              const level = 1 + (zoomMax - 1) * (v / (Math.round((zoomMax - 1) * 100) || 1));
-              act(ptz, { zoom: Math.max(1.01, level).toFixed(2) });
-            }}
+      <section class="split">
+        <h2 class="span2">${t('optics')}</h2>
+        <div class="col-ctl">
+          <${Row} label=${t('zoom')}>
+            <${Slider}
+              value=${Math.round((zoomLevel - 1) * 100)}
+              max=${Math.round((zoomMax - 1) * 100)}
+              step=${1}
+              id="zoom"
+              label=${t('zoom')}
+              onInput=${(v) => {
+                // The phone reads any value <= 1 as a *step* rather than a level
+                // (setZoom(1f + zoom)), so 1.00 itself lands on 2.0x. A hair above
+                // 1 is the smallest absolute level it will honour, which is what
+                // the bottom of the slider means to a user.
+                const level = 1 + (zoomMax - 1) * (v / (Math.round((zoomMax - 1) * 100) || 1));
+                act(ptz, { zoom: Math.max(1.01, level).toFixed(2) });
+              }}
+            />
+            <input
+              id="zoom-value"
+              class="val num"
+              type="number"
+              inputmode="decimal"
+              min="1.0"
+              max=${zoomMax.toFixed(1)}
+              step="0.1"
+              value=${zoomLevel.toFixed(1)}
+              aria-label=${t('zoom')}
+              onChange=${(e) => {
+                // A typed value has to go through the same mapping as the drag,
+                // or the field would report one number while the camera held
+                // another. The same 1.01 floor applies: 1.00 is a step, not a
+                // level, to the phone.
+                const typed = +e.target.value;
+                if (!Number.isFinite(typed) || typed <= 1) return;
+                const level = 1 + (zoomMax - 1) * ((typed - 1) / (zoomMax - 1 || 1));
+                act(ptz, { zoom: Math.max(1.01, level).toFixed(2) });
+              }}
+            />
+          <//>
+          <${JpegQuality}
+            value=${s.jpeg_quality != null ? s.jpeg_quality : 82}
+            onInput=${(v) => act(setSetting, 'jpeg_quality', v, poll)}
           />
-          <input
-            id="zoom-value"
-            class="val num"
-            type="number"
-            inputmode="decimal"
-            min="1.0"
-            max=${zoomMax.toFixed(1)}
-            step="0.1"
-            value=${zoomLevel.toFixed(1)}
-            aria-label=${t('zoom')}
-            onChange=${(e) => {
-              // A typed value has to go through the same mapping as the drag,
-              // or the field would report one number while the camera held
-              // another. The same 1.01 floor applies: 1.00 is a step, not a
-              // level, to the phone.
-              const typed = +e.target.value;
-              if (!Number.isFinite(typed) || typed <= 1) return;
-              const level = 1 + (zoomMax - 1) * ((typed - 1) / (zoomMax - 1 || 1));
-              act(ptz, { zoom: Math.max(1.01, level).toFixed(2) });
-            }}
-          />
-        <//>
-        <div class="tiles">
+          <${Row} label=${t('effect')}>
+            <select
+              id="effect"
+              class="ctl"
+              value=${s.effect || 'none'}
+              aria-label=${t('effect')}
+              onChange=${(e) => act(setSetting, 'effect', e.target.value, poll)}
+            >
+              ${EFFECTS.map(
+                ([id, key]) =>
+                  html`<option value=${id} selected=${(s.effect || 'none') === id}>
+                    ${t(key)}
+                  </option>`,
+              )}
+            </select>
+          <//>
+        </div>
+        <div class="col-tiles">
           <${Tile}
             id="bTorch"
             on=${!!s.torch}
@@ -1043,14 +1073,14 @@ function App() {
             label=${t('autofocus')}
             onChange=${() => act(focus, 0.5, 0.5)}
             momentary=${true}
-            icon="M12 18v-3M12 6V3M6 12H3M21 12h-3M7 7l1.8-1.8M15.2 7l1.8-1.8M7 17l1.8 1.8M15.2 17l1.8 1.8"
+            icon="M12 18v-3M12 6V3M6 12H3M21 12h-3M7 7l1.8-1.8M15.2 7l1.8 1.8M7 17l1.8 1.8M15.2 17l1.8 1.8"
           />
           ${
             /* ffc is the one endpoint that genuinely implements "toggle": it
-              reads the camera state and inverts it (StreamServer.kt:890).
-              "front"/"back" are NOT accepted -- the arm checks value == "on",
-              so set=front answers "ok" and changes nothing, which is a second
-              way of getting a dead-looking control. Verified on the phone.*/ null
+                    reads the camera state and inverts it (StreamServer.kt:890).
+                    "front"/"back" are NOT accepted -- the arm checks value == "on",
+                    so set=front answers "ok" and changes nothing, which is a second
+                    way of getting a dead-looking control. Verified on the phone.*/ null
           }
           <${Tile}
             id="bFlip"
@@ -1060,47 +1090,29 @@ function App() {
             icon="M4 8V5a1 1 0 011-1h3M20 8V5a1 1 0 00-1-1h-3M4 16v3a1 1 0 001 1h3M20 16v3a1 1 0 01-1 1h-3M4 12h16"
           />
         </div>
-        <${Row} label=${t('effect')}>
-          <select
-            id="effect"
-            class="ctl"
-            value=${s.effect || 'none'}
-            aria-label=${t('effect')}
-            onChange=${(e) => act(setSetting, 'effect', e.target.value, poll)}
-          >
-            ${EFFECTS.map(
-              ([id, key]) =>
-                html`<option value=${id} selected=${(s.effect || 'none') === id}>
-                  ${t(key)}
-                </option>`,
-            )}
-          </select>
-        <//>
-        <${Row} label=${t('quality')}>
-          <select
-            id="quality"
-            class="ctl"
-            value=${qualityKey(s.resolution)}
-            aria-label=${t('quality')}
-            onChange=${(e) => act(setSetting, 'quality', e.target.value, poll)}
-          >
-            ${QUALITIES.map(
-              ([id, label]) =>
-                html`<option value=${id} selected=${qualityKey(s.resolution) === id}>
-                  ${label}
-                </option>`,
-            )}
-          </select>
-        <//>
-        <${JpegQuality}
-          value=${s.jpeg_quality != null ? s.jpeg_quality : 82}
-          onInput=${(v) => act(setSetting, 'jpeg_quality', v, poll)}
-        />
-        <${Orientation}
-          value=${s.orientation || 'landscape'}
-          options=${(s.avail && s.avail.orientation) || ORIENTATIONS}
-          onChange=${(v) => act(setSetting, 'orientation', v, poll)}
-        />
+        <div class="col-ctl">
+          <${Row} label=${t('quality')}>
+            <select
+              id="quality"
+              class="ctl"
+              value=${qualityKey(s.resolution)}
+              aria-label=${t('quality')}
+              onChange=${(e) => act(setSetting, 'quality', e.target.value, poll)}
+            >
+              ${QUALITIES.map(
+                ([id, label]) =>
+                  html`<option value=${id} selected=${qualityKey(s.resolution) === id}>
+                    ${label}
+                  </option>`,
+              )}
+            </select>
+          <//>
+          <${Orientation}
+            value=${s.orientation || 'landscape'}
+            options=${(s.avail && s.avail.orientation) || ORIENTATIONS}
+            onChange=${(v) => act(setSetting, 'orientation', v, poll)}
+          />
+        </div>
       </section>
 
       <section>

@@ -568,6 +568,61 @@ button.big.primary-weight {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+/* Optics: sliders and selects on one side, the icon tiles on the other.
+ *
+ * The user asked for this twice. The first attempt capped the sliders at 340px
+ * and left both groups stacked, which is the thing they explicitly did not want
+ * -- a shorter slider is not a side-by-side layout.
+ *
+ * `minmax(0, 1.15fr)` on the control column rather than `1fr`: the selects carry
+ * option text that must not be truncated, and a 1fr track clips them first at
+ * narrow widths. The tile column is content-sized (`auto`) so three tiles take
+ * only what their captions need instead of half the row.
+ *
+ * Below 720px the grid drops to one column and the tiles move under the
+ * controls. Two columns at phone width put each slider at ~150px, which is
+ * shorter than the tap target for a one-step change.
+ */
+section.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) auto;
+  gap: 8px 14px;
+  align-items: start;
+}
+section.split h2.span2 {
+  grid-column: 1 / -1;
+}
+/* The tile column is its own grid so it can stay 3 tracks wide no matter how
+   narrow the control column becomes; `grid-column: 2` pins it right of the
+   sliders instead of letting auto-placement find a free cell below. */
+section.split .col-tiles {
+  grid-column: 2;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(84px, max-content));
+  gap: 8px;
+}
+/* Second control column: resolution and orientation continue under the first,
+   so the four sliders and selects form one left-hand stack. */
+section.split .col-ctl + .col-tiles + .col-ctl {
+  grid-column: 1;
+}
+@media (max-width: 720px) {
+  section.split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  section.split .col-tiles,
+  section.split .col-ctl + .col-tiles + .col-ctl {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+/* Inside the split the track gets the whole column, so the earlier 340px cap
+   would fight the layout instead of helping it. */
+section.split input[type='range'] {
+  max-width: none;
+}
+
 .row .val {
   flex: 0 0 auto;
 }

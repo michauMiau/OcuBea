@@ -29,12 +29,15 @@ const shell = (css, js, v) => `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0d1117">
+<meta name="ocubea-build" content="${v}">
 <title>OcuBea</title>
-<link rel="icon" type="image/png" href="/favicon.ico?v=${v}">
-<!-- The query is the build id: a browser that cached the old icon under
-     the bare path never sees this URL again, so a changed favicon lands
-     without asking the user to hard-reload. Cache-Control alone only
-     bounds how long the stale copy survives, this retires it. -->
+<link rel="icon" type="image/png" href="/favicon.ico">
+<!-- No query string on the icon, deliberately. A build-id query here means a
+     browser treats every build as a brand new URL, so the favicon can never be
+     served from cache and the entry grows one dead URL per build. Changing the
+     icon then means editing the file, which is the point: the icon is part of
+     the app, not a build artefact, and it should look the same on every
+     install. Cache-Control on the response is what bounds a stale copy. -->
 <style>
 ${css}
 </style>

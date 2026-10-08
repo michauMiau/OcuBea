@@ -55,9 +55,27 @@ const args = process.argv.slice(2);
 const device = (args.find((a) => a.startsWith('--device=')) || '').slice(9);
 const rebuildOnly = args.includes('--rebuild-only');
 
+/* Read the build id from its own meta tag, not from the favicon query string.
+ *
+ * It used to be scraped as `v=<hex>` out of the icon href, which meant the
+ * favicon and the build-identity check were coupled: removing the cache-busting
+ * query -- the right thing to do, since the icon is not a build artefact -- also
+ * deleted the id, and the verifier started reporting `buildId (brak)` while
+ * still exiting 0. A check that degrades to a placeholder instead of failing is
+ * the worst kind of check. The id now lives where it belongs. */
 function buildIdOf(html) {
-  const m = html.match(/v=([0-9a-f]{8})/);
+  const m = html.match(/<meta name="ocubea-build" content="([0-9a-f]{8})"/);
   return m ? m[1] : '(brak)';
+}
+
+/* A bundle with no id at all is a broken bundle, not a bundle of unknown build:
+ * the whole point is to compare ids, and "(brak) === (brak)" would compare equal
+ * and pass while proving nothing. */
+function requireId(id, where) {
+  if (id === '(brak)') {
+    console.error(`  ${where}: brak buildId -- build.mjs nie wystawia meta ocubea-build`);
+    process.exit(1);
+  }
 }
 
 /* build.mjs writes the bundle in place and prints its size, so save a copy
@@ -71,6 +89,8 @@ const out = execFileSync('node', [join(root, 'build.mjs')], {
 });
 const rebuilt = readFileSync(bundle);
 const rebuiltId = buildIdOf(rebuilt.toString('utf8'));
+requireId(rebuiltId, 'rebuild');
+requireId(committedId, 'committed bundle');
 
 /* Second half of the question: what the phone actually serves. Compared
  * against src/, not against the repo bundle, because the repo bundle agreeing
@@ -93,6 +113,13 @@ if (device && !rebuildOnly) {
       });
       r.on('end', () => {
         const live = buildIdOf(b);
+        if (live === '(brak)') {
+          process.stdout.write(
+            `  telefon ${device}: brak buildId w serwowanej stronie -- zainstalowany APK starszy niz meta ocubea-build\n`,
+          );
+          pendingDevice = { ok: false, code: 2 };
+          return;
+        }
         const srcMatches = live === rebuiltId;
         process.stdout.write(
           `  telefon ${device}: buildId ${live}, src/ ${rebuiltId} -> ` +
