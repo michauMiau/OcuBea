@@ -10,6 +10,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # Secrets are not in the `secrets` context available to a step-level `if:`,
+    # and a workflow that references them there is rejected at parse time --
+    # every run fails in zero seconds before a single step starts, with no log
+    # and the workflow name showing as a file path instead of its `name:`.
+    # Mapping them to job-level env puts them in the `env` context, which `if:`
+    # can read. The value is the raw secret, so it is never logged.
+    env:
+      OCUBEA_STORE_B64: ${{ secrets.OCUBEA_STORE_B64 }}
+      OCUBEA_STORE_PASS: ${{ secrets.OCUBEA_STORE_PASS }}
+      OCUBEA_KEY_ALIAS: ${{ secrets.OCUBEA_KEY_ALIAS }}
+      OCUBEA_KEY_PASS: ${{ secrets.OCUBEA_KEY_PASS }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -91,12 +103,7 @@ jobs:
       # plain secret, because a keystore is binary and base64 is the only form
       # a secret store carries without corrupting it.
       - name: Build signed release APK
-        if: ${{ secrets.OCUBEA_STORE_B64 != '' }}
-        env:
-          OCUBEA_STORE_B64: ${{ secrets.OCUBEA_STORE_B64 }}
-          OCUBEA_STORE_PASS: ${{ secrets.OCUBEA_STORE_PASS }}
-          OCUBEA_KEY_ALIAS: ${{ secrets.OCUBEA_KEY_ALIAS }}
-          OCUBEA_KEY_PASS: ${{ secrets.OCUBEA_KEY_PASS }}
+        if: ${{ env.OCUBEA_STORE_B64 != '' }}
         run: |
           test -n "$OCUBEA_STORE_B64" || { echo "OCUBEA_STORE_B64 is set but empty"; exit 1; }
           printf '%s' "$OCUBEA_STORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
@@ -128,7 +135,7 @@ jobs:
           path: app/build/outputs/apk/release/app-release-unsigned.apk
 
       - name: Upload signed release APK
-        if: ${{ secrets.OCUBEA_STORE_B64 != '' }}
+        if: ${{ env.OCUBEA_STORE_B64 != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: OcuBea-release-${{ github.sha }}
