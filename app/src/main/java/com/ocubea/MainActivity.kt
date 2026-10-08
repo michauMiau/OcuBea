@@ -501,7 +501,6 @@ class MainActivity : AppCompatActivity() {
         tvUrl.text = baseUrl() ?: getString(R.string.no_wifi)
     }
 
-
     /**
      * The manifest declares `android:configChanges="orientation|screenSize"`, so the
      * platform does not recreate the Activity and does not re-inflate its layout.
