@@ -416,14 +416,26 @@ MUTATIONS = [
     ("toggle-styled: remove background from .audio-row .tgl",
      lambda t: re.sub(r"(\.audio-row \.tgl \{[^}]*?)background:[^;]+;\s*", r"\g<1>", t, count=1, flags=re.S)),
     ("toggle-glyph: empty the audio toggle body",
-     # Two traps in this pattern, both measured rather than guessed.
+     # Three traps in this pattern, all measured rather than guessed.
      # re.S: the button is written across seven lines, so a single-line pattern
      #   matches nothing and the mutation reports "did not change the file".
      # [^>]*: the attribute list contains `onClick=${()=>r(!i)}`, and the arrow's
      #   `>` ends the tag as far as the character class is concerned, so
      #   `<button[^>]*id="bAud"[^>]*>` never reaches the body. Matching the span
      #   and its closing tag instead of the attributes sidesteps both.
-     lambda t: re.sub(r'(<span aria-hidden="true">\$\{i\?"[^"]*":"[^"]*"\}</span>\s*)',
+     #
+     # The glyph condition is `playing`, not `i`. The audio button used to render
+     # from the toggle's own state, which is a wish; it now renders from whether
+     # the element is actually playing, because the button was drawing the
+     # muted glyph during playback. This mutation anchored on the minified `i`
+     # and so matched nothing after that change, reporting itself uncaught while
+     # the gate it belongs to was silently blind to the audio toggle.
+     #
+     # So the pattern takes the identifier as it appears, which is why this
+     # mutation has to be updated whenever the surrounding expression is
+     # renamed. A mutation that cannot be built is not a mutation, and a
+     # mutation that no longer applies is a gate that stopped checking.
+     lambda t: re.sub(r'(<span aria-hidden="true">\$\{[a-zA-Z_$][\w$]*\?"[^"]*":"[^"]*"\}</span>\s*)',
                       "", t, count=1)),
     # Anchored to the tile glyph, not the old Toggle glyph: Toggle was replaced
     # by Tile, so the previous anchor searched for markup that no longer
@@ -435,8 +447,24 @@ MUTATIONS = [
      lambda t: t.replace('<span class="cap" aria-hidden="true">',
                          '<span class="cap"', 1)),
     ("state-labels: revert aria-label to P(\"audio\")",
-     lambda t: t.replace('aria-label=${i?P("audioMuted"):P("audioOn")}',
-                         'aria-label=${P("audio")}', 1)),
+     # Two things this had to stop assuming.
+     #
+     # It assumed the condition was named `i`, the toggle's own state. The
+     # button now reads the element's real playback state, so the name changed
+     # in src/ and the old anchor matched nothing.
+     #
+     # And it assumed the name survives into the bundle. It does not: the
+     # minifier renames `playing` to `c`, and the gate reads the BUILT bundle
+     # because that is what the browser gets. Writing `playing` here fixed the
+     # first problem and still failed, which is the more useful of the two
+     # mistakes to have made.
+     #
+     # So the identifier is matched as a single minified name. That is not
+     # looser in any way that matters: what this mutation is for is checking
+     # that the label depends on the playback state at all, and any identifier
+     # proves that just as well as this one did.
+     lambda t: re.sub(r'aria-label=\$\{[a-zA-Z_$][\w$]*\?P\("audioOn"\):P\("audioMuted"\)\}',
+                      'aria-label=${P("audio")}', t, count=1)),
     ("no-dashes: put an em dash in the HLS badge",
      lambda t: t.replace("HLS unsupported here, MJPEG",
                          "HLS unsupported here — MJPEG", 1)),

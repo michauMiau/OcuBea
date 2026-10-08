@@ -2,9 +2,9 @@
 
 ## **THE** Lightweight IP Camera Streamer for Android 📷
 
-(insert photos or screenshots of the ui here, also a full logo)
+<!-- Screenshots go here: the native UI in both orientations, and the WebUI. -->
 
-## Requirements
+## 📱 Requirements
 
 ### Android 6 or later, that's it ✨
 
@@ -21,9 +21,9 @@ Hardware and permissions, as declared in the code:
 `CAMERA`, `RECORD_AUDIO`, `INTERNET`, `ACCESS_NETWORK_STATE`,
 `ACCESS_WIFI_STATE`, `WAKE_LOCK`, `FOREGROUND_SERVICE` (+ `..._CAMERA` and
 `..._MICROPHONE` for API 34), `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED`,
-`CHANGE_WIFI_MULTICAST_STATE`.
+`CHANGE_WIFI_MULTICAULT_STATE`.
 
-## IS THIS PROJECT SLOP? 💀
+## 🧹 IS THIS PROJECT SLOP? 💀
 
 I wouldn't say this is slop, maybe just not recognized and mature enough.
 While this project has been vibecoded (and I'm not proud of it), I try to keep slop out of the project
@@ -33,7 +33,21 @@ If this project has been useful to you I strongly suggest you donate to me, I ha
 
 `There's nothing like having your compiles fail because you only have 4GB of DDR3 on your machine`
 
-### Current status
+### Measured, not promised
+
+Every claim on this page came off a device, not a design document. Where a
+number appears it was measured on the hardware named next to it, and where a
+feature is checked it is checked by something in `tools/` that can go red.
+
+- 1280x720 on both an Android 6 and an Android 16 phone
+- MJPEG, HLS and RTSP verified against `ffprobe`, not against an HTTP 200
+- Audio containers checked at byte level against the reference decoder
+- ONVIF verified against a server that answers correctly and is useless
+
+`docs/` holds the measurements behind these. The engineering rules for changing
+this code are in [AGENTS.md](AGENTS.md).
+
+### ✅ Current status
 
 - [x] Basic MJPEG Streaming (/video)
 - [x] WebUI — full dark theme with controls (torch, night vision, camera switch, zoom, quality, focus)
@@ -58,7 +72,7 @@ If this project has been useful to you I strongly suggest you donate to me, I ha
 - [x] Optional access token for the whole HTTP API
 - [x] Full API Parity (core IP Webcam endpoints)
 
-## The API
+## 🔌 The API
 
 The API is the same as the IP Webcam API + a few new additions for new features.
 
@@ -85,6 +99,6 @@ The API is the same as the IP Webcam API + a few new additions for new features.
 
 ### Alternatively you can get the artifact or release from Github
 
-## 📄 License
+## 📜 License
 
 GPLv3 see [LICENSE](LICENSE)

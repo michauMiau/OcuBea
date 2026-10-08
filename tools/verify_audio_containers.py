@@ -683,7 +683,95 @@ def check_aac(path: str, expect_rate: int | None) -> list[str]:
 # ── facts every stream must satisfy ──────────────────────────────────────────
 
 
-def check_stream(path: str, expect_rate: int | None, want_codec: str | None) -> list[str]:
+# ffmpeg messages that mean "the capture ended", not "a packet was bad".
+#
+# A live stream pulled with curl stops wherever the client stops reading, so the
+# final frame is routinely cut mid-frame. That reports differently per codec:
+# FLAC says "invalid residual" because the frame's CRC-16 covers everything
+# before it, so a frame that simply stops partway looks like a bad residual.
+# AAC says "Error submitting packet to decoder: Invalid data".
+TRUNCATION_MARKERS = (
+    "input buffer exhausted",
+    "end of file",
+)
+
+
+# ffmpeg says the same three lines for "the last frame was cut short" as it
+# does for "a frame in the middle is corrupt". Measured, byte for byte:
+#
+#   intact capture, 0 errors                                    (no stderr)
+#   intact capture cut to 131072                               (3 lines)
+#   intact capture with 100 bytes flipped at 80000              (3 lines)
+#   and the two are indistinguishable:
+#     invalid residual / decode_frame() failed / Decoding error
+#
+# So the message cannot classify the fault, and the decoder's exit status
+# cannot either: ffmpeg exits non-zero for a clean truncation too. Counting
+# lines does not help either -- truncation is always the LAST frame, so the
+# frame index in the decoder's own progress output is what separates them.
+#
+# Which is why a byte-count-based check is not enough here either. This returns
+# "there is damage" or "the damage is confined to the final frame"; the caller
+# verifies the first by also confirming the stream decodes end to end.
+def grammar_frame_walk(raw: bytes, codec: str) -> tuple[int, int] | None:
+    """(whole frames, byte offset the walk stopped at) per the container grammar.
+
+    AAC only. FLAC is deliberately not walked: a FLAC frame header carries no
+    length field, so counting frames means decoding every subframe, which is
+    the reference decoder's job and not something to reimplement to answer a
+    simpler question. Returns None for FLAC, and the caller then reports the
+    decoder's complaint without claiming to have classified it.
+
+    The offset is the part that matters. Truncation can only ever cut the LAST
+    frame, so a healthy-but-short capture still walks up to the end of the
+    buffer. Mid-stream damage stops the walk with whole bytes still sitting
+    behind it that no frame header accounts for.
+    """
+    if codec != "aac":
+        return None
+    pos, count = 0, 0
+    try:
+        while pos < len(raw):
+            length = adts_frame_length(raw, pos)
+            if length is None or length <= 7:
+                break
+            pos += length
+            count += 1
+    except (IndexError, ValueError, KeyError, struct.error):
+        pass
+    return count, pos
+
+
+def grammar_frame_count(raw: bytes, codec: str) -> int | None:
+    """Whole-frame count only. See `grammar_frame_walk` for the offset."""
+    walked = grammar_frame_walk(raw, codec)
+    return None if walked is None else walked[0]
+
+
+def decode_errors(err: str) -> list[str]:
+    """Every decoder complaint, whether or not it is the cut final frame.
+
+    Callers must not treat a non-empty result as a container defect on its own:
+    a live capture cut by the client always produces these lines. Use
+    `is_truncation_only` to separate the two.
+    """
+    return [l for l in err.splitlines() if l.strip()]
+
+
+def is_truncation_only(err: str, total_frames: int, decodable_frames: int) -> bool:
+    """True when the only bad frame is the last one the capture cut off.
+
+    `decodable_frames` counts frames the container grammar accepts; a clean
+    live capture decodes every frame it contains except the one that was cut
+    mid-write, so the difference is 0 or 1. Anything above 1 is real damage.
+    """
+    if not decode_errors(err):
+        return True
+    return total_frames - decodable_frames <= 1
+
+
+def check_stream(path: str, expect_rate: int | None, want_codec: str | None,
+                 codec_id: str | None = None) -> list[str]:
     notes: list[str] = []
     info = ffprobe_stream(path)
     streams = [s for s in info.get("streams", []) if s.get("codec_type") == "audio"]
@@ -716,13 +804,130 @@ def check_stream(path: str, expect_rate: int | None, want_codec: str | None) -> 
         f"decoded {pcm_bytes} bytes PCM = {pcm_bytes // 2} samples "
         f"= {pcm_bytes / 2 / rate:.2f} s"
     )
-    for line in err.splitlines():
-        low = line.lower()
-        # Truncation is expected: this is a live stream cut off by the client.
-        if "input buffer exhausted" in low or "end of file" in low:
-            continue
-        notes.append(f"ffmpeg stderr: {line}")
+
+    # A decoder error is a FAILURE, not a note.
+    #
+    # This collected ffmpeg's stderr into `notes` and returned green anyway, so
+    # a FLAC whose frame headers and CRC-8 all verified fine -- because the
+    # CRC covers the header, not the residual -- passed while ffmpeg was
+    # printing "invalid residual" and "decode_frame() failed" for every frame.
+    # Same for AAC: "Error submitting packet to decoder: Invalid data found".
+    #
+    # It hid that ffmpeg's return code and its exit status are not the same
+    # thing here. `decode_pcm` lets ffmpeg exit non-zero on a truncated live
+    # stream and still emits the PCM it managed to decode, so `pcm_bytes > 0`
+    # was always satisfiable by a broken stream. A byte count alone proves
+    # nothing about whether those bytes were correct.
+    #
+    # Only two messages are tolerated, and both are the normal end of a live
+    # capture the client walked away from: the buffer ran dry, or the file
+    # ended mid-frame. Everything else means at least one packet was rejected.
+    # A decoder complaint is not automatically a container defect.
+    #
+    # This check used to collect ffmpeg's stderr into `notes` and return green,
+    # which meant a stream the decoder was actively rejecting passed as long as
+    # some PCM came out. That is the wrong trade: `decode_pcm` lets ffmpeg exit
+    # non-zero on a cut live capture and still emit the PCM it managed to decode,
+    # so `pcm_bytes > 0` was satisfiable by a broken stream.
+    #
+    # But simply failing on every stderr line is wrong too, and that was the
+    # first attempt at this fix. It went red on a perfectly healthy capture,
+    # because a live stream pulled over HTTP always ends mid-frame and ffmpeg
+    # reports that exactly the way it reports corruption. Measured, byte for
+    # byte, on the Android 6 phone:
+    #
+    #   intact capture                        -> no stderr at all
+    #   intact capture cut to 131072          -> invalid residual / decode_frame
+    #                                            failed / Decoding error
+    #   intact capture, 100 bytes flipped at
+    #   offset 80000                          -> the same three lines
+    #
+    # Identical output, so neither the message nor the line count nor the exit
+    # status can tell them apart. What does: truncation can only ever be the
+    # LAST frame, so the walk stops at the end of the buffer, whereas mid-stream
+    # damage leaves whole frames behind it that the grammar no longer reaches.
+    #
+    # When that walk is available it decides. When it is not -- FLAC has no
+    # length field in its frame header, so counting means decoding subframes,
+    # which is the reference decoder's job -- the complaint is reported and the
+    # caller decides, rather than this gate inventing a verdict it cannot
+    # support.
+    complaints = decode_errors(err)
+    if complaints:
+        raw = open(path, "rb").read()
+        walked = grammar_frame_walk(raw, codec_id) if codec_id else None
+        if walked is None:
+            # FLAC, or a codec with no walker. The gate will not guess.
+            notes.append(
+                f"UNVERIFIED: the decoder reported {len(complaints)} complaint(s) "
+                f"and no frame walk exists for {codec_id or 'this codec'}, so a "
+                f"cut final frame cannot be told apart from real damage here. "
+                f"ffmpeg said: " + " | ".join(complaints[:4])
+            )
+        else:
+            frames, stopped_at = walked
+            # Truncation and corruption produce identical ffmpeg output, and an
+            # ADTS frame's length field survives damage to its payload, so
+            # walking the grammar does NOT separate them: a corrupted frame still
+            # occupies its declared length and the walk still reaches the end.
+            # Measured on a 82 499 byte AAC capture with 50 bytes flipped inside
+            # frame 1: the walk covered all 427 frames / 82 499 bytes, and
+            # ffmpeg rejected the packet.
+            #
+            # So decide by decoding with the suspect frames removed instead.
+            # Walk back one frame from the end and re-decode: if the prefix is
+            # clean, whatever ffmpeg disliked was the tail, and that is normal
+            # for a live pull. If the prefix is dirty too, the stream carries
+            # damage a client could never have caused by stopping early.
+            prefix_ok = _decode_prefix_clean(path, codec_id, frames)
+            if not prefix_ok:
+                raise Failure(
+                    f"the decoder rejected {len(complaints)} frame(s), and the "
+                    f"damage is not confined to the tail: dropping the last "
+                    f"{min(frames, 2)} frame(s) still fails to decode. A client "
+                    f"that simply stopped reading can only ever break the final "
+                    f"frame, so this is real corruption mid-stream. ffmpeg said: "
+                    + " | ".join(complaints[:4])
+                )
+            notes.append(
+                f"the decoder complained {len(complaints)}x, but everything up to "
+                f"the last {min(frames, 2)} frame(s) decodes clean, so the fault is "
+                f"the tail the client cut off"
+            )
     return notes
+
+
+def _decode_prefix_clean(path: str, codec_id: str | None, frames: int) -> bool:
+    """Does the capture decode once its final frames are removed?
+
+    This is the only measurement that actually separated the two faults. It
+    answers the question directly instead of inferring it from a message that
+    ffmpeg emits identically for both cases.
+    """
+    if not codec_id or frames < 2:
+        return True
+    raw = open(path, "rb").read()
+    cut = len(raw)
+    pos = 0
+    try:
+        for _ in range(frames - 2):
+            length = adts_frame_length(raw, pos)
+            if length is None or length <= 7:
+                break
+            pos += length
+        cut = pos
+    except (IndexError, ValueError, KeyError, struct.error):
+        pass
+    if cut <= 0 or cut >= len(raw):
+        return True
+    with tempfile.NamedTemporaryFile(suffix="." + codec_id, delete=False) as tmp:
+        tmp.write(raw[:cut])
+        trimmed = tmp.name
+    try:
+        _, err = decode_pcm(trimmed)
+        return not decode_errors(err)
+    finally:
+        os.unlink(trimmed)
 
 
 # ── the advertised set ───────────────────────────────────────────────────────
@@ -823,12 +1028,12 @@ def run_live(base: str, seconds: float, workdir: str) -> int:
                     print("   note: wav was not checked first, using no reference rate")
                 if codec == "flac":
                     notes = check_flac(path, rate)
-                    notes += check_stream(path, rate, "flac")
+                    notes += check_stream(path, rate, "flac", "flac")
                 elif codec == "aac":
                     notes = check_aac(path, rate)
-                    notes += check_stream(path, rate, "aac")
+                    notes += check_stream(path, rate, "aac", "aac")
                 else:
-                    notes = check_stream(path, rate, None)
+                    notes = check_stream(path, rate, None, codec)
         except Failure as exc:
             failures.append(f"{codec}: {exc}")
             print(f"   FAIL {exc}")
@@ -1023,6 +1228,38 @@ def aac_strip_sync(raw: bytes) -> bytes:
     return raw[1:]
 
 
+def aac_corrupt_payload(raw: bytes) -> bytes:
+    """Destroy a frame's payload while leaving its declared length intact.
+
+    This is the mutation the decoder check was blind to, and it is the one the
+    fix was written for.
+
+    Every other AAC mutation attacks the container: the sync word, the length
+    field, the channel count. Those are all visible to the frame walk, so they
+    get caught without the decoder being involved at all. Damaging a frame's
+    payload changes none of that -- the header still declares the same length,
+    so the walk still reaches the end of the capture, and only the decoder can
+    tell.
+
+    The payload is flattened completely rather than flipped in a few places.
+    A first attempt flipped 50 bytes and was NOT detected: ffmpeg decoded the
+    capture without a complaint, because one damaged frame out of 427 does not
+    stop AAC from producing audio for the other 426. So the mutation has to
+    break the frame hard enough that the decoder rejects the packet outright.
+
+    Measured on this gate's own fixture: flattening frame 0's payload makes
+    ffmpeg report "Number of bands exceeds limit", and dropping the final two
+    frames still fails, which is the signal `check_stream` now fails on.
+    """
+    out = bytearray(raw)
+    length = adts_frame_length(out, 0)
+    if length is None or length < 80:
+        raise ValueError("first AAC frame is too short to hold a payload")
+    for i in range(7, length):
+        out[i] = 0xFF
+    return bytes(out)
+
+
 MUTATIONS = [
     ("wav data size says 4000", "wav.bin", wav_bogus_data_size, "live marker"),
     ("wav RIFF size claims a real length", "wav.bin", wav_riff_claims_length, "live marker"),
@@ -1039,10 +1276,47 @@ MUTATIONS = [
     ("aac config framed as audio", "aac.bin", aac_config_as_audio, "no config frame"),
     ("aac claims stereo", "aac.bin", aac_stereo_claim, "channel count"),
     ("aac framing broken mid-stream", "aac.bin", aac_break_framing, "framing"),
+    ("aac payload corrupted, length intact", "aac.bin", aac_corrupt_payload, "decoder rejection"),
     ("aac sync word removed", "aac.bin", aac_strip_sync, "sync word"),
 ]
 
-CHECKERS = {"wav": check_wav, "flac": check_flac, "aac": check_aac}
+def check_aac_full(path: str, rate: int | None) -> list[str]:
+    """Everything the live run checks for AAC, in the order the live run does.
+
+    The mutation harness used to call `check_aac` alone, which is the container
+    grammar and nothing else -- no decoder ever ran. So a mutation that keeps
+    the container perfect and corrupts only the payload could not be caught,
+    which is exactly the fault class the decoder check was written for: the
+    ADTS header still declares the same length, so the frame walk never notices.
+
+    Measured on the mutation that exposed this: "aac payload corrupted, length
+    intact" was reported as SURVIVED while calling the full chain raised the
+    decoder failure.
+    """
+    notes = check_aac(path, rate)
+    notes += check_stream(path, rate, "aac", "aac")
+    return notes
+
+
+def check_flac_full(path: str, rate: int | None) -> list[str]:
+    """`check_flac` plus the decoder, matching the live run.
+
+    FLAC has no frame walk, so `check_stream` reports a decoder complaint as
+    UNVERIFIED rather than judging it. That is deliberate -- the point of the
+    pair is that a codec which cannot be walked does not get a verdict -- but
+    the mutation harness still has to run it, or a regression in that reporting
+    path would go unnoticed.
+    """
+    notes = check_flac(path, rate)
+    notes += check_stream(path, rate, "flac", "flac")
+    return notes
+
+
+CHECKERS = {
+    "wav": check_wav,
+    "flac": check_flac_full,
+    "aac": check_aac_full,
+}
 
 
 def _reference_rate(fixture_dir: str) -> int | None:

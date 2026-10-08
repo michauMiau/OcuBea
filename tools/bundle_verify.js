@@ -108,9 +108,7 @@ if (device && !rebuildOnly) {
       });
     });
     res.on('error', (e) => {
-      process.stdout.write(
-        `  telefon ${device}: nieosiagalny (${e.code || e.message})\n`,
-      );
+      process.stdout.write(`  telefon ${device}: nieosiagalny (${e.code || e.message})\n`);
       pendingDevice = { ok: false, code: 2 };
     });
   } catch (e) {
