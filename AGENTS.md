@@ -1,8 +1,8 @@
 # Working on OcuBea
 
-House rules. Every one of these exists because breaking it cost a real defect
-that a green build did not catch. Where a rule says "measured", the numbers are
-in the commit that introduced the check.
+## Architecture
+Native App UI in Kotlin
+Preact-based WebUI hosted by the app
 
 ## Comments
 
@@ -106,9 +106,6 @@ introduced later, so a call to an API from 2024 compiles cleanly and throws
 `isHardwareAccelerated` (29), `computeIfAbsent` (24), `updateAndGet` (24),
 `withInitial` (26). `lintDebug` runs in CI for exactly this.
 
-**A6 has no WebView**, so it cannot stand in for a WebUI gate. Verify the WebUI
-on A16, verify the native UI on both.
-
 ## Device work
 
 - Always `adb -s SERIAL`. Two phones share one ADB server.
@@ -126,19 +123,9 @@ on A16, verify the native UI on both.
 - `assembleDebug` does not run `node build.mjs`. Nothing in the Gradle build
   invokes it, which is why the bundle is committed and why
   `bundle_verify.js` is a CI step.
-- Before reading the UI on A6: wake the screen with `KEYCODE_WAKEUP`, then
-  `KEYCODE_MENU`. A sleeping screen yields 6 KB screenshots that look like a
-  black preview.
+- Before reading the UI make sure to wake the screen with `KEYCODE_WAKEUP`, then
+  `KEYCODE_MENU`. A sleeping screen yields 6 KB blank screenshots.
 
 ## Commits
 
-State what was measured, not what was intended. "13 controls, lowest pixel at
-y=701 against a 720px screen" is a fact a reviewer can check; "improved the
-landscape layout" is not.
-
-Name the defect the commit fixes in the subject line. The body gets the
-measurement and the rejected alternative.
-
-Do not push a fix as verified until the hardware test passed. A commit that
-says "measured on the Sony F3311" and has no device run behind it is a lie with
-a hash attached.
+Don't state what can be seen from the diff
