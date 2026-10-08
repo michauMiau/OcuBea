@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.py[cod]
 *.so
@@ -18,11 +19,10 @@ local.properties
 # gradle build state
 .gradle/
 
-# Narzedzia do weryfikacji WebUI (jsdom/playwright)
+# JS Slop
 node_modules/
 
-# package-lock.json is NOT ignored, and the comment above used to sit on both
-# lines, which is how it ended up here. An ignored lockfile is a lockfile nobody
+# package-lock.json is NOT ignored An ignored lockfile is a lockfile nobody
 # reads: it was 117 packages with no prettier and no playwright in it, while
 # package.json declared four devDependencies. The two disagreed and CI never
 # noticed, because CI did not read the lockfile either -- it installed

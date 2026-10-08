@@ -208,7 +208,6 @@ it was throwing, so the camera stayed where it was.
 Verified separately: at 960x540 with no viewer, `entered` holds 14.3–14.6/s
 steadily with `null_bitmaps` tracking it — the analyzer is not the bottleneck.
 
-
 ## Also note
 
 `/settings/resolution?set=WxH` returns `Ok` and changes nothing. The working

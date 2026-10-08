@@ -9,7 +9,7 @@ Audited 2026-09-30. Buttons: old 20, Preact 4. Endpoints: old 22, Preact 12.
 ## Optics — missing entirely (section does not exist in Preact)
 
 | Feature | Endpoint | Verified on .122 |
-|---|---|---|
+| --- | --- | --- |
 | Zoom slider | `/ptz?zoom=` | 200 |
 | Autofocus (centre) | `/focus?x=0.5&y=0.5` | 200 |
 | Effect select: None/Monochrome/Negative/Sepia/Night | `/settings/effect?set=` | 200 |
@@ -19,7 +19,7 @@ Audited 2026-09-30. Buttons: old 20, Preact 4. Endpoints: old 22, Preact 12.
 ## Security camera — missing entirely
 
 | Feature | Endpoint | Verified on .122 |
-|---|---|---|
+| --- | --- | --- |
 | Night vision toggle | `/settings/night_vision?set=` | 200 |
 | Motion detection toggle | `/settings/motion_detection?set=` | 200 |
 | Motion sensitivity slider | `/settings/motion_sensitivity?set=` | 200 |
@@ -29,7 +29,7 @@ Audited 2026-09-30. Buttons: old 20, Preact 4. Endpoints: old 22, Preact 12.
 ## Clips — list exists, every per-clip action missing
 
 | Feature | Endpoint | Contract |
-|---|---|---|
+| --- | --- | --- |
 | Record now (30s) | `/clips/record?name=<n>` | 400 "invalid clip name" without `name` |
 | Stop recording | `/clips/record/stop?name=<n>` | same |
 | Apply limits (prune) | `/clips/prune?name=<n>` | same |
@@ -48,7 +48,7 @@ explanation. `POST /audio/codec` (404 on GET — it is a POST route).
 ## Stream controls — missing
 
 | Feature | Endpoint |
-|---|---|
+| --- | --- |
 | HLS quality profile | `/hls/profile` → `profile=default segment_ms=250 keyframe_sec=0 sync=3 buffer=6` |
 | Low latency toggle | present in Preact |
 

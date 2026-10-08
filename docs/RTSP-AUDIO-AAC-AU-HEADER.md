@@ -63,6 +63,7 @@ nie da się odtworzyć.
 ## Co naprawa musi zrobić
 
 Dla `aac` (`MPEG4-GENERIC`, `Aac-hbr`):
+
 - wysyłać **2-bajtowy AU-header** przed ładunkiem: `0x00`, `0xNN` gdzie `NN`
   to długość AU w bajtach (a dla AU > 255 B — liczbę AU-headerów),
 - liczyć timestamp w **próbkach** 44,1 kHz, nie `bajty/2`,
@@ -126,6 +127,7 @@ Reguła L16 (`bajty / 2`) dawała `1416` dla ramki mającej 1024 próbki. AAC-LC
 # Co jest zmierzone, a co nie
 
 **Zmierzone na Redmi Note 12 Pro, 174 pakiety:**
+
 - AU-header równy bajtom, które za nim są — 174/174
 - marker ustawiony — 174/174
 - timestamp rośnie o 1024

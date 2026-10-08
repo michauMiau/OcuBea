@@ -13,7 +13,7 @@ po raz drugi") — nie opisuje bieżącego stanu. Aktualny stan jest w sekcji
 „Kolejność" na końcu dokumentu; klipy fMP4 i retencja są wdrożone.
 
 | Element | Gdzie | Stan wtedy |
-|---|---|---|
+| --- | --- | --- |
 | `MotionDetector` 32×24 | `security/SecurityCamera.kt:16` | działa, próg z czułości |
 | `MotionRecorder` | `security/SecurityCamera.kt:140` | pre-buffer + post-motion, zapisywał **AVI** przez `AviWriter` |
 | `AviWriter` (MJPEG w AVI) | `security/AviWriter.kt` | 184 linie, nie fMP4 — wciąż używany przez `/recordings` |
@@ -29,6 +29,7 @@ zapisu w dobrym formacie, retencji i UI. Najmniejsza poprawka to **podmiana
 ## Decyzje
 
 ### Format
+
 fMP4 tym samym `Fmp4Writer`, co HLS. Klip = `init.mp4` + `moof+mdat...`.
 Powód: `AviWriter` to MJPEG w kontenerze AVI, czyli 60 klatek × 40 KB = 2.4 MB
 za sekundę wideo. fMP4 z H.264 ma ~200 kB/s. To 12× mniej miejsca na dysku,
@@ -50,12 +51,14 @@ Trzymamy też `/recordings` działające — to kompatybilność IP Webcam, nie
 ruszamy. Nowe `/clips` daje więcej.
 
 ### `Range` jest obowiązkowy
+
 Bez `Accept-Ranges: bytes` przeglądarka nie przewija `<video>` i nie pokaże
 paski czasu. NanoHTTPD ma wbudowany `ChunkedInputStream`, ale `Range` trzeba
 obsłużyć ręcznie: `newFixedLengthResponse` nie obsługuje 206. Trzeba napisać
 własny `Response` z `Status.PARTIAL_CONTENT`.
 
 ### Bezpieczeństwo ścieżki
+
 Istniejący kod ma dziurę: `handleRecordings` sprawdza `rest.endsWith(".avi")`
 i `contains("..")`, ale `File(dir, rest).canonicalPath.startsWith(dir.canonicalPath)`
 działa dopiero **po** `file.exists()`. Nowy kod musi sprawdzić kanonizację
@@ -63,6 +66,7 @@ przed istnieniem i dopuścić tylko `klip_*.mp4` (nie `.mp4` — nazwa może
 zostać ręcznie zmieniona w menedżerze plików, a `..` wystarczy).
 
 ### WebUI — zakładka „Klipy"
+
 Sekcja w `index.html` (499 linii, więc wyciągnąć do osobnego `clips.html`):
 
 - siatka kafelków z miniaturką (`<img src="/clips/<n>/thumb">` — klatka z
@@ -74,6 +78,7 @@ Sekcja w `index.html` (499 linii, więc wyciągnąć do osobnego `clips.html`):
 - auto-odświeżanie listy co 5 s tylko gdy zakładka widoczna (`document.hidden`)
 
 ### Aplikacja — to samo w native
+
 `MainActivity` dostaje zakładkę „Klipy" z tym samym `RecyclerView` co reszta,
 miniaturką dekodowaną przez `MediaMetadataRetriever` (nie własny dekoder),
 odtwarzacz `VideoView` + `MediaController`. Usuwanie przez `AlertDialog`
@@ -81,19 +86,19 @@ z potwierdzeniem.
 
 ## Pułapki
 
-* **Zapis nie może być na wątku kamery.** `ImageAnalysis` ma priorytet;
+- **Zapis nie może być na wątku kamery.** `ImageAnalysis` ma priorytet;
   `flush()` na dysku zabija fps. Osobny `ExecutorService`, kolejka
   `ArrayDeque` z limitem, `drop` przy przepełnieniu — nie blokować.
-* **Zapis + HLS + JPEG to trzy konsumenci jednej klatki.** Trzeba policzyć,
+- **Zapis + HLS + JPEG to trzy konsumenci jednej klatki.** Trzeba policzyć,
   czy realnie się da. Priorytet: HLS > klip > JPEG? Albo klip tylko gdy HLS
   nieaktywny. Zmierzyć, nie zgadywać.
-* **Odmount karty SD** → `IOException` w `flush`. `catch`, zamknąć klip,
+- **Odmount karty SD** → `IOException` w `flush`. `catch`, zamknąć klip,
   nie zabić wątku. Zgłosić w `status.json`.
-* **`duration` w `mvhd`** = 0 przy fMP4. Galeria MIUI pokaże „0:00".
+- **`duration` w `mvhd`** = 0 przy fMP4. Galeria MIUI pokaże „0:00".
   Uzupełnić prawdziwą wartością przy zamykaniu klipu (opisane w
   `SECURITY_CAMERA.md`).
-* **Retencja nie może kasować aktywnego klipu.** Sprawdzać `activeFile`.
-* **Klipy znikają przy odinstalowaniu** tylko w fallbacku `filesDir` —
+- **Retencja nie może kasować aktywnego klipu.** Sprawdzać `activeFile`.
+- **Klipy znikają przy odinstalowaniu** tylko w fallbacku `filesDir` —
   `status.json` ma to raportować.
 
 ## Kolejność — stan na 2026-09-27
@@ -129,16 +134,16 @@ long-press → zaznaczanie → „USUŃ ZAZNACZONE".
 
 ## Kryterium sukcesu
 
-* `curl -r 1000-2000 /clips/klip_x.mp4` → `206` i dokładnie 1001 B
+- `curl -r 1000-2000 /clips/klip_x.mp4` → `206` i dokładnie 1001 B
   — **spełnione**
-* klip otwiera się w przeglądarce z paskiem czasu i przewijaniem
+- klip otwiera się w przeglądarce z paskiem czasu i przewijaniem
   — **spełnione**, `readyState=4`
-* `POST /clips/record seconds=5` → plik po 5 s — **spełnione**
-* klip 60 s zajmuje < 20 MB — 4 s = 3,7 MB, czyli ~55 MB/min, **nie spełnione**
+- `POST /clips/record seconds=5` → plik po 5 s — **spełnione**
+- klip 60 s zajmuje < 20 MB — 4 s = 3,7 MB, czyli ~55 MB/min, **nie spełnione**
   przy 1080p; jakość/bitrate do obniżenia
-* `status.json.pipeline.dropped` nie rośnie przy aktywnym zapisie
+- `status.json.pipeline.dropped` nie rośnie przy aktywnym zapisie
   — **niezmierzone**
-* natywny ekran — **częściowo zmierzone** (siatka, usuwanie, miniatury tak;
+- natywny ekran — **częściowo zmierzone** (siatka, usuwanie, miniatury tak;
   samo odtwarzanie i long-press nie)
 
 Uwaga do kryteriów powyżej: dwa z nich („`duration` w `mvhd` = 0" w sekcji

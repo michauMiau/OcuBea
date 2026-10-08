@@ -34,7 +34,7 @@ handed to the phone. Pin a static lease if you want an address that stops moving
 ## Streaming & Snapshots
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
+| ---------- | -------- | ------------- |
 | `/video`, `/mjpeg`, `/stream` | `GET` | MJPEG stream (`multipart/x-mixed-replace`) |
 | `/shot.jpg`, `/snapshot.jpg` | `GET` | Single JPEG snapshot (binary) |
 | `/audio.wav` | `GET` | WAV audio from microphone (16-bit PCM mono 44.1 kHz, `audio/x-wav`) |
@@ -115,12 +115,14 @@ Returns: `text/plain: ok` or `error: <message>`
 ### Front/Back Camera Switch
 
 **Legacy API:**
+
 ```bash
 POST /api/camera?set=true   # front camera
 POST /api/camera?set=false  # back camera
 ```
 
 **IP Webcam compatible:**
+
 ```bash
 POST /settings/ffc?set=on    # front camera
 POST /settings/ffc?set=off   # back camera (default)
@@ -149,7 +151,7 @@ POST /settings
 Individual settings (IP Webcam compatible):
 
 | Endpoint | Parameters | Description |
-|----------|-----------|-------------|
+| ---------- | ----------- | ------------- |
 | `POST /settings/quality?set=<n>` | `480`, `720`, `1080` | Resolution: QVGA, HD720, FullHD |
 | `POST /settings/night_vision?set=on\|off` | `on`, `off` (default) | Low-light enhancement (LUT, applied per frame) |
 
@@ -164,6 +166,7 @@ GET /info
 ```
 
 Response example (abridged — the real object is much larger):
+
 ```json
 {
   "status": "ok",

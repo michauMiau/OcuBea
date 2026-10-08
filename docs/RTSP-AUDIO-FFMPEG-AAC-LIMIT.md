@@ -46,15 +46,15 @@ RFC 3640 mode=AAC-hbr.
 server in all eight combinations of the three choices a sender can make:
 
 | `config=` | AU-headers | ADTS stripped | bytes ffmpeg wrote |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | yes | yes | yes | 0 |
-| yes | yes | no  | 0 |
-| yes | no  | yes | 0 |
-| yes | no  | no  | 0 |
-| no  | yes | yes | 0 |
-| no  | yes | no  | 0 |
-| no  | no  | yes | 0 |
-| no  | no  | no  | 0 |
+| yes | yes | no | 0 |
+| yes | no | yes | 0 |
+| yes | no | no | 0 |
+| no | yes | yes | 0 |
+| no | yes | no | 0 |
+| no | no | yes | 0 |
+| no | no | no | 0 |
 
 Not one layout produces a single output byte, including
 `config=1_hdr=1_raw=1`, which is byte-for-byte what the phone sends and is
@@ -95,7 +95,7 @@ RTP MPEG4-GENERIC demuxer.
 ## Both phones, measured the same way
 
 | | A16 `ea79444a` | A6 `RQ3002EA5J` |
-|---|---|---|
+| --- | --- | --- |
 | SDP audio | `MPEG4-GENERIC/48000/1` | `MPEG4-GENERIC/48000/1` |
 | `config=` | `1188` | `1188` |
 | AU-headers match declared size | 130/130 | 129/129 |

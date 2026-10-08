@@ -10,7 +10,7 @@ debugowania HLS. Poniżej decyzje projektowe; implementacja osobnym commitem.
 Nie `Pictures/OcuBea/`, nie `Movies/OcuBea/`, nie `getExternalFilesDir()`:
 
 | Miejsce | Problem |
-|---|---|
+| --- | --- |
 | `/sdcard/Pictures/...` | **Permission denied** — potwierdzone na telefonie. Wymaga `WRITE_EXTERNAL_STORAGE`, a na API 33 to `neverForLocation` i użytkownik musi ręcznie przyznać, a po odinstalowaniu i tak zniknie. |
 | `/sdcard/Movies/...` | To samo, tylko przez `MediaStore`. Na API 33 własne pliki wstawia się bez uprawnienia, ale trzeba pamiętać o `IS_PENDING` i zawiera dodatkową maszynerię. |
 | `getExternalFilesDir()` | **Już używane** w `StreamService.kt:90` i `StreamServer.kt:860` dla `recordings`. Od Androida 11 katalog `Android/data/` **nie jest widoczny w galerii ani w większości menedżerów plików** — klipy są, ale użytkownik ich nie znajdzie. |
@@ -56,11 +56,13 @@ System automatycznego usuwania klipów oparty o trzy niezależne kryteria:
 ## Ustalenia
 
 ### Nazewnictwo
+
 `Klipy`, nie `nagrania`. `kamera_YYYY-MM-DD_HH-mm-ss.mp4` w katalogu
 `/sdcard/OcuBea/clips/`. Bez `v2`, `test`, `nowy` — nazwa ma opisywać
 zawartość, nie historię zmian.
 
 ### Kryteria są AND, nie OR
+
 Trzy niezależne reguły w jednej funkcji `shouldDelete(klip)`:
 
 ```kotlin
@@ -74,6 +76,7 @@ data class ClipInfo(
 ```
 
 Kasujemy gdy **którykolwiek** warunek jest prawdziwy:
+
 - `bytes` w sumie przekroczyło limit (najstarsze pierwsze)
 - `startedAtMs` starsze niż retencja
 - brak ruchu i klip nie ma jeszcze minimalnego czasu
@@ -84,8 +87,9 @@ zawierać zdarzenie, którego detektor nie zobaczył. Proponuję minimalne okno
 (np. 10 s) po którym klip bez ruchu odchodzi, konfigurowalne.
 
 ### Domyślne wartości (do potwierdzenia)
+
 | Parametr | Domyślnie | Uwagi |
-|---|---|---|
+| --- | --- | --- |
 | Limit miejsca | 4 GB | `StatFs` na `/sdcard` — procent jest zgubiony przy reserved |
 | Retencja | 7 dni | |
 | Minimalna długość klipu | 10 s | krótsze odrzucamy przy zapisie |
@@ -94,11 +98,13 @@ zawierać zdarzenie, którego detektor nie zobaczył. Proponuję minimalne okno
 | Rotacja pliku | co 60 s albo 32 MB | |
 
 ### Miejsce na dysku nie jest znane z góry
+
 `File("/sdcard/OcuBea/clips").usableSpace` — nie liczymy procentem z
 `getFreeSpace()`, bo partycja ma rezerwę systemową i limit procentowy daje
 mylący wynik.
 
 ### Detekcja ruchu
+
 Najtańsza sensowna metoda na CPU: downscalowana do 32×18 grayscale, porównanie
 z poprzednią klatką, `abs(a-b) > 8`, liczba zmienionych pikseli > 1% z
 progu. Zero zależności, ~0.2 ms na klatkę. MotionBoost MLKit byłby dokładniejszy
@@ -110,6 +116,7 @@ pełnych klatek. Zapis startuje po N kolejnych klatkach z ruchem (np. 2 s), żeb
 nie łapać pojedynczych szpilek.
 
 ### Format klipów
+
 Konsistentny z resztą aplikacji: fMP4, ten sam hardwarowy enkoder H.264 co HLS,
 ten sam `Fmp4Writer`. Klip = `init.mp4` + kolejne `moof+mdat`, konkatenowane
 do `.mp4`. Reuse istniejącego muxer zamiast pisać drugi.
@@ -121,11 +128,14 @@ zero długości. Klipy dostaną prawdziwy `mvhd.duration` z licznika próbek, a 
 zostawi jak jest (bo tam liczy go playlista).
 
 ### Rotacja
+
 Plik rośnie, `moof` doklejany co 250 ms. Pilnować dwóch rzeczy:
+
 - `tfdt` musi rosnąć monotonicznie wewnątrz pliku (rebase od 0 na początku klipu)
 - przy zamknięciu dopisać `mfra`/`mfro`, żeby klip dał się przewijać
 
 ### Wątek
+
 Detekcja, zapis i retencja w jednym wątku z `ExecutorService` — nie na
 wątku kamery. Kamera ma priorytet i nie może czekać na dysk. Synchronizacja z
 `FrameHub` przez istniejący mechanizm, nie przez dostep do `ImageProxy`
@@ -288,7 +298,7 @@ godzinami, więc głęboka kolejka nie była buforem, tylko kolejką oczekując�
 wątek, który nie nadjdzie.
 
 | wariant | `status.json` | `config.json` | FPS | odrzucone |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 4 wątki, kolejka 8 (przed) | timeout 6 s | timeout 6 s | 6 | 0 |
 | 8 wątków, kolejka 1 | 27 ms | 18 ms | 15 | 6 |
 
@@ -349,6 +359,7 @@ przy 1080p i 15 fps to około 87 KB na klatkę. Ustawienie `2000` sekund
 oznaczało około **2,6 GB** klatek, czyli natychmiastowy OOM na 512 MB.
 
 Ograniczenia są teraz w jednym miejscu (`MotionLimits`):
+
 - `preRecordSeconds`: 0–30 s, domyślnie 5;
 - `maxClipSeconds`: 5–600 s, domyślnie 30;
 - `maxBufferedFrames`: twardy limit 600 klatek (~52 MB), niezależny od
@@ -370,7 +381,7 @@ klatka nigdy nie jest rozwijana do 2 Mpx. Bitmapa jest natychmiast
 recyklingowana w `finally`, także gdy `inSampleSize` zwróciło 1.
 
 | pomiar | przed | po |
-|---|---|---|
+| --- | --- | --- |
 | 1 widz MJPEG | **6 fps**, proces 97% CPU | **15 fps**, proces 25% CPU |
 | PSS przy 1 widzu | 180 MB | 109 MB |
 | PSS bez widza | 135 MB | 135 MB |
@@ -395,7 +406,7 @@ Teraz `video_bitrate_kbps`, sterowany jednym suwakiem jakości.
 Zmierzone na urządzeniu, z potwierdzonym `bitrate=` w logu enkodera:
 
 | ustawione | HLS segment | klip |
-|---|---|---|
+| --- | --- | --- |
 | 800 kbps | 4,39 Mbps | 35,8 MB/min |
 | 4 400 kbps | 6,00 Mbps | 40,6 MB/min |
 | 12 000 kbps | 12,82 Mbps | 93,6 MB/min |
@@ -429,7 +440,7 @@ telefonie, z tym samym skryptem i z dwiema próbami na stronę, przy 12000 kbps
 i 1080p:
 
 | GOP | próba 1 | próba 2 | średnio |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 0 (IDR na każdej klatce) | 94,4 MB/min | 95,4 MB/min | **94,9 MB/min** (12,6 Mbps) |
 | 1 s | 60,8 MB/min | 61,1 MB/min | **61,0 MB/min** (8,1 Mbps) |
 
@@ -540,7 +551,7 @@ Test `HlsProfileTest.gop never exceeds the segment it has to fit in` pilnuje
 tej nierówności; przy złamanym klempie padają dwa testy.
 
 | Profil | Segment | GOP | `sync` | `buffer` |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `default` | 250 ms | co klatkę | 3 | 6 |
 | `low` | 120 ms | co klatkę | 1 | 2 |
 | `high` | 2000 ms | 1 s | 4 | 10 |
@@ -561,7 +572,7 @@ Pomiar z enkodera (`bytes` w `/status.json`, okno 20 s, dwa odczyty
 odejmowane), Redmi Note 10 Pro, 1080p:
 
 | Profil | Bitrate | CPU procesu | Realny `EXTINF` |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `low` | 5,83 / 5,68 Mbps | 131% / 124% | 0,186 / 0,183 s |
 | `high` | 5,78 / 5,30 Mbps | 113% / 103% | 2,059 / 3,150 s |
 
@@ -632,7 +643,7 @@ między testami jednostkowymi a zapisem APK. Trzy z nich renderują WebUI w
 Chromium, bo napisu spoza DOM-u nie da się sprawdzić testem JVM.
 
 | Skrypt | Co sprawdza | Dlaczego nie da się tego zrobić testem JVM |
-|---|---|---|
+| --- | --- | --- |
 | `strings_verify.js` | kompletność `values-pl/`, `%s`, duplikaty | brak tłumaczenia nie jest błędem Androida |
 | `i18n_verify.js` | każdy widoczny napis ma polski odpowiednik | napis spoza DOM-u nie istnieje bez renderu |
 | `layout_verify.js` | 5 szerokości × 2 języki, brak uciętych etykiet | polskie słowo bywa dłuższe niż angielskie |
@@ -677,6 +688,7 @@ trzeba sformułować inaczej.
 ## Kryterium sukcesu
 
 Test: nagraj 3 minuty z ruchem, potem godzinę bez. Sprawdź na urządzeniu:
+
 - liczba plików i łączny rozmiar mieszczą się w limitach
 - klip z ruchem zawiera ruch, klip bez ruchu nie powstał
 - `status.json` pokazuje `dropped` nie większe niż bez zapisu
@@ -711,6 +723,7 @@ wystarczy, że serwer przepuści preflight. To był mój własny błąd w rozmow
 nie w kodzie; kod był gorszy niż moje ówczesne stwierdzenie.
 
 Naprawa to **brak CORS zamiast zawężonego wildcards** (`CorsPolicy`):
+
 - same-origin nigdy nie patrzy na CORS, a WebUI jest serwowany z tego samego
   serwera i używa URL-i względnych — nagłówek nie jest mu potrzebny;
 - curl / aplikacja natywna / skrypty nie wysyłają `Origin` i CORS ich nie
@@ -789,7 +802,7 @@ NanoHTTPD zamyka każde *nowe* gniazdo — a więc również `/status.json` i
 `/shot.jpg`:
 
 | otwartych widzów | `/status.json` | `/shot.jpg` |
-|---|---|---|
+| --- | --- | --- |
 | 4 | 200 w 24 ms | 200 w 18 ms |
 | 6 | 200 w 478 ms | 200 w 15 ms |
 | **8** | **000 w 5 ms** | **000 w 6 ms** |
@@ -1060,7 +1073,7 @@ Wymagałoby to dwóch wariantów odpowiedzi albo osobnego `/login-status`.
 ## Pozostałe findingi audytu — ocenione
 
 | # | Treść | Ocena |
-|---|---|---|
+| --- | --- | --- |
 | F3 | Token w URL, propagowany przez UI i WebUI | **Potwierdzone, realne.** NanoHTTPD 2.3.1 **nie ma** mechanizmu logu żądań (brak `RequestLog` w jarze), więc nie wycieka do logu serwera. Kanały: historia przeglądarki, ekran (UI pokazuje 4 adresy z tokenem), `Referer`, shell history. Transport nagłówkowy działa równolegle. Zostawione — zmiana interfejsu to decyzja produktowa. |
 | F10 | ONVIF WS-Discovery na UDP 3702 bez autoryzacji | **Potwierdzone.** Kanał całkowicie poza `ApiAuth`: każdy host w LAN-ie dostaje `ProbeMatches` z nazwą, UUID, adresem i portem. Rekonesans bez mediów. ONVIF z definicji tak działa — NVR musi znaleźć kamerę. Naprawa = wyłączenie funkcji. |
 | F4 | Rotacja tokenu nie ubija otwartych strumieni | **Latent.** Zgadza się z naturą protokołu: NanoHTTPD sprawdza tylko na starcie połączenia, MJPEG trzyma wątek godzinami. Przy kamerze bezpieczeństwa warto świadomie zdecydować. |
@@ -1069,7 +1082,7 @@ Wymagałoby to dwóch wariantów odpowiedzi albo osobnego `/login-status`.
 | F9 | WebUI czyta `ocubea_token`, zapisuje tylko `ocubea_lang` | **Decyzja produktowa** (UX). `/login` jest publiczne i serwuje pełny WebUI, więc dostajesz UI, które wszystko wyciąga 401, bez pola logowania. |
 | F11 | `GetStreamUri` zwraca URL bez tokena | **Decyzja produktowa** — i jednocześnie **dowód**, że `/video` nie przepuszcza bez tokena. |
 | F12 | `OPTIONS` przed autoryzacją | **Latent.** Pusty 200, zero danych, odcisk usługi na porcie. |
-| F13 | Nieparytetyzowane `&&`/`||` w bramce publicznej | **Latent.** Poprawne przez precedencję Kotlina, ale cała bramka na niej stoi. |
+| F13 | Nieparytetyzowane `&&`/` | | ` w bramce publicznej | **Latent.** Poprawne przez precedencję Kotlina, ale cała bramka na niej stoi. |
 | F15 | Testy nie pokrywały gałęzi loopback | **Naprawione** w tej samej zmianie. |
 
 **Nie znalazłem** żadnego obejścia autoryzacji: `auth.check` jest wołane
@@ -1138,7 +1151,7 @@ Klip jest prawdziwym, odtwarzalnym H.264 z poprawnym `moov`.
 Trzy objawy wyglądały na jeden problem:
 
 | Objaw | Stan rzeczywisty |
-|---|---|
+| --- | --- |
 | `armed: false` przy `motion_record: true` | **prawda** — klip nie był uzbrojony w tej konkretnej sesji |
 | `/hls/index.m3u8` → 404 | **prawda** — HLS rzeczywiście nie startuje |
 | „klipy się nie nagrywają" | **fałsz** — nagrywały się przez cały czas |
@@ -1260,12 +1273,13 @@ ma długość jednej klatki.
 Pomiar na telefonie, wszystkie trzy profile:
 
 | profil | segment_ms (żądanie) | real_segment_ms | fps | segmentów |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | low | 120 | **88** | 11.3 | 63 |
 | default | 250 | **88** | 11.2 | 98 |
 | high | 2000 | **1263** | 11.2 | 4 |
 
 Dodane:
+
 - `HlsSession.lastSegmentDurationMs` — długość ostatnio ciętego segmentu,
   liczona z `tfdt` przez muxer, nie z profilu.
 - `real_segment_ms` w `/status.json` oraz w odpowiedzi `POST /hls/profile`.
@@ -1299,7 +1313,7 @@ przed pierwszą playlistą.
 14 klientów czytających `/audio.wav` po ~1.3 KB/s (pipe 64 KB się zapycha):
 
 | t | `/status.json` przy 14 klientach **audio** | przy 14 klientach `/status.json` |
-|---|---|---|
+| --- | --- | --- |
 | 3 s | TimeoutError | 200 |
 | 10-75 s | **ConnectionResetError** | 200 |
 | 90 s (po zwolnieniu) | 200 | 200 |
@@ -1311,7 +1325,7 @@ limitem — monitor był**.
 
 `AudioStreamManager.captureLoop` trzymał `synchronized(activeClients)` wokół
 `c.write(...)`, czyli wokół `PipedOutputStream.write` do klienta. Pipe pełny
-+ klient, który nie czyta = `write` blokuje **w trzymanym locku**. `addClient`
+- klient, który nie czyta = `write` blokuje **w trzymanym locku**. `addClient`
 blokuje na tym samym locku, a NanoHTTPD przypina kolejną odpowiedź do puli
 wątków. Po jej wyczerpaniu `AbortPolicy` odrzuca — **każdy endpoint odpowiada
 `ConnectionReset`**, nie tylko audio.
@@ -1341,7 +1355,7 @@ Po podłączeniu ADB (port 33379) zainstalowałem nowy APK i powtórzyłem ten s
 test. Wynik jest identyczny — `ConnectionResetError` na `/status.json`:
 
 | liczba klientów `/audio.wav` | `/status.json` |
-|---|---|
+| --- | --- |
 | 8 | 200 |
 | 9 | 200 |
 | 10 | 200 (`connections.active = 12`) |
@@ -1391,7 +1405,7 @@ Skoro nie można przenieść audio do innego basenu, trzeba **zmniejszyć koszt
 klienta tak, żeby jego porzucenie było tanie**. Stąd `AudioRingBuffer`:
 
 | | `PipedOutputStream` | `AudioRingBuffer` |
-|---|---|---|
+| --- | --- | --- |
 | `write` gdy klient nie czyta | **blokuje na zawsze** | zwraca `false`, klient odrzucony |
 | koszt porzucenia klienta | wątek serwera zajęty na stałe | mikrosekundy, wątek się zwija |
 | `close()` budzi czytającego | zależne od pipe | `signalAll` + `-1` z `read` |
@@ -1433,7 +1447,7 @@ kamerę — `camera=True`, zero `Device error received, code 3`.
 **Wynik: 14 i 20 klientów, którzy w ogóle nie czytają → `200` przez cały czas.**
 
 | t | 14 klientów audio | 20 klientów |
-|---|---|---|
+| --- | --- | --- |
 | 3 s | ConnectionReset | 200 |
 | 10–60 s | **200** | **200** |
 

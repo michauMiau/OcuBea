@@ -88,6 +88,7 @@ sprawdzić, że nagłówek występuje **dokładnie raz**.
 
 `tools/rtsp_interleaved_probe.py` — robi DESCRIBE/SETUP/PLAY po interleaved TCP,
 reasembluje RTP do Annex-B i wymaga:
+
 - co najmniej jednego SPS i jednego PPS,
 - **dokładnie jednego** bajtu nagłówkowego przed SPS (nie `67 67`),
 - `nal_unit_type` jednostek dostępu równe 5, nie 0.
@@ -104,6 +105,7 @@ reasembluje RTP do Annex-B i wymaga:
     ffmpeg:  97 klatek typu I, bez "illegal POC type 5" i bez "sps_id out of range"
 
 Błędy, które zniknęły po naprawie:
+
 - ~~`illegal POC type 5`~~
 - ~~`sps_id 1 out of range`~~
 - ~~`non-existing PPS 0 referenced`~~
