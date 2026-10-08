@@ -1,12 +1,12 @@
 # OcuBea
 
-## **THE** Lightweight IP Camera Streamer for Android
+## **THE** Lightweight IP Camera Streamer for Android 📷
 
 (insert photos or screenshots of the ui here, also a full logo)
 
 ## Requirements
 
-### Android 6 or later, that's it
+### Android 6 or later, that's it ✨
 
 This project is designed to run optimally on anything you can find in your drawer.
 
@@ -23,13 +23,14 @@ Hardware and permissions, as declared in the code:
 `..._MICROPHONE` for API 34), `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED`,
 `CHANGE_WIFI_MULTICAST_STATE`.
 
-## IS THIS PROJECT SLOP?
+## IS THIS PROJECT SLOP? 💀
 
 I wouldn't say this is slop, maybe just not recognized and mature enough.
 While this project has been vibecoded (and I'm not proud of it), I try to keep slop out of the project
-There are numerous tests, checks and lints to catch bad code on a surface level, additionaly I rigorously check the app to check for bugs and other slop.
+There are numerous tests, checks and lints to catch bad code on a surface level, additionaly I rigorously check the app to check for bugs and fix them.
 This project has been developed using only open-weight models (No Claude, ChatGPT here!)
-If this project has been useful to you I strongly suggest you donate to me, I have been building this project over several months, on a tight budget
+If this project has been useful to you I strongly suggest you donate to me, I have been building this project over several months, on a tight budget.
+
 `There's nothing like having your compiles fail because you only have 4GB of DDR3 on your machine`
 
 ### Current status
@@ -75,7 +76,7 @@ The API is the same as the IP Webcam API + a few new additions for new features.
 | Telemetry | `/status.json`, `/info`, `/sensors.json`, `/config.json`, `/codecs.json` |
 | ONVIF | `POST /onvif/*`, `/onvif/device_service`, `/onvif/describe` |
 
-## Building from source
+## 🏗️ Building from source
 
 ```bash
 ./gradlew assembleDebug

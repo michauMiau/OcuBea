@@ -44,10 +44,10 @@ jobs:
       # four such calls that had shipped: isHardwareAccelerated (API 29),
       # computeIfAbsent (API 24), updateAndGet (API 24) and withInitial (API 26).
       # abortOnError is set in build.gradle.kts, so this step fails the job.
-      - name: Run Android lint
+      - name: Run Android lint 
         run: ./gradlew lintDebug --no-daemon
 
-      - name: Build debug APK
+      - name: Build debug APK 🏗️
         run: ./gradlew assembleDebug --no-daemon
 
       # The release build exists to prove R8 kept the classes that are reached by
@@ -59,7 +59,7 @@ jobs:
       #
       # Unsigned on purpose. Release signing needs a key this workflow must not
       # have, and a keystore in CI would be worse than none.
-      - name: Build release APK (R8)
+      - name: Build release APK (R8) 🏗️
         run: ./gradlew assembleRelease --no-daemon
 
       # An unsigned release that assembles is the whole check. Reading the
@@ -67,7 +67,7 @@ jobs:
       # fails the build on missing classes it cannot resolve, and what it cannot
       # see by name is exactly what was verified by installing the signed
       # release on a device.
-      - name: Confirm the release APK exists
+      - name: Confirm the release APK exists ✅
         run: |
           ls -la app/build/outputs/apk/release/
           test -f app/build/outputs/apk/release/app-release-unsigned.apk
@@ -82,7 +82,7 @@ jobs:
       # pinned rather than assumed from the runner image. Nothing here needs a
       # third-party package -- stdlib only, deliberately, because a gate that
       # can fail on a missing pip install is a gate that gets skipped.
-      - name: Setup Python
+      - name: Setup Python 🐍
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -353,13 +353,13 @@ jobs:
       # deletes a clip. Run it against a device with tools/bulk_actions_verify.js
       # -- it is the check that caught the bulk buttons doing nothing.
 
-      - name: Upload APK as artifact
+      - name: Upload APK as artifact ⬆️
         uses: actions/upload-artifact@v4
         with:
           name: OcuBea.apk
           path: app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Upload debug APK
+      - name: Upload debug APK ⬆️
         uses: actions/upload-artifact@v4
         with:
           name: OcuBea-debug-${{ github.sha }}
