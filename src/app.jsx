@@ -188,12 +188,29 @@ const Slider = ({ value, min = 0, max = 100, step = 1, onInput, label, id }) => 
 // value is never used, and a slider spanning 0..100 would show numbers the
 // encoder ignores.
 const JpegQuality = ({ value, onInput }) => html`
-  <${Row} label=${t('jpegQuality')}>
-    <${Slider} id="jpeg-quality" min=${40} max=${100} step=${1}
-      value=${value} label=${t('jpegQuality')} onInput=${onInput} />
-    <span class="ctl-val">${value}</span>
-  </${Row}>
-`;
+    <${Row} label=${t('jpegQuality')}>
+      <${Slider} id="jpeg-quality" min=${40} max=${100} step=${1}
+        value=${value} label=${t('jpegQuality')} onInput=${onInput} />
+      <input
+        id="jpeg-quality-value"
+        class="val num"
+        type="number"
+        min="40"
+        max="100"
+        step="1"
+        value=${value}
+        aria-label=${t('jpegQuality')}
+        onChange=${(e) => {
+          // Clamped to the slider's own range rather than to the server's. The
+          // slider already refuses anything outside 40..100, so a field that
+          // accepted 10 would let the two disagree about what is set.
+          const typed = Math.max(40, Math.min(100, Math.round(+e.target.value || 0)));
+          if (typed === value) return;
+          onInput(typed);
+        }}
+      />
+    </${Row}>
+  `;
 
 // Stream orientation, as pydroid-ipcam names it.
 //
@@ -242,21 +259,11 @@ const HlsQuality = () => {
   </span>`;
 };
 
-const Toggle = ({ on, onChange, label, id }) => html`
-  <button
-    id=${id}
-    class=${'tgl' + (on ? ' on' : '')}
-    onClick=${() => onChange(!on)}
-    aria-label=${label}
-    aria-pressed=${on}
-  ></button>
-`;
-
 // The icon tile: one button language for optics, security, audio and
-// recording. It replaces the Toggle above, whose empty body and emoji pair
-// read as a mix of drawing styles rather than one control set, and it replaces
-// the Field row that used to wrap each setting, which made every setting a
-// full width labelled field stacked one per line.
+// recording. It replaces a Toggle that was defined here and never rendered:
+// its empty body and emoji pair read as a mix of drawing styles rather than one
+// control set, and it replaced the Field row that used to wrap each setting,
+// which made every setting a full width labelled field stacked one per line.
 //
 // The caption is always rendered, not a tooltip: the icon alone is not self
 // evident for "Odwróć kamery". It is var(--dim), about 5.5:1 on --panel, and
@@ -324,6 +331,35 @@ function LiveAudio({ codec, enabled, running }) {
   // one and rendering a dead player. `none` is the server's own word for it.
   const have = running && enabled && codec && codec !== 'none';
 
+  // Whether the stream has actually produced sound yet, as opposed to whether
+  // the user asked for it. The button shows the mute icon when audio is SILENT
+  // and the speaker icon when it is PLAYING, so it has to read the element and
+  // not the toggle's own state.
+  //
+  // Both of the bugs this replaced were the same mistake in opposite
+  // directions. The button drew the muted glyph whenever `on` was false,
+  // which it was on load and after every stop, even with audio audible. And
+  // `audioState` printed "wyciszone" in exactly the moments audio was playing,
+  // because it showed `on` rather than `el.paused`.
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const report = () => setPlaying(!el.paused && !el.ended);
+    // play/pause/ended fire on the element and are the only honest signal;
+    // the toggle's state is a wish, not an observation.
+    for (const ev of ['play', 'pause', 'ended', 'emptied']) {
+      el.addEventListener(ev, report);
+    }
+    report();
+    return () => {
+      for (const ev of ['play', 'pause', 'ended', 'emptied']) {
+        el.removeEventListener(ev, report);
+      }
+    };
+  }, [have, codec]);
+
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -339,10 +375,12 @@ function LiveAudio({ codec, enabled, running }) {
     // The cache-buster is once, not per state change: /audio.aac is a live
     // stream, and re-requesting it restarts the encoder's client list.
     el.src = '/audio.' + codec + '?nocache=' + Date.now();
-    el.load();
-    // The gesture that matters is the click on the toggle, and by the time this
-    // effect runs that gesture is over, so play() is called and its rejection
-    // is read. Autoplay policy shows up here as NotAllowedError.
+    // `preload="none"` on the element combined with load() then play() is what
+    // produced AbortError. load() starts a fetch and play() interrupts it with
+    // a second one; the browser cancels the first and the play promise rejects
+    // with AbortError, which is what the user saw in the status line while the
+    // audio was plainly audible. Assigning src and calling play() directly lets
+    // the one fetch the element starts serve the play.
     const p = el.play();
     if (p && p.catch) {
       p.catch((e) => {
@@ -368,17 +406,17 @@ function LiveAudio({ codec, enabled, running }) {
     <audio ref=${ref} preload="none"></audio>
     <button
       id="bAud"
-      class=${'tgl' + (on ? ' on' : '')}
-      aria-label=${on ? t('audioMuted') : t('audioOn')}
-      aria-pressed=${on}
-      title=${on ? t('audioMuted') : t('audioOn')}
+      class=${'tgl' + (playing ? ' on' : '')}
+      aria-label=${playing ? t('audioOn') : t('audioMuted')}
+      aria-pressed=${playing}
+      title=${playing ? t('audioOn') : t('audioMuted')}
       disabled=${!have}
       onClick=${() => setOn(!on)}
     >
-      <span aria-hidden="true">${on ? '\u{1F507}' : '\u{1F50A}'}</span>
+      <span aria-hidden="true">${playing ? '\u{1F50A}' : '\u{1F507}'}</span>
     </button>
     <span class="dim" id="audioState">
-      ${err ? err : have ? (on ? t('audioOn') : t('audioMuted')) : t('audioOff')}
+      ${err ? err : have ? (playing ? t('audioOn') : t('audioMuted')) : t('audioOff')}
     </span>
   </div>`;
 }
@@ -467,7 +505,17 @@ function StreamControls({ boxRef, codec, enabled, running }) {
     >
       <span aria-hidden="true">♪</span><span class="sr">${t('openAudio')}</span>
     </button>
-    ${msg && html`<span class="dim">${msg}</span>`}
+    ${
+      /* The message sat in a flex row of icon buttons with `gap`, so it had
+               no width of its own and got clipped mid-sentence: "Przeglądarka
+               zablokowała nowe ..." on the phone. Wrapping it onto its own line
+               below the buttons is the fix; a `flex-wrap` on the row would have
+               done the same, but the message is a consequence of the click rather
+               than another control, so it belongs off the row.
+
+               The `.dim` class alone did nothing about width -- it is a colour. */
+      msg && html`<span class="dim streammsg">${msg}</span>`
+    }
   </div>`;
 }
 
@@ -785,29 +833,40 @@ function App() {
   return html`
     <div class="topbar">
       <header>
-      <h1>OcuBea</h1>
-      <span class=${'pill ' + (running ? 'on' : 'off')}>
-        ${running ? '● ' + t('live') : '○ ' + t('stopped')}
-      </span>
-      <span class="pill">${s.fps || 0} ${t('fps')}</span>
-      ${!online && html`<span class="pill off">${t('phoneOffline')}</span>`}
-      <button
-        class="lang"
-        title=${t('language')}
-        onClick=${() => {
-          // lang, not T: T is the resolved translation table, so comparing it
-          // to 'pl' was always false and the button always offered EN.
-          localStorage.setItem('ocubea_lang', lang === 'pl' ? 'en' : 'pl');
-          location.reload();
-        }}
-      >
-        ${lang.toUpperCase()}
-      </button>
-    </header>
-      ${/* The status row lives in the top bar, above the picture. It was a
-          <section> of its own after the stream, so the encoder readout was
-          under the video the user was watching. Same dt/dd pairs, rendered as
-          inline chips so the bar is one line rather than a second card.*/ null}
+        <h1>OcuBea</h1>
+        <span class=${'pill ' + (running ? 'on' : 'off')}>
+          ${running ? '● ' + t('live') : '○ ' + t('stopped')}
+        </span>
+        <span class="pill">${s.fps || 0} ${t('fps')}</span>
+        ${!online && html`<span class="pill off">${t('phoneOffline')}</span>`}
+        <button
+          class="lang"
+          title=${t('language')}
+          onClick=${() => {
+            // lang, not T: T is the resolved translation table, so comparing it
+            // to 'pl' was always false and the button always offered EN.
+            localStorage.setItem('ocubea_lang', lang === 'pl' ? 'en' : 'pl');
+            location.reload();
+          }}
+        >
+          ${lang.toUpperCase()}
+        </button>
+      </header>
+      ${
+        /* Two status bars rendered the same numbers twice. Measured on the
+           Android 16 phone at 1280x800: one chip row at y=34 and another at
+           y=956, both `display:flex`, one reporting FPS / encoder / viewers /
+           resolution / segments / uptime / dropped and the other bitrate /
+           frames / effect. Everything the top bar shows was already there, so
+           the lower row repeated two values and added three that appear
+           nowhere else.
+
+           The three move up rather than being deleted, because bitrate, frame
+           count and the active effect are not in the top row and a frame
+           counter nobody can see is not telemetry. The row wraps to a second
+           line on a narrow screen, which is what `flex-wrap` is for. */
+        null
+      }
       <div class="statusbar">
         <dl class="chips">
           <span class="chip">
@@ -838,14 +897,28 @@ function App() {
             <dt>${t('dropped')}</dt>
             <dd>${(s.pipeline && s.pipeline.dropped_saturated) || s.dropped || 0}</dd>
           </span>
+          <span class="chip">
+            <dt>${t('bitrate')}</dt>
+            <dd>${s.video_bitrate_kbps ? s.video_bitrate_kbps + ' kbps' : t('off')}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('frames')}</dt>
+            <dd>${s.frames != null ? s.frames : t('off')}</dd>
+          </span>
+          <span class="chip">
+            <dt>${t('effect')}</dt>
+            <dd>${s.effect || t('off')}</dd>
+          </span>
         </dl>
       </div>
     </div>
 
     <main>
-      ${/* Picture and audio in one box: the speaker control belongs next to the
+      ${
+        /* Picture and audio in one box: the speaker control belongs next to the
           stream it controls, not three sections further down under the
-          security panel.*/ null}
+          security panel.*/ null
+      }
       <div class="stage">
         <${Stream}
           mode=${mode}
@@ -934,7 +1007,27 @@ function App() {
               act(ptz, { zoom: Math.max(1.01, level).toFixed(2) });
             }}
           />
-          <span class="val">${zoomLevel.toFixed(1)}×</span>
+          <input
+            id="zoom-value"
+            class="val num"
+            type="number"
+            inputmode="decimal"
+            min="1.0"
+            max=${zoomMax.toFixed(1)}
+            step="0.1"
+            value=${zoomLevel.toFixed(1)}
+            aria-label=${t('zoom')}
+            onChange=${(e) => {
+              // A typed value has to go through the same mapping as the drag,
+              // or the field would report one number while the camera held
+              // another. The same 1.01 floor applies: 1.00 is a step, not a
+              // level, to the phone.
+              const typed = +e.target.value;
+              if (!Number.isFinite(typed) || typed <= 1) return;
+              const level = 1 + (zoomMax - 1) * ((typed - 1) / (zoomMax - 1 || 1));
+              act(ptz, { zoom: Math.max(1.01, level).toFixed(2) });
+            }}
+          />
         <//>
         <div class="tiles">
           <${Tile}
@@ -952,11 +1045,13 @@ function App() {
             momentary=${true}
             icon="M12 18v-3M12 6V3M6 12H3M21 12h-3M7 7l1.8-1.8M15.2 7l1.8-1.8M7 17l1.8 1.8M15.2 17l1.8 1.8"
           />
-          ${/* ffc is the one endpoint that genuinely implements "toggle": it
+          ${
+            /* ffc is the one endpoint that genuinely implements "toggle": it
               reads the camera state and inverts it (StreamServer.kt:890).
               "front"/"back" are NOT accepted -- the arm checks value == "on",
               so set=front answers "ok" and changes nothing, which is a second
-              way of getting a dead-looking control. Verified on the phone.*/ null}
+              way of getting a dead-looking control. Verified on the phone.*/ null
+          }
           <${Tile}
             id="bFlip"
             on=${!!s.front_camera}
@@ -1006,29 +1101,13 @@ function App() {
           options=${(s.avail && s.avail.orientation) || ORIENTATIONS}
           onChange=${(v) => act(setSetting, 'orientation', v, poll)}
         />
-        ${/* The image section used to be a card of its own for three
-            read-only numbers, which the user called useless. It is now three
-            chips on the end of the optics row: same dl data, no separate box.*/ null}
-        <dl class="chips">
-          <span class="chip">
-            <dt>${t('bitrate')}</dt>
-            <dd>${s.video_bitrate_kbps ? s.video_bitrate_kbps + ' kbps' : t('off')}</dd>
-          </span>
-          <span class="chip">
-            <dt>${t('frames')}</dt>
-            <dd>${s.frames != null ? s.frames : t('off')}</dd>
-          </span>
-          <span class="chip">
-            <dt>${t('effect')}</dt>
-            <dd>${s.effect || t('off')}</dd>
-          </span>
-        </dl>
       </section>
 
       <section>
         <h2>${t('security')}</h2>
         <div class="tiles cols-2">
-          ${/* onChange receives the NEXT state, not the current one. These two
+          ${
+            /* onChange receives the NEXT state, not the current one. These two
               call sites used to discard it and send the literal string
               "toggle", which the phone reads as a fixed value: for
               night_vision ("value != off") that is always ON, for
@@ -1036,7 +1115,8 @@ function App() {
               could not be turned off and motion could not be turned back on
               -- the button looked fine and did the opposite of what its label
               said. Sending the real state works for every setting and needs no
-              server-side toggle.*/ null}
+              server-side toggle.*/ null
+          }
           <${Tile}
             id="bNight"
             on=${!!s.night_vision}
@@ -1282,7 +1362,9 @@ function App() {
           <dt>${t('battery')}</dt>
           <dd>${sensors && sensors.battery ? sensors.battery.level + '%' : t('off')}</dd>
           <dt>${t('storage')}</dt>
-          <dd>${sensors && sensors.storage ? bytes(sensors.storage.free_mb * 1048576) : t('off')}</dd>
+          <dd>
+            ${sensors && sensors.storage ? bytes(sensors.storage.free_mb * 1048576) : t('off')}
+          </dd>
         </dl>
       </section>
 

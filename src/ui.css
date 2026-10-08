@@ -545,9 +545,44 @@ button.big.primary-weight {
 .row input[type='range'] {
   flex: 1 1 auto;
   min-width: 0;
+  /* The user called these "excessively wide" and the measurement agrees:
+     at a 1280px viewport inside an 860px `main` they rendered 693-716px
+     wide, so the track occupied 82% of the content column and a 1px change
+     needed a mouse drag across most of the screen. Capping it keeps the drag
+     proportional to the precision the setting actually has -- JPEG quality
+     moves in steps of 1 across 40..100, so a 560px track is already finer
+     than the hand can aim. `max-width` rather than a fixed one, so a narrow
+     window still shrinks the track instead of overflowing. */
+  max-width: 340px;
+}
+/* The numeric readout next to a slider was a plain <span>, so it could only be
+   read. Making it a number input puts the cursor in it on click, which is what
+   "no numeric input when hovering over the number" asked for: type 82 and the
+   encoder gets 82 instead of a drag that happens to land near it. 74px fits
+   four digits at the 13px field font with the existing padding, so nothing is
+   cut when the setting reaches 1000 (segment length does). */
+.row input[type='number'].num {
+  flex: 0 0 74px;
+  width: 74px;
+  padding: 5px 6px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .row .val {
   flex: 0 0 auto;
+}
+/* The message under the stream controls gets its own line so the sentence is
+   readable. It was a `<span class="dim">` inside the button row, and `dim` is
+   a colour class, so the span had no width of its own and ellipsised at the
+   edge of the flex row: "Przeglądarka zablokowała nowe ..." on the phone.
+   `flex-basis: 100%` takes it out of that row entirely; the block display lets
+   it wrap at word boundaries instead of being cut. */
+.streammsg {
+  display: block;
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 /* Dłuższe polskie etykiety nie mieszczą się w wąskim przycisku obok
      "Nagrywaj po ruchu", a "overflow:hidden" ucinałby tekst w połowie słowa.
@@ -619,7 +654,9 @@ input[type='range']::-webkit-slider-thumb {
   box-shadow: 0 0 0 1px var(--acc);
 }
 input[type='range']:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 2px var(--acc), 0 0 0 4px rgba(76, 175, 80, 0.35);
+  box-shadow:
+    0 0 0 2px var(--acc),
+    0 0 0 4px rgba(76, 175, 80, 0.35);
 }
 input[type='range']::-moz-range-track {
   height: 6px;
