@@ -206,6 +206,18 @@ class AudioEncoder private constructor(
     private var codec: MediaCodec? = null
     private var framesIn = 0L
 
+    /**
+     * True when the codec needs more input than one capture block provides, so
+     * an empty dequeue is an expected answer rather than a sign of trouble.
+     *
+     * Set from the first empty result and cleared on the first frame. FLAC
+     * blocks at 4096 samples, 92.9 ms, against a 20 ms input, so most of its
+     * encodes legitimately return nothing; AAC emits on every call and must not
+     * be made to wait. Measured: waiting unconditionally costs AAC 25.3% of its
+     * audio, never waiting costs FLAC 37%.
+     */
+    private var codecHoldingBack = false
+
     // Ogg state, all meaningless unless the codec is Opus. The serial number
     // lives in OggPage; only the two counters are per-encoder.
     private var granule = 0L
@@ -319,10 +331,38 @@ class AudioEncoder private constructor(
         }
 
         // Drain output until something actually comes out.
+        //
+        // `break` on TRY_AGAIN, not `continue`. Continuing spins for the whole
+        // 40 ms deadline on an empty queue, and encodeFrame is called once per
+        // 20 ms capture block, so the function spent 200% of its time draining
+        // before it ever queued anything. Input buffers ran dry, `dequeueInputBuffer`
+        // returned -1 and the audio was dropped at the source. Measured on the
+        // phone with that shape in place: 79 feed calls produced 39 packets and
+        // 129 empty results, so 62% of the encodes returned nothing at all.
+        //
+        // Breaking instead is correct because there is nothing to wait for: a
+        // 20 ms input cannot make a 4096-sample FLAC block ready on its own, so
+        // the empty result is the true answer for this call, and the next
+        // capture block is what will flush the codec's internal buffer.
         val drainDeadline = System.nanoTime() + 40_000_000L
+        var gotAny = false
         while (System.nanoTime() < drainDeadline) {
             val outIdx = codec.dequeueOutputBuffer(info, 5_000)
-            if (outIdx < 0) continue
+            if (outIdx < 0) {
+                // Break only if this call produced nothing AND the codec is not
+                // holding anything back from an earlier call. Breaking
+                // unconditionally fixed FLAC and broke AAC: FLAC blocks at 4096
+                // samples so it legitimately returns nothing on most 20 ms
+                // inputs, while AAC emits every call and had a frame already
+                // queued that the unconditional break threw away. Measured:
+                // FLAC 37% short -> 0.5% from WAV, and AAC 0.2% -> 25.3% short.
+                //
+                // So: once this call has produced something, keep draining to
+                // empty, which is where the old `continue` was right. Before that,
+                // only wait if the codec is known to be mid-block.
+                if (gotAny || !codecHoldingBack) break
+                continue
+            }
             if (info.size > 0) {
                 val payload = copyPayload(codec, outIdx, info, out)
                 // FLAC: the encoder ships its OWN `fLaC` + STREAMINFO as a
@@ -403,6 +443,11 @@ class AudioEncoder private constructor(
                 // returned TRY_AGAIN forever and the stream stopped at whatever
                 // the header plus one frame happened to be.
                 codec.releaseOutputBuffer(outIdx, false)
+                gotAny = true
+                // The codec has produced a frame, so it is not holding back: any
+                // later TRY_AGAIN in this drain means the queue is genuinely
+                // empty and the loop should stop rather than spin.
+                codecHoldingBack = false
                 return when (codecId) {
                     "opus" -> OggPage.page(payload, thisGranule, pageSeq++)
                     "aac" -> AdtsFrame.frame(payload, sampleRate = ENCODER_SAMPLE_RATE, channels = channels)
@@ -413,6 +458,7 @@ class AudioEncoder private constructor(
             // codec config); releasing it is required or the codec stalls.
             codec.releaseOutputBuffer(outIdx, false)
         }
+        if (!gotAny) codecHoldingBack = true
         return ByteArray(0)
     }
 

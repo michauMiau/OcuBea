@@ -174,6 +174,17 @@ class AudioStreamManager(private val context: Context) {
         if (!canRecord()) throw SecurityException("RECORD_AUDIO permission not granted")
 
         val bufSize = getMinBufferSize().coerceAtLeast(4096)
+        // The capture block size decides everything downstream, and nothing
+        // states what it actually is: `getMinBufferSize()` returns a
+        // device-dependent value the app never learns, and the encoded path
+        // re-blocks those bytes into fixed FRAME_SAMPLES regardless. Logged so
+        // the block sizes can be compared against each other instead of
+        // assumed equal.
+        Log.i(
+            "OcuBeaAudio",
+            "capture bufSize=$bufSize B (${bufSize / 2} samples, " +
+                "${bufSize * 1000 / (SAMPLE_RATE * 2)} ms) at $SAMPLE_RATE Hz"
+        )
         val record = AudioRecord(
             MediaRecorder.AudioSource.MIC, SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT, bufSize
         )

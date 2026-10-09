@@ -78,7 +78,8 @@ class AudioEncoderFanOut(
         "feed_calls" to feedCalls,
         "feed_misses" to feedMisses,
         "packets_out" to packetsOut,
-        "empty_out" to emptyOut
+        "empty_out" to emptyOut,
+        "carry_bytes" to carryBytes()
     )
 
     fun clients(): Int = clientCount
@@ -269,6 +270,18 @@ class AudioEncoderFanOut(
     }
 
     // ── carry ring, all of it under the caller's hold on `carry` ──────────
+
+    /**
+     * Bytes held back because they do not add up to a whole [AudioEncoder.FRAME_BYTES]
+     * block yet.
+     *
+     * Published because this is where audio can disappear silently: the capture
+     * block is whatever `getMinBufferSize()` returned and the encoded path
+     * consumes only whole frames, so a remainder accumulates and is never
+     * flushed. A carry that grows without bound is audio that will never be
+     * encoded; one that stays under FRAME_BYTES is the expected residue.
+     */
+    fun carryBytes(): Int = synchronized(carry) { carryLen }
 
     private fun pending(): Int = carryLen
 
