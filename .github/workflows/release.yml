@@ -173,18 +173,30 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
           SIGNED: ${{ steps.apk.outputs.signed }}
         run: |
-          # The notes are generated, so re-running on the same tag replaces the
-          # release rather than failing on an existing one. A release that cannot
-          # be rebuilt is a release that cannot be corrected.
           printf '%s\n' \
             '<!-- generated from commit subjects by release.yml; edit the commits, not this -->' \
             > "$RUNNER_TEMP/notes_final.md"
           cat "$RUNNER_TEMP/notes.md" >> "$RUNNER_TEMP/notes_final.md"
-          gh release create "$TAG" \
-            "${{ steps.apk.outputs.path }}" \
-            --title "$TAG" \
-            --notes-file "$RUNNER_TEMP/notes_final.md" \
-            --clobber
+          # The notes are generated, so re-running on the same tag has to
+          # replace the release rather than fail on the existing one. There is no
+          # --clobber on `gh release create`: it is not a flag, so passing it
+          # prints the usage text and exits 1 before creating anything. Verified
+          # on the runner's own gh, which is what the failing step was.
+          #
+          # `gh release edit` covers the same need and exists on every version.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              "${{ steps.apk.outputs.path }}" \
+              --clobber
+            gh release edit "$TAG" \
+              --notes-file "$RUNNER_TEMP/notes_final.md" \
+              --title "$TAG"
+          else
+            gh release create "$TAG" \
+              "${{ steps.apk.outputs.path }}" \
+              --title "$TAG" \
+              --notes-file "$RUNNER_TEMP/notes_final.md"
+          fi
 
       - name: Upload the release APK
         uses: actions/upload-artifact@v4

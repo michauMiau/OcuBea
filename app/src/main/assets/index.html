@@ -4,12 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0d1117">
+<meta name="ocubea-build" content="e8355191">
 <title>OcuBea</title>
-<link rel="icon" type="image/png" href="/favicon.ico?v=58ef0feb">
-<!-- The query is the build id: a browser that cached the old icon under
-     the bare path never sees this URL again, so a changed favicon lands
-     without asking the user to hard-reload. Cache-Control alone only
-     bounds how long the stale copy survives, this retires it. -->
+<link rel="icon" type="image/png" href="/favicon.ico">
+<!-- No query string on the icon, deliberately. A build-id query here means a
+     browser treats every build as a brand new URL, so the favicon can never be
+     served from cache and the entry grows one dead URL per build. Changing the
+     icon then means editing the file, which is the point: the icon is part of
+     the app, not a build artefact, and it should look the same on every
+     install. Cache-Control on the response is what bounds a stale copy. -->
 <style>
 :root {
   --bg: #0d1117;
@@ -581,6 +584,61 @@ button.big.primary-weight {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+/* Optics: sliders and selects on one side, the icon tiles on the other.
+ *
+ * The user asked for this twice. The first attempt capped the sliders at 340px
+ * and left both groups stacked, which is the thing they explicitly did not want
+ * -- a shorter slider is not a side-by-side layout.
+ *
+ * `minmax(0, 1.15fr)` on the control column rather than `1fr`: the selects carry
+ * option text that must not be truncated, and a 1fr track clips them first at
+ * narrow widths. The tile column is content-sized (`auto`) so three tiles take
+ * only what their captions need instead of half the row.
+ *
+ * Below 720px the grid drops to one column and the tiles move under the
+ * controls. Two columns at phone width put each slider at ~150px, which is
+ * shorter than the tap target for a one-step change.
+ */
+section.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) auto;
+  gap: 8px 14px;
+  align-items: start;
+}
+section.split h2.span2 {
+  grid-column: 1 / -1;
+}
+/* The tile column is its own grid so it can stay 3 tracks wide no matter how
+   narrow the control column becomes; `grid-column: 2` pins it right of the
+   sliders instead of letting auto-placement find a free cell below. */
+section.split .col-tiles {
+  grid-column: 2;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(84px, max-content));
+  gap: 8px;
+}
+/* Second control column: resolution and orientation continue under the first,
+   so the four sliders and selects form one left-hand stack. */
+section.split .col-ctl + .col-tiles + .col-ctl {
+  grid-column: 1;
+}
+@media (max-width: 720px) {
+  section.split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  section.split .col-tiles,
+  section.split .col-ctl + .col-tiles + .col-ctl {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+/* Inside the split the track gets the whole column, so the earlier 340px cap
+   would fight the layout instead of helping it. */
+section.split input[type='range'] {
+  max-width: none;
+}
+
 .row .val {
   flex: 0 0 auto;
 }
@@ -1487,14 +1545,7 @@ Schedule: ${l.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
             <dt>${P("bitrate")}</dt>
             <dd>${C.video_bitrate_kbps?C.video_bitrate_kbps+" kbps":P("off")}</dd>
           </span>
-          <span class="chip">
-            <dt>${P("frames")}</dt>
-            <dd>${C.frames!=null?C.frames:P("off")}</dd>
-          </span>
-          <span class="chip">
-            <dt>${P("effect")}</dt>
-            <dd>${C.effect||P("off")}</dd>
-          </span>
+          ${null}
         </dl>
       </div>
     </div>
@@ -1555,31 +1606,50 @@ Schedule: ${l.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
         </div>
       </section>
 
-      <section>
-        <h2>${P("optics")}</h2>
-        <${et} label=${P("zoom")}>
-          <${Gs}
-            value=${Math.round((B-1)*100)}
-            max=${Math.round((G-1)*100)}
-            step=${1}
-            id="zoom"
-            label=${P("zoom")}
-            onInput=${O=>{let Y=1+(G-1)*(O/(Math.round((G-1)*100)||1));M(Ua,{zoom:Math.max(1.01,Y).toFixed(2)})}}
+      <section class="split">
+        <h2 class="span2">${P("optics")}</h2>
+        <div class="col-ctl">
+          <${et} label=${P("zoom")}>
+            <${Gs}
+              value=${Math.round((B-1)*100)}
+              max=${Math.round((G-1)*100)}
+              step=${1}
+              id="zoom"
+              label=${P("zoom")}
+              onInput=${O=>{let Y=1+(G-1)*(O/(Math.round((G-1)*100)||1));M(Ua,{zoom:Math.max(1.01,Y).toFixed(2)})}}
+            />
+            <input
+              id="zoom-value"
+              class="val num"
+              type="number"
+              inputmode="decimal"
+              min="1.0"
+              max=${G.toFixed(1)}
+              step="0.1"
+              value=${B.toFixed(1)}
+              aria-label=${P("zoom")}
+              onChange=${O=>{let Y=+O.target.value;if(!Number.isFinite(Y)||Y<=1)return;let ne=1+(G-1)*((Y-1)/(G-1||1));M(Ua,{zoom:Math.max(1.01,ne).toFixed(2)})}}
+            />
+          <//>
+          <${gp}
+            value=${C.jpeg_quality!=null?C.jpeg_quality:82}
+            onInput=${O=>M(Fe,"jpeg_quality",O,D)}
           />
-          <input
-            id="zoom-value"
-            class="val num"
-            type="number"
-            inputmode="decimal"
-            min="1.0"
-            max=${G.toFixed(1)}
-            step="0.1"
-            value=${B.toFixed(1)}
-            aria-label=${P("zoom")}
-            onChange=${O=>{let Y=+O.target.value;if(!Number.isFinite(Y)||Y<=1)return;let ne=1+(G-1)*((Y-1)/(G-1||1));M(Ua,{zoom:Math.max(1.01,ne).toFixed(2)})}}
-          />
-        <//>
-        <div class="tiles">
+          <${et} label=${P("effect")}>
+            <select
+              id="effect"
+              class="ctl"
+              value=${C.effect||"none"}
+              aria-label=${P("effect")}
+              onChange=${O=>M(Fe,"effect",O.target.value,D)}
+            >
+              ${op.map(([O,Y])=>ce`<option value=${O} selected=${(C.effect||"none")===O}>
+                    ${P(Y)}
+                  </option>`)}
+            </select>
+          <//>
+        </div>
+        <div class="col-tiles">
           <${Yt}
             id="bTorch"
             on=${!!C.torch}
@@ -1593,7 +1663,7 @@ Schedule: ${l.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
             label=${P("autofocus")}
             onChange=${()=>M(Wu,.5,.5)}
             momentary=${!0}
-            icon="M12 18v-3M12 6V3M6 12H3M21 12h-3M7 7l1.8-1.8M15.2 7l1.8-1.8M7 17l1.8 1.8M15.2 17l1.8 1.8"
+            icon="M12 18v-3M12 6V3M6 12H3M21 12h-3M7 7l1.8-1.8M15.2 7l1.8 1.8M7 17l1.8 1.8M15.2 17l1.8 1.8"
           />
           ${null}
           <${Yt}
@@ -1604,41 +1674,26 @@ Schedule: ${l.map(m=>We(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
             icon="M4 8V5a1 1 0 011-1h3M20 8V5a1 1 0 00-1-1h-3M4 16v3a1 1 0 001 1h3M20 16v3a1 1 0 01-1 1h-3M4 12h16"
           />
         </div>
-        <${et} label=${P("effect")}>
-          <select
-            id="effect"
-            class="ctl"
-            value=${C.effect||"none"}
-            aria-label=${P("effect")}
-            onChange=${O=>M(Fe,"effect",O.target.value,D)}
-          >
-            ${op.map(([O,Y])=>ce`<option value=${O} selected=${(C.effect||"none")===O}>
-                  ${P(Y)}
-                </option>`)}
-          </select>
-        <//>
-        <${et} label=${P("quality")}>
-          <select
-            id="quality"
-            class="ctl"
-            value=${Zu(C.resolution)}
-            aria-label=${P("quality")}
-            onChange=${O=>M(Fe,"quality",O.target.value,D)}
-          >
-            ${lp.map(([O,Y])=>ce`<option value=${O} selected=${Zu(C.resolution)===O}>
-                  ${Y}
-                </option>`)}
-          </select>
-        <//>
-        <${gp}
-          value=${C.jpeg_quality!=null?C.jpeg_quality:82}
-          onInput=${O=>M(Fe,"jpeg_quality",O,D)}
-        />
-        <${mp}
-          value=${C.orientation||"landscape"}
-          options=${C.avail&&C.avail.orientation||dp}
-          onChange=${O=>M(Fe,"orientation",O,D)}
-        />
+        <div class="col-ctl">
+          <${et} label=${P("quality")}>
+            <select
+              id="quality"
+              class="ctl"
+              value=${Zu(C.resolution)}
+              aria-label=${P("quality")}
+              onChange=${O=>M(Fe,"quality",O.target.value,D)}
+            >
+              ${lp.map(([O,Y])=>ce`<option value=${O} selected=${Zu(C.resolution)===O}>
+                    ${Y}
+                  </option>`)}
+            </select>
+          <//>
+          <${mp}
+            value=${C.orientation||"landscape"}
+            options=${C.avail&&C.avail.orientation||dp}
+            onChange=${O=>M(Fe,"orientation",O,D)}
+          />
+        </div>
       </section>
 
       <section>

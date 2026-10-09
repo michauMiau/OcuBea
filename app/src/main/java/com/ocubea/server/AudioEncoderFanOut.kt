@@ -253,6 +253,16 @@ class AudioEncoderFanOut(
                 if (out.isNotEmpty()) {
                     packetsOut++
                     target.broadcast(out, out.size)
+                } else {
+                    // encodeFrame() returns empty whenever the codec buffers
+                    // instead of emitting a frame, and an empty result is
+                    // indistinguishable from a frame of silence unless it is
+                    // counted. These two counters existed and were published in
+                    // /status.json but nothing ever incremented emptyOut, so
+                    // they read 0 forever and could never show a codec that had
+                    // stopped producing frames. Counted here, where the frame
+                    // that failed is still in scope.
+                    emptyOut++
                 }
             }
         }
