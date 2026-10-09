@@ -264,6 +264,25 @@ class AudioEncoder private constructor(
             configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             start()
         }
+        // What the encoder says it works in, next to what this class feeds it.
+        //
+        // FRAME_SAMPLES is 960 for every codec, and FLAC has been losing about
+        // 18% of its audio while AAC is within 2%. If the encoder reports a
+        // different block size from 960 then the fan-out is feeding it in the
+        // wrong unit and that is the defect, stated by the platform rather than
+        // inferred. If it reports 960, the mismatch theory is wrong and the loss
+        // is somewhere this log does not reach.
+        //
+        // Reads the started codec's own input and output formats, not the
+        // `format` above: the encoder is free to adjust it during configure, and
+        // that adjustment is exactly what is being looked for.
+        runCatching {
+            val inFmt = codec?.inputFormat
+            Log.i(
+                TAG,
+                "$codecId after start: input=${inFmt}, output=${codec?.outputFormat}"
+            )
+        }
     }
 
     private fun effectiveBitrate(bitrate: Int): Int = when (codecId) {

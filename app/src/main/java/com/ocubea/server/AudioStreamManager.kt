@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -33,6 +34,19 @@ class AudioStreamManager(private val context: Context) {
 
     private val activeClients = AudioFanOut()
     private val clients = AtomicInteger(0)
+
+    /**
+     * Distinct sizes `AudioRecord.read` has returned, with how often each
+     * happened, so the block size reaching the encoded path can be stated
+     * instead of assumed.
+     *
+     * A capture buffer of 4096 B that yields reads of 4096 B every time is one
+     * case; yields of 2048 or a mix of sizes is another, and the fan-out's
+     * fixed 960-sample framing only makes sense for the first. FLAC losing 18%
+     * of its audio while AAC is within 2% is consistent with the codec seeing a
+     * block size that is not a whole number of its own frames.
+     */
+    private val readSizes = ConcurrentHashMap<Int, AtomicInteger>()
     private var audioRecord: AudioRecord? = null
     private val executor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "ocubea-audio").apply { isDaemon = true }
@@ -99,6 +113,23 @@ class AudioStreamManager(private val context: Context) {
      * the outside without these numbers.
      */
     fun encodedStats(): Map<String, Int> = encoded?.stats() ?: emptyMap()
+
+    /**
+     * Records one observed read size and logs a summary every hundred reads.
+     *
+     * Called from the capture thread only, which is why [readSizes] needs no
+     * extra synchronisation beyond the map's own.
+     */
+    private fun recordReadSize(size: Int) {
+        val counter = readSizes.computeIfAbsent(size) { AtomicInteger() }
+        val total = counter.incrementAndGet()
+        if (total % 100 == 0) {
+            val sizes = readSizes.entries
+                .sortedBy { it.key }
+                .joinToString(", ") { "${it.key} B x${it.value.get()}" }
+            Log.i("OcuBeaAudio", "read sizes after $total reads: $sizes")
+        }
+    }
 
     /** Per-client sink. Returning false (or throwing) from [write] drops it. */
     class Client(val write: (ByteArray, Int) -> Boolean, val onDisconnect: () -> Unit) {
@@ -210,6 +241,14 @@ class AudioStreamManager(private val context: Context) {
             while (capturing) {
                 val read = record.read(buffer, 0, buffer.size)
                 if (read <= 0) continue
+                // `read` is not `buffer.size`. AudioRecord is free to return a
+                // short read, and the encoded path re-blocks these bytes into
+                // fixed 960-sample frames, so the block size that actually
+                // reaches the codec is decided here and nowhere else. Logged
+                // because FLAC loses about 18% of its audio while AAC is within
+                // 2%, and neither this class nor the fan-out states which size
+                // is in play.
+                recordReadSize(read)
                 // Snapshot the client list under the lock, then write OUTSIDE
                 // it. Holding a monitor across a blocking pipe write is what
                 // took the whole HTTP server down: measured on the phone, 14
