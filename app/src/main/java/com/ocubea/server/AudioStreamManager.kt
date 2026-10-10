@@ -121,7 +121,16 @@ class AudioStreamManager(private val context: Context) {
      * extra synchronisation beyond the map's own.
      */
     private fun recordReadSize(size: Int) {
-        val counter = readSizes.computeIfAbsent(size) { AtomicInteger() }
+        // No computeIfAbsent here. Its lambda desugars to a synthetic class
+        // (AudioStreamManager$$ExternalSyntheticLambda0) that R8 left out of the
+        // APK, so the first read threw NoClassDefFoundError and killed the
+        // capture thread. A plain get-or-put has no synthetic class.
+        var counter = readSizes[size]
+        if (counter == null) {
+            counter = AtomicInteger()
+            val prev = readSizes.putIfAbsent(size, counter)
+            if (prev != null) counter = prev
+        }
         val total = counter.incrementAndGet()
         if (total % 100 == 0) {
             val sizes = readSizes.entries
