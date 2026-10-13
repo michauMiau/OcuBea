@@ -1,4 +1,4 @@
-# OcuBea
+<h1 align=center>OcuBea</h1>
 
 ## **THE** Lightweight IP Camera Streamer for Android 📷
 
