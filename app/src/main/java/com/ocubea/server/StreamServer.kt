@@ -1848,7 +1848,7 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
         val raw = readBody(session).ifBlank {
             session.parms?.entries?.joinToString(",") { (k, v) -> "$k=$v" }.orEmpty()
         }
-        val names = Regex("klip_[A-Za-z0-9_.\\-]+\\.mp4").findAll(raw).map { it.value }.toSet()
+        val names = Regex("klip_[A-Za-z0-9_.\\-]+\\.mp4|motion_[A-Za-z0-9_.\\-]+\\.avi").findAll(raw).map { it.value }.toSet()
         if (names.isEmpty()) return badRequest("no clip names given")
         val active = cameraManager.clipWriter?.activeClip
         var deleted = 0
@@ -1948,7 +1948,7 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
     }
 
     private fun handleListVideos(): Response {
-        val files = motionRecorder.listRecordings()
+        val files = ClipStorage.list(context)
         val items = files.joinToString(",") {
             """"{"name":"${it.name}","url":"/v/${it.name}","size":${it.length()},"modified":${it.lastModified()}}"""
         }

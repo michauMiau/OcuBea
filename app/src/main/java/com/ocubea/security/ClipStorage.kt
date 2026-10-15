@@ -62,11 +62,12 @@ object ClipStorage {
 
     /** Clips on disk, newest first. */
     fun list(context: Context): List<File> {
-        val prefix = PREFIX + "_"
-        val ext = EXT
-        return root(context).listFiles { f -> f.isFile && f.name.startsWith(prefix) && f.name.endsWith(ext) }
-            ?.sortedByDescending { it.lastModified() }
-            ?: emptyList()
+        return root(context).listFiles { f ->
+            f.isFile && (
+                f.name.startsWith(PREFIX + "_") && f.name.endsWith(".mp4") ||
+                    f.name.startsWith("motion_") && f.name.endsWith(".avi")
+            )
+        }?.sortedByDescending { it.lastModified() } ?: emptyList()
     }
     /**
      * Resolves a client-supplied name to a real file inside the clip directory,
@@ -79,6 +80,12 @@ object ClipStorage {
     fun resolve(context: Context, name: String): File? {
         if (name.isEmpty() || name.contains('/') || name.contains('\\') || name.contains("..")) return null
         if (!name.startsWith("${PREFIX}_") || !name.endsWith(EXT)) return null
+        val isMp4 = name.endsWith(".mp4")
+        val isAvi = name.endsWith(".avi")
+        if (!isMp4 && !isAvi) return null
+        if (isMp4 && !name.startsWith("klip_")) return null
+        if (isAvi && !name.startsWith("motion_")) return null
+
         val base = root(context)
         val file = File(base, name)
         return runCatching {

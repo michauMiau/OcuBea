@@ -16,6 +16,7 @@ import com.ocubea.model.OcuBeaConfig
 import com.ocubea.onvif.OnvifDiscovery
 import com.ocubea.security.MotionDetector
 import com.ocubea.security.MotionRecorder
+import com.ocubea.security.ClipStorage
 import com.ocubea.security.MotionTonePlayer
 import com.ocubea.server.StreamServer
 import java.io.File
@@ -112,7 +113,7 @@ class StreamService : LifecycleService() {
         super.onCreate()
         instance = this
 
-        val recordDir = File(getExternalFilesDir(null) ?: filesDir, "recordings")
+        val recordDir = ClipStorage.root(this)
         motionRecorder = MotionRecorder(recordDir)
         motionTone = MotionTonePlayer(OcuBeaConfig(applicationContext))
         motionDetector = MotionDetector(config.motionSensitivity)
