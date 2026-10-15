@@ -79,6 +79,12 @@ class AudioEncoderFanOut(
         "feed_misses" to feedMisses,
         "packets_out" to packetsOut,
         "empty_out" to emptyOut,
+        // Summed across every encoder, so it stays comparable with feed_calls
+        // rather than being scoped to whichever codec happens to be selected.
+        // An empty_out means the codec buffered; an input_full means a capture
+        // block was never offered to it. FLAC was losing 70% of its audio to
+        // the second while the status page only ever showed the first.
+        "input_full" to encoders.values.sumOf { it.inputFullCount() },
         "carry_bytes" to carryBytes()
     )
 
@@ -328,7 +334,10 @@ class AudioEncoderFanOut(
     /** Takes exactly [FRAME_BYTES] out of the front. Caller checked the size. */
     private fun drainFrame(into: ByteArray) {
         System.arraycopy(carry, 0, into, 0, AudioEncoder.FRAME_BYTES)
-        carryLen -= AudioEncoder.FRAME_BYTES
-        if (carryLen == 0) carryLen = 0
+        val remaining = carryLen - AudioEncoder.FRAME_BYTES
+        if (remaining > 0) {
+            System.arraycopy(carry, AudioEncoder.FRAME_BYTES, carry, 0, remaining)
+        }
+        carryLen = remaining
     }
 }

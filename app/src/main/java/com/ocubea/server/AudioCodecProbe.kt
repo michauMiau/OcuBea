@@ -210,7 +210,7 @@ object AudioCodecProbe {
          * the best codec available on the *newest* phone would make the stream
          * fail on the old e-waste phone that is the whole point of the app.
          */
-        fun defaultId(): String = "wav"
+        fun defaultId(): String = if (canAac) "aac" else "wav"
     }
 
     /**
