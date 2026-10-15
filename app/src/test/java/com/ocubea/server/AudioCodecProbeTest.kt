@@ -46,10 +46,10 @@ class AudioCodecProbeTest {
     }
 
     @Test
-    fun theDefaultIsAacNotTheBestAvailable() {
-        // The app exists to run on old e-waste phones. Picking the newest
-        // phone's best codec would make the default fail on the oldest one.
-        assertEquals("aac", result(opus = true, aac = true).defaultId())
+    fun theDefaultIsWavBecauseAacAndFlacGlitch() {
+        // AAC and FLAC produced audible glitches on the measured phone, so the
+        // default is the uncompressed WAV stream that always decodes cleanly.
+        assertEquals("wav", result(opus = true, aac = true).defaultId())
         assertEquals("wav", result(opus = false, aac = false).defaultId())
     }
 
@@ -93,7 +93,7 @@ class AudioCodecProbeTest {
         assertTrue(s, "opus=true" in s)
         assertTrue(s, "amrnb=false" in s)
         assertTrue(s, "flac=false" in s)
-        assertTrue(s, "default=aac" in s)
+        assertTrue(s, "default=wav" in s)
     }
 
     /**
