@@ -716,6 +716,36 @@ function Stream({ mode, running, lowLatency, audioCodec, audioEnabled }) {
 }
 
 // ── app ─────────────────────────────────────────────────────────────────────
+
+
+// Small perf dock: requestAnimationFrame FPS and (Chrome) JS heap size. Cheap
+// enough to leave on even on a Redmi Note-class phone.
+function usePerformanceProfiler(setProf) {
+  useEffect(() => {
+    let frames = 0;
+    let last = performance.now();
+    let raf = 0;
+    const tick = (now) => {
+      frames++;
+      if (now - last >= 1000) {
+        setProf((p) => ({ ...p, fps: frames }));
+        frames = 0;
+        last = now;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    const iv = setInterval(() => {
+      const m = performance.memory;
+      if (m) setProf((p) => ({ ...p, heap: Math.round(m.usedJSHeapSize / 1048576) }));
+    }, 1000);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearInterval(iv);
+    };
+  }, [setProf]);
+}
+
 function App() {
   const [status, setStatus] = useState(null);
   const [sensors, setSensors] = useState(null);
@@ -730,6 +760,8 @@ function App() {
   const [clipRec, setClipRec] = useState(null);
   // which clip the <video> preview is showing, if any
   const [clipPreview, setClipPreview] = useState(null);
+  const [prof, setProf] = useState({ fps: 0, heap: 0 });
+  usePerformanceProfiler(setProf);
   const [recordings, setRecordings] = useState([]);
   const [flash, setFlash] = useState('');
   const [token, setTokenState] = useState(() => getToken());
@@ -1416,6 +1448,15 @@ function App() {
           />
         <//>
         <p class="dim">${t('tokenHint')}</p>
+      </section>
+    <section>
+        <h2>${t('perfProfiler') || 'Profiler'}</h2>
+        <dl>
+          <dt>FPS</dt>
+          <dd>${prof.fps}</dd>
+          <dt>JS heap (MB)</dt>
+          <dd>${prof.heap}</dd>
+        </dl>
       </section>
     </main>
   `;
