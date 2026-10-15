@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import org.json.JSONObject
 import com.ocubea.camera.CameraManager
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
@@ -271,6 +272,7 @@ class StreamServer(
         // and `/v1/devices` is not a route this app has at all.
         if (uri == "/v1/devices") return ipWebcamDeviceList()
         if (uri == "/cgi-bin/action") return handleIpWebcamAction(session)
+        if (uri == "/toggletorch") return handleToggleTorch()
         if (uri == "/startvideo") return handleIpWebcamRecord(session, true)
         if (uri == "/stopvideo") return handleIpWebcamRecord(session, false)
         return when {
@@ -289,10 +291,19 @@ class StreamServer(
         // ── Streaming ──
         uri == "/video" || uri == "/videofeed" || uri == "/mjpeg" || uri.startsWith("/stream") -> handleMjpeg()
         uri == "/shot.jpg" || uri == "/snapshot.jpg" || uri == "/image" -> handleShot()
+        uri == "/video4flash" -> handleMjpeg()
+        uri == "/crossdomain.xml" -> handleCrossDomain()
+        uri == "/check_public" -> okText("ok")
+        uri == "/version" -> handleVersion()
+        uri == "/videostatus" -> handleVideoStatus()
+        uri == "/motiondata" -> handleMotionData()
+        uri == "/modet_areas.json" -> handleMotionAreas()
         // Upstream aliases. /photo.jpg and /photoaf.jpg both serve the current
         // frame; upstream's autofocus variant is the same instant snapshot here,
         // because CameraX autofocus is continuous rather than a one-shot action.
         uri == "/photo.jpg" || uri == "/photoaf.jpg" || uri == "/photo.jpg?nofocus" -> handleShot()
+        uri == "/now.jpg" || uri == "/photo_save.jpg" || uri == "/photo_save_only.jpg" ||
+            uri == "/photoaf_save.jpg" || uri == "/photoaf_save_only.jpg" -> handleShot()
 
         // ── Recording (upstream-compatible) ──
         uri == "/startvideo" -> handleStartVideo(session)
@@ -388,6 +399,50 @@ class StreamServer(
 
         else -> notFound(uri)
     }
+    }
+
+
+
+    private fun handleToggleTorch(): Response {
+        val next = !torchOn
+        val reason = setTorch(next)
+        return if (reason == null) ipWebcamOk() else newFixedLengthResponse(Status.BAD_REQUEST, "text/plain", "Torch failed: $reason")
+    }
+
+    private fun handleCrossDomain(): Response =
+        newFixedLengthResponse(
+            Status.OK, "text/xml; charset=utf-8",
+            """<?xml version="1.0"?>
+<cross-domain-policy>
+  <allow-access-from domain="*" to-ports="*" />
+</cross-domain-policy>"""
+        )
+
+    private fun handleVersion(): Response =
+        newFixedLengthResponse(Status.OK, "text/plain", "OcuBea 0.1.0-alpha")
+
+    private fun handleVideoStatus(): Response {
+        val sb = StringBuilder()
+        sb.append("{")
+        sb.append("\"recording\":").append(motionRecorder.recording)
+        sb.append(",\"count\":").append(motionRecorder.recordingsCount)
+        sb.append(",\"last\":").append(JSONObject.quote(motionRecorder.lastRecordingFile ?: ""))
+        sb.append("}")
+        return newFixedLengthResponse(Status.OK, "application/json; charset=utf-8", sb.toString())
+    }
+
+    private fun handleMotionData(): Response {
+        return newFixedLengthResponse(
+            Status.OK, "application/json; charset=utf-8",
+            """{"motion":${motionDetector.motionDetected},"enabled":${motionDetector.enabled},"sensitivity":${motionDetector.sensitivity}}"""
+        )
+    }
+
+    private fun handleMotionAreas(): Response {
+        return newFixedLengthResponse(
+            Status.OK, "application/json; charset=utf-8",
+            """{"areas":[]}"""
+        )
     }
 
     fun stopServer() {
