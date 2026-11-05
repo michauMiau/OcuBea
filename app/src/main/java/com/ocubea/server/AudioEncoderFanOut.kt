@@ -325,13 +325,11 @@ class AudioEncoderFanOut(
         enc: AudioEncoder,
         pcm: ShortArray,
         codecId: String
-    ): ByteArray? {
-        return try {
-            enc.encodeFrame(pcm)
-        } catch (e: Exception) {
-            Log.w(TAG, "encode $codecId failed", e)
-            ByteArray(0)
-        }
+    ): ByteArray? = try {
+        enc.encodeFrame(pcm)
+    } catch (e: Exception) {
+        Log.w(TAG, "encode $codecId failed", e)
+        ByteArray(0)
     }
 
     // ── carry ring, all of it under the caller's hold on `carry` ──────────

@@ -292,7 +292,7 @@ class AudioEncoder private constructor(
             val inFmt = codec?.inputFormat
             Log.i(
                 TAG,
-                "$codecId after start: input=${inFmt}, output=${codec?.outputFormat}"
+                "$codecId after start: input=$inFmt, output=${codec?.outputFormat}"
             )
         }
     }

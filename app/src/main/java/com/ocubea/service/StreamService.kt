@@ -14,12 +14,11 @@ import com.ocubea.R
 import com.ocubea.camera.CameraManager
 import com.ocubea.model.OcuBeaConfig
 import com.ocubea.onvif.OnvifDiscovery
+import com.ocubea.security.ClipStorage
 import com.ocubea.security.MotionDetector
 import com.ocubea.security.MotionRecorder
-import com.ocubea.security.ClipStorage
 import com.ocubea.security.MotionTonePlayer
 import com.ocubea.server.StreamServer
-import java.io.File
 import java.net.NetworkInterface
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors

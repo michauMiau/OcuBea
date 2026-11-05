@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
-import org.json.JSONObject
 import com.ocubea.camera.CameraManager
 import com.ocubea.model.CameraConfig
 import com.ocubea.model.OcuBeaConfig
@@ -20,6 +19,7 @@ import com.ocubea.sensors.DeviceSensors
 import com.ocubea.stream.FrameHub
 import com.ocubea.ui.KeepScreenOn
 import fi.iki.elonen.NanoHTTPD
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
 import fi.iki.elonen.NanoHTTPD.Response.Status as Status
@@ -401,8 +401,6 @@ class StreamServer(
     }
     }
 
-
-
     private fun handleToggleTorch(): Response {
         val next = !torchOn
         val reason = setTorch(next)
@@ -431,19 +429,17 @@ class StreamServer(
         return newFixedLengthResponse(Status.OK, "application/json; charset=utf-8", sb.toString())
     }
 
-    private fun handleMotionData(): Response {
-        return newFixedLengthResponse(
+    private fun handleMotionData(): Response =
+        newFixedLengthResponse(
             Status.OK, "application/json; charset=utf-8",
             """{"motion":${motionDetector.motionDetected},"enabled":${motionDetector.enabled},"sensitivity":${motionDetector.sensitivity}}"""
         )
-    }
 
-    private fun handleMotionAreas(): Response {
-        return newFixedLengthResponse(
+    private fun handleMotionAreas(): Response =
+        newFixedLengthResponse(
             Status.OK, "application/json; charset=utf-8",
             """{"areas":[]}"""
         )
-    }
 
     fun stopServer() {
         try { motionRecorder.finishClip() } catch (_: Exception) {}

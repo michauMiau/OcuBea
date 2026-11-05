@@ -61,14 +61,13 @@ object ClipStorage {
         PREFIX + "_" + NAME_FMT.format(now) + EXT
 
     /** Clips on disk, newest first. */
-    fun list(context: Context): List<File> {
-        return root(context).listFiles { f ->
+    fun list(context: Context): List<File> =
+        root(context).listFiles { f ->
             f.isFile && (
                 f.name.startsWith(PREFIX + "_") && f.name.endsWith(".mp4") ||
                     f.name.startsWith("motion_") && f.name.endsWith(".avi")
             )
         }?.sortedByDescending { it.lastModified() } ?: emptyList()
-    }
     /**
      * Resolves a client-supplied name to a real file inside the clip directory,
      * or null if the name is not ours or escapes the directory.
