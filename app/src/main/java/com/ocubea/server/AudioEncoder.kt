@@ -218,6 +218,18 @@ class AudioEncoder private constructor(
      */
     private var codecHoldingBack = false
 
+    /**
+     * How many capture blocks were offered to MediaCodec and never queued,
+     * because the codec had no free input buffer at that instant.
+     *
+     * Published in /status.json next to `empty_out`, because the two mean
+     * different failures: an empty drain is the codec buffering as designed, a
+     * full input queue is audio that must be re-offered. They were being
+     * counted as the same thing, which is why FLAC's rate loss looked like a
+     * drain problem for as long as it did.
+     */
+    private var inputFull = 0
+
     // Ogg state, all meaningless unless the codec is Opus. The serial number
     // lives in OggPage; only the two counters are per-encoder.
     private var granule = 0L
@@ -293,7 +305,9 @@ class AudioEncoder private constructor(
 
     /**
      * Feeds exactly one frame of PCM and returns whatever it encoded, or an empty
-     * array when the encoder is still buffering. `pcm` must be
+     * array when the encoder is still buffering. A null return means the codec
+     * had no input buffer at this instant and the block was never queued; the
+     * caller must re-offer the same samples on its next read. `pcm` must be
      * [FRAME_SAMPLES] long: audio capture does not promise frame alignment, so
      * the caller re-frames and keeps the leftover.
      */
@@ -309,13 +323,18 @@ class AudioEncoder private constructor(
      * the header and nothing else -- an Opus file that no player would play and
      * an AAC response with a zero-length body.
      *
-     * So this separates the two halves properly: the input is queued with a
-     * short wait, and the output is then drained on a deadline long enough to
-     * cover the encoder's own latency. 40 ms is the frame period plus slack; the
-     * ring buffers return false rather than blocking, so a client that stopped
+     * So this separates the two halves properly: one input dequeue with no
+     * wait, and an output drain on a deadline long enough to cover the
+     * encoder's own latency. 40 ms is the frame period plus slack; the ring
+     * buffers return false rather than blocking, so a client that stopped
      * reading costs a dropped frame and not a stalled microphone.
+     *
+     * A null return says the codec had no free input buffer at this instant.
+     * That block was never queued: no PTS was consumed, so a re-offer of the
+     * same samples carries the same timestamp and the codec sees an unbroken
+     * stream.
      */
-    fun encodeFrame(pcm: ShortArray): ByteArray {
+    fun encodeFrame(pcm: ShortArray): ByteArray? {
         val codec = this.codec ?: error("encoder not started")
         require(pcm.size == FRAME_SAMPLES) {
             "expected $FRAME_SAMPLES samples, got ${pcm.size}"
@@ -329,25 +348,54 @@ class AudioEncoder private constructor(
         // is never damaged.
         val out = ByteArray(8_192)
 
-        // Queue the input. `dequeueInputBuffer` returning -1 is normal right
-        // after a configure, so this is retried until the deadline rather than
-        // treated as a failure.
-        val queueDeadline = System.nanoTime() + 10_000_000L
-        while (System.nanoTime() < queueDeadline) {
-            val inIdx = codec.dequeueInputBuffer(2_000)
-            if (inIdx < 0) continue
-            codec.getInputBuffer(inIdx)?.let { buf ->
-                buf.clear()
-                // asShortBuffer() keeps the ByteBuffer's own order, which is
-                // the codec's native order; reordering would be a second guess
-                // about something the platform already got right.
-                buf.asShortBuffer().put(pcm)
-            }
-            val pts = framesIn * FRAME_SAMPLES * 1_000_000L / ENCODER_SAMPLE_RATE
-            codec.queueInputBuffer(inIdx, 0, FRAME_BYTES, pts, 0)
-            framesIn++
-            break
+        // Queue the input, and report whether it actually went in.
+        //
+        // `if (inIdx < 0) continue` used to be the whole retry loop, and it
+        // silently threw the block away. `dequeueInputBuffer` returns -1
+        // whenever the codec has no free input buffer, which for FLAC is most
+        // of the time: it buffers 576 samples per frame and is mid-block for
+        // most of the 46 ms between capture reads. Ten milliseconds of retry
+        // is not enough to cover that, so the loop fell out through the
+        // deadline with `pcm` never queued, `framesIn` never advanced, and the
+        // caller was none the wiser -- it got ByteArray(0) and counted an
+        // empty encode.
+        //
+        // That is where 70% of the audio went. Measured over one 40 s window
+        // with the wire verified frame-for-frame:
+        //
+        //   feed_calls 724, packets_out 361, empty_out 1181
+        //   724 x 960 samples in  = 15.76 s
+        //   361 x 576 samples out =  4.72 s   (30% survived)
+        //
+        // AAC lost almost nothing on the identical path because AAC-LC emits
+        // every call and its input queue drains fast, so the retry window
+        // usually found a buffer. FLAC never gets that for free.
+        //
+        // Spinning longer inside MediaCodec is not the fix either: the retry
+        // belongs to the caller's cadence, not to this function. One dequeue
+        // with no wait, and if the codec is full the block comes back as null
+        // so AudioEncoderFanOut re-offers the same samples on the next capture
+        // read rather than advancing past them.
+        val inIdx = codec.dequeueInputBuffer(0)
+        if (inIdx < 0) {
+            inputFull++
+            Log.w(
+                TAG,
+                "no input buffer for $codecId; block of $FRAME_SAMPLES samples " +
+                    "not queued, will retry, input_full=$inputFull"
+            )
+            return null
         }
+        codec.getInputBuffer(inIdx)?.let { buf ->
+            buf.clear()
+            // asShortBuffer() keeps the ByteBuffer's own order, which is
+            // the codec's native order; reordering would be a second guess
+            // about something the platform already got right.
+            buf.asShortBuffer().put(pcm)
+        }
+        val pts = framesIn * FRAME_SAMPLES * 1_000_000L / ENCODER_SAMPLE_RATE
+        codec.queueInputBuffer(inIdx, 0, FRAME_BYTES, pts, 0)
+        framesIn++
 
         // Drain output until something actually comes out.
         //
@@ -480,6 +528,15 @@ class AudioEncoder private constructor(
         if (!gotAny) codecHoldingBack = true
         return ByteArray(0)
     }
+
+    /**
+     * Blocks this encoder could not queue because MediaCodec had no free input
+     * buffer at the instant of the call.
+     *
+     * Read by [AudioEncoderFanOut.stats] so the number reaches /status.json,
+     * where it belongs next to `empty_out` rather than inside a log line.
+     */
+    fun inputFullCount(): Int = inputFull
 
     /**
      * True for the Matroska-style Opus configuration buffer, which is

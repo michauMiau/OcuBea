@@ -63,6 +63,14 @@ class AudioEncoderFanOut(
     private val frameBytes = ByteArray(AudioEncoder.FRAME_BYTES)
     private val frameSamples = ShortArray(AudioEncoder.FRAME_SAMPLES)
 
+    /**
+     * One block that the codec could not accept, held outside the carry. This
+     * retry slot is the cap-at-one-block contract: exactly one failed frame
+     * survives a capture read, and it reaches the codec before any newer
+     * samples, so a re-offered block keeps its unconsumed timestamp.
+     */
+    private var pendingRetryShorts: ShortArray? = null
+
     @Volatile private var clientCount = 0
 
     // Diagnostics for the "header only, no packets" bug. Bounded so a real
@@ -71,6 +79,9 @@ class AudioEncoderFanOut(
     @Volatile private var feedMisses = 0
     @Volatile private var packetsOut = 0
     @Volatile private var emptyOut = 0
+
+    /** PCM bytes lost to the carry's overflow branches. Under the carry lock. */
+    private var carryDropBytes = 0
 
     /** Counters for /status.json, so this is visible without logcat. */
     fun stats(): Map<String, Int> = mapOf(
@@ -85,7 +96,10 @@ class AudioEncoderFanOut(
         // block was never offered to it. FLAC was losing 70% of its audio to
         // the second while the status page only ever showed the first.
         "input_full" to encoders.values.sumOf { it.inputFullCount() },
-        "carry_bytes" to carryBytes()
+        "carry_bytes" to carryBytes(),
+        // Bytes the overflow branches threw away. The retry slot never drops:
+        // it holds at most one block and re-offers it on the next capture read.
+        "carry_drop" to synchronized(carry) { carryDropBytes }
     )
 
     fun clients(): Int = clientCount
@@ -143,6 +157,7 @@ class AudioEncoderFanOut(
             encoders.clear()
             synchronized(carry) {
                 carryLen = 0
+                pendingRetryShorts = null
             }
         }
         // Outside the lock: feed() takes carry after lock, so holding lock here
@@ -235,6 +250,28 @@ class AudioEncoderFanOut(
             return
         }
         synchronized(carry) {
+            // The retry slot reaches the codec before any fresh samples do:
+            // its timestamp was never consumed, so ordering it behind newer
+            // frames would put an old block after a new one and rewind the PTS
+            // the codec is building.
+            val retry = pendingRetryShorts
+            if (retry != null) {
+                val retryOut = attemptEncode(enc, retry, codecId)
+                if (retryOut == null) {
+                    // Still no input buffer. The fresh PCM goes into the carry
+                    // and nothing drains this read: the retry has to win its
+                    // place in the queue before the carry's frames do.
+                    append(pcm, length)
+                    return
+                }
+                if (retryOut.isEmpty()) {
+                    emptyOut++
+                } else {
+                    packetsOut++
+                    target.broadcast(retryOut, retryOut.size)
+                }
+                pendingRetryShorts = null
+            }
             append(pcm, length)
             while (pending() >= AudioEncoder.FRAME_BYTES) {
                 drainFrame(frameBytes)
@@ -249,13 +286,16 @@ class AudioEncoderFanOut(
                 // shutdown for several frames.
                 if (enc.isStopping()) {
                     carryLen = 0
+                    pendingRetryShorts = null
                     return
                 }
-                val out = try {
-                    enc.encodeFrame(frameSamples)
-                } catch (e: Exception) {
-                    Log.w(TAG, "encode $codecId failed", e)
-                    ByteArray(0)
+                val out = attemptEncode(enc, frameSamples, codecId)
+                if (out == null) {
+                    // The codec had no input buffer for this block. Hold it as
+                    // the retry slot and stop draining here: anything behind it
+                    // stays in the carry until the retry has been accepted.
+                    pendingRetryShorts = frameSamples.copyOf()
+                    break
                 }
                 if (out.isNotEmpty()) {
                     packetsOut++
@@ -272,6 +312,25 @@ class AudioEncoderFanOut(
                     emptyOut++
                 }
             }
+        }
+    }
+
+    /**
+     * One encode attempt for [pcm]. A null result means the block was not
+     * queued and must be re-offered. A thrown exception is not a retry case:
+     * it comes back as an empty result counted by empty_out, so a dead codec
+     * does not keep a block alive against a codec that may be gone.
+     */
+    private fun attemptEncode(
+        enc: AudioEncoder,
+        pcm: ShortArray,
+        codecId: String
+    ): ByteArray? {
+        return try {
+            enc.encodeFrame(pcm)
+        } catch (e: Exception) {
+            Log.w(TAG, "encode $codecId failed", e)
+            ByteArray(0)
         }
     }
 
@@ -308,8 +367,11 @@ class AudioEncoderFanOut(
         if (length > carry.size) {
             // A single read larger than the whole carry: keep its tail, which is
             // the part that can still complete a frame. Dropping the head is
-            // audible, but overflowing the carry is not an option.
+            // audible, but overflowing the carry is not an option. The loss is
+            // counted so /status.json never reads "clean" over audio that went
+            // out of the buffer without reaching the codec.
             val keep = carry.size - (carry.size % AudioEncoder.FRAME_BYTES)
+            carryDropBytes += length - keep
             System.arraycopy(pcm, length - keep, carry, 0, keep)
             carryLen = keep
             return
@@ -324,6 +386,7 @@ class AudioEncoderFanOut(
         // invariant, no second index to get wrong.
         if (carryLen + length > carry.size) {
             val keep = carryLen - (carryLen % AudioEncoder.FRAME_BYTES)
+            carryDropBytes += carryLen - keep
             System.arraycopy(carry, carryLen - keep, carry, 0, keep)
             carryLen = keep
         }

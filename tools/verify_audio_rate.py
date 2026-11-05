@@ -31,6 +31,7 @@ import statistics
 import struct
 import subprocess
 import sys
+import time
 
 REFERENCE_RATE = 44100
 SAMPLE_RATE = 44100
@@ -53,6 +54,19 @@ def fetch(host, path, out, secs):
         return 0
 
 
+def set_codec(host, codec):
+    """Select the codec the endpoints will serve.
+
+    Required, not optional. /audio.flac answered 200 with a bare 42-byte FLAC
+    header while AAC was the selected codec, which reads exactly like a working
+    response and made three measurement rounds report FLAC as "42 B" without
+    anyone noticing the codec under test was never selected.
+    """
+    subprocess.run(['curl', '-s', '-m', '15', '-X', 'POST',
+                    '-d', f'codec={codec}', f'{host}/audio/codec'],
+                   capture_output=True)
+
+
 def decode_samples(path):
     """Decode to mono s16le and return the sample count."""
     r = subprocess.run(['ffmpeg', '-v', 'error', '-i', path, '-f', 's16le',
@@ -66,6 +80,11 @@ def decode_samples(path):
 def measure(host, secs, codecs):
     out = {}
     for name, path in codecs:
+        # Select first, then let the encoder settle: a fresh MediaCodec needs a
+        # moment before its first output frame, and measuring across that
+        # window counts the startup latency as missing audio.
+        set_codec(host, name)
+        time.sleep(2.5)
         local = f'/tmp/gate_{name}'
         size = fetch(host, path, local, secs)
         if size < 4096:
