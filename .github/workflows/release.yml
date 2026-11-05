@@ -34,7 +34,10 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # Same pin as build.yml: ubuntu-latest moved to Ubuntu 26.04 and pinned
+    # playwright refuses that image. The release path builds and signs the APK
+    # on the image playwright's installer supports.
+    runs-on: ubuntu-24.04
 
     # Secrets are not in the `secrets` context available to a step-level `if:`,
     # and a workflow that references them there is rejected at parse time -- every

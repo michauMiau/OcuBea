@@ -8,7 +8,13 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # ubuntu-latest moved to Ubuntu 26.04, and the pinned playwright 1.60 refuses
+    # that image: `npx playwright install --with-deps chromium` exits with
+    # "Playwright does not support chromium on ubuntu26.04-x64" and every WebUI
+    # gate after it is skipped. Pin 24.04, the one image that playwright's
+    # dependency installer supports, so the gate stays honest about the browser
+    # rather than going red on an image the runner only changed under us.
+    runs-on: ubuntu-24.04
 
     # Secrets are not in the `secrets` context available to a step-level `if:`,
     # and a workflow that references them there is rejected at parse time --
