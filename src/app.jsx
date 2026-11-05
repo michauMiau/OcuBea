@@ -717,7 +717,6 @@ function Stream({ mode, running, lowLatency, audioCodec, audioEnabled }) {
 
 // ── app ─────────────────────────────────────────────────────────────────────
 
-
 // Small perf dock: requestAnimationFrame FPS and (Chrome) JS heap size. Cheap
 // enough to leave on even on a Redmi Note-class phone.
 function usePerformanceProfiler(setProf) {
@@ -1449,12 +1448,12 @@ function App() {
         <//>
         <p class="dim">${t('tokenHint')}</p>
       </section>
-    <section>
+      <section>
         <h2>${t('perfProfiler') || 'Profiler'}</h2>
         <dl>
           <dt>FPS</dt>
           <dd>${prof.fps}</dd>
-          <dt>JS heap (MB)</dt>
+          <dt>${t('JS heap (MB)') || 'JS heap (MB)'}</dt>
           <dd>${prof.heap}</dd>
         </dl>
       </section>

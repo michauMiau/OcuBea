@@ -30,6 +30,8 @@ export const STR = {
     dropped: 'Odrzucone',
     resolution: 'Rozdzielczość',
     uptime: 'Czas działania',
+    perfProfiler: 'profiler',
+    'JS heap (MB)': 'pamięć JS (MB)',
     viewers: 'Widzowie',
     zoom: 'Zoom',
     focus: 'Ostrość',
