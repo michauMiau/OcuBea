@@ -46,9 +46,11 @@ class AudioCodecProbeTest {
     }
 
     @Test
-    fun theDefaultIsAacNotTheBestAvailable() {
-        // The app exists to run on old e-waste phones. Picking the newest
-        // phone's best codec would make the default fail on the oldest one.
+    fun theDefaultIsFlacOnlyWhenTheEncoderExists() {
+        // The app exists to run on old e-waste phones. The default must stay
+        // inside what the oldest device can encode: FLAC wins when the encoder
+        // is present, AAC and WAV cover devices without one.
+        assertEquals("flac", result(opus = true, aac = true, flac = true).defaultId())
         assertEquals("aac", result(opus = true, aac = true).defaultId())
         assertEquals("wav", result(opus = false, aac = false).defaultId())
     }
