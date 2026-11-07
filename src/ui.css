@@ -6,6 +6,18 @@
   --dim: #8b949e;
   --acc: #4caf50;
   --warn: #ff5252;
+  --line-soft: #21262d;
+  --ok: #238636;
+  --ok-hi: #2ea043;
+  --on-ok: #ffffff;
+  --info: #58a6ff;
+  --info-soft: #79c0ff;
+  --err-bg: #3d1d1d;
+  --err-line: #6e2b2b;
+  --err-soft: #ffb4b4;
+  --err-hot: #ff8a80;
+  --amber: #ffb454;
+  --black: #000000;
 }
 * {
   box-sizing: border-box;
@@ -42,20 +54,34 @@ header {
   align-items: center;
   gap: 8px;
   padding: 6px 12px 4px;
+  flex-wrap: nowrap;
 }
 h1 {
-  font-size: 16px;
+  font-family: ui-monospace, monospace;
+  font-size: 15px;
+  letter-spacing: 0.06em;
   color: var(--acc);
   font-weight: 700;
 }
 .pill {
   margin-left: auto;
-  font-size: 11px;
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 12px;
+  padding: 6px 12px;
   border-radius: 9px;
   background: var(--panel);
   border: 1px solid var(--line);
   color: var(--dim);
+  white-space: nowrap;
+}
+.btn:focus-visible,
+button:focus-visible,
+a:focus-visible,
+.pill:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
 }
 .pill.on {
   color: var(--acc);
@@ -84,7 +110,7 @@ h1 {
   align-items: baseline;
   gap: 5px;
   padding: 2px 7px;
-  background: #0d1117;
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
   min-width: 0;
@@ -148,7 +174,7 @@ main {
 }
 .stream {
   position: relative;
-  background: #000;
+  background: var(--black);
   border: 1px solid var(--line);
   border-radius: 9px 10px 0 0;
   overflow: hidden;
@@ -208,7 +234,7 @@ main {
   background: rgba(22, 27, 34, 0.82);
   color: var(--dim);
   font-size: 11px;
-  border: 1px solid #30363d;
+  border: 1px solid var(--line);
 }
 .grid {
   display: grid;
@@ -226,9 +252,9 @@ main {
   margin: 0 0 12px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: #3d1d1d;
+  background: var(--err-bg);
   border: 1px solid var(--warn);
-  color: #ffb4b4;
+  color: var(--err-soft);
   font-size: 13px;
 }
 .dim {
@@ -255,7 +281,7 @@ main {
 .text {
   flex: 1;
   min-width: 0;
-  background: #0d1117;
+  background: var(--bg);
   color: var(--txt);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -284,6 +310,15 @@ section {
   margin-bottom: 8px;
   min-width: 0;
 }
+section.split {
+  /* The stream panel carries the biggest thing on the page; the extra
+     padding keeps the feed clear of the panel edges on a phone. */
+  padding: 14px 16px;
+}
+section.prof {
+  /* The profiler is two rows of numbers; a tighter inset keeps it low-key. */
+  padding: 8px 12px;
+}
 /* A section that exists only to list files gets its own identity: the file
      lists are the tallest thing on the page, and at full height they pushed
      every control below the fold. Capped and scrolled, with the cap removed
@@ -297,12 +332,12 @@ section.files:has(.preview-open) {
   max-height: none;
 }
 h2 {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--dim);
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--txt);
   margin-bottom: 8px;
-  font-weight: 600;
 }
 /* A hairline under the heading separates it from the rows without adding
      another box: the section already has a border, and a second one reads as
@@ -324,7 +359,7 @@ h2 {
   gap: 8px;
   align-items: center;
   padding: 5px 0;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid var(--line-soft);
 }
 .row.file:last-child {
   border-bottom: 0;
@@ -342,7 +377,7 @@ h2 {
   cursor: pointer;
 }
 .row.file .name[onclick]:hover {
-  color: #58a6ff;
+  color: var(--info);
   text-decoration: underline;
 }
 .row.file .size {
@@ -365,7 +400,7 @@ h2 {
   font-size: 14px;
 }
 button {
-  background: #21262d;
+  background: var(--line-soft);
   color: var(--txt);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -376,7 +411,7 @@ button {
   font-family: inherit;
 }
 button:hover {
-  background: #30363d;
+  background: var(--line);
 }
 /* One button language. Every button gets the same height and the same
      neutral surface, so a "danger" one is the only thing that reads as
@@ -391,20 +426,20 @@ button.ctl {
   white-space: nowrap;
 }
 button.primary {
-  background: #238636;
-  border-color: #2ea043;
-  color: #fff;
+  background: var(--ok);
+  border-color: var(--ok-hi);
+  color: var(--on-ok);
 }
 button.primary:hover {
-  background: #2ea043;
+  background: var(--ok-hi);
 }
 button.danger {
   background: transparent;
-  border-color: #6e2b2b;
-  color: #ff8a80;
+  border-color: var(--err-line);
+  color: var(--err-hot);
 }
 button.danger:hover {
-  background: #3d1d1d;
+  background: var(--err-bg);
 }
 /* A disabled bulk action has to LOOK disabled. The three "delete all" /
      "apply limits" buttons walk the list client-side, so on an empty list they
@@ -413,7 +448,7 @@ button.danger:hover {
 /* A dropped-frame count and a clip error are the two numbers on this page that
      mean something is wrong; they must not read like the values beside them. */
 .warn {
-  color: #ffb454;
+  color: var(--amber);
 }
 button.ctl:disabled {
   opacity: 0.4;
@@ -424,7 +459,7 @@ button.ctl:disabled:hover {
   border-color: var(--line);
 }
 button.primary:disabled:hover {
-  background: #238636;
+  background: var(--ok);
 }
 button.danger:disabled:hover {
   background: transparent;
@@ -438,7 +473,7 @@ a.ctl {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: #21262d;
+  background: var(--line-soft);
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--txt);
@@ -446,7 +481,7 @@ a.ctl {
   font-size: 14px;
 }
 a.ctl:hover {
-  background: #30363d;
+  background: var(--line);
 }
 /* The HLS quality readout sits in the big-button row as a read-only box: it
      gets the same height and the same 44% track as the buttons, so the row has
@@ -494,9 +529,9 @@ dd {
   white-space: nowrap;
 }
 button.on {
-  background: #238636;
-  border-color: #2ea043;
-  color: #fff;
+  background: var(--ok);
+  border-color: var(--ok-hi);
+  color: var(--on-ok);
 }
 /* ── the big action buttons ──────────────────────────────────────────────
      They sat as bare <button class="big"> children of <section>, so the
@@ -526,7 +561,7 @@ button.big.secondary {
   color: var(--dim);
 }
 button.big.secondary:hover {
-  background: #21262d;
+  background: var(--line-soft);
   color: var(--txt);
 }
 /* start and stop keep their distinct colours but the same width as every
@@ -684,7 +719,7 @@ input[type='text'],
 input[type='password'],
 input[type='number'] {
   width: 100%;
-  background: #0d1117;
+  background: var(--bg);
   color: var(--txt);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -720,7 +755,7 @@ input[type='range']::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 3px;
   background: var(--line);
-  border: 1px solid #21262d;
+  border: 1px solid var(--line-soft);
 }
 input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -730,7 +765,7 @@ input[type='range']::-webkit-slider-thumb {
   margin-top: -6px;
   border-radius: 50%;
   background: var(--acc);
-  border: 2px solid #0d1117;
+  border: 2px solid var(--bg);
   box-shadow: 0 0 0 1px var(--acc);
 }
 input[type='range']:focus-visible::-webkit-slider-thumb {
@@ -742,7 +777,7 @@ input[type='range']::-moz-range-track {
   height: 6px;
   border-radius: 3px;
   background: var(--line);
-  border: 1px solid #21262d;
+  border: 1px solid var(--line-soft);
 }
 input[type='range']::-moz-range-progress {
   height: 6px;
@@ -754,7 +789,7 @@ input[type='range']::-moz-range-thumb {
   height: 14px;
   border-radius: 50%;
   background: var(--acc);
-  border: 2px solid #0d1117;
+  border: 2px solid var(--bg);
   box-shadow: 0 0 0 1px var(--acc);
 }
 /* the codec radio: A SECOND WHITE BALL, same defect as the slider thumb. These
@@ -771,7 +806,7 @@ input[type='radio'] {
   margin: 0;
   border-radius: 50%;
   border: 1px solid var(--line);
-  background: #0d1117;
+  background: var(--bg);
   cursor: pointer;
   display: inline-grid;
   place-content: center;
@@ -881,10 +916,10 @@ td.num {
 code {
   font-family: ui-monospace, monospace;
   font-size: 11px;
-  background: #0d1117;
+  background: var(--bg);
   padding: 1px 5px;
   border-radius: 4px;
-  color: #79c0ff;
+  color: var(--info-soft);
 }
 .hint {
   font-size: 11px;
@@ -918,7 +953,7 @@ code {
 .tile video {
   width: 100%;
   aspect-ratio: 16/9;
-  background: #000;
+  background: var(--black);
   display: block;
   object-fit: cover;
 }
@@ -967,8 +1002,11 @@ code {
   z-index: 2;
 }
 .btn {
-  display: inline-block;
-  background: #21262d;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  background: var(--line-soft);
   color: var(--txt);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1001,7 +1039,7 @@ code {
 .modalBox video {
   width: 100%;
   max-height: 70vh;
-  background: #000;
+  background: var(--black);
   border-radius: 8px;
 }
 .modalBox h3 {
@@ -1158,7 +1196,7 @@ footer {
 /* In real fullscreen the browser's own Esc exits, so the buttons stay where
    they are; nothing else has to move. */
 .stream:fullscreen {
-  background: #000;
+  background: var(--black);
   border-radius: 0;
   border: 0;
 }

@@ -866,9 +866,10 @@ function App() {
       <header>
         <h1>OcuBea</h1>
         <span class=${'pill ' + (running ? 'on' : 'off')}>
-          ${running ? '● ' + t('live') : '○ ' + t('stopped')}
+          ${running
+            ? '● ' + t('live') + ' · ' + (s.fps || 0) + ' ' + t('fps')
+            : '○ ' + t('stopped')}
         </span>
-        <span class="pill">${s.fps || 0} ${t('fps')}</span>
         ${!online && html`<span class="pill off">${t('phoneOffline')}</span>`}
         <button
           class="lang"
@@ -1438,7 +1439,7 @@ function App() {
             class="text"
             type="password"
             value=${token}
-            placeholder="..."
+            placeholder="…"
             onInput=${(e) => setTokenState(e.target.value)}
             onChange=${(e) => {
               setToken(e.target.value);
@@ -1448,7 +1449,7 @@ function App() {
         <//>
         <p class="dim">${t('tokenHint')}</p>
       </section>
-      <section>
+      <section class="prof">
         <h2>${t('perfProfiler') || 'Profiler'}</h2>
         <dl>
           <dt>FPS</dt>
