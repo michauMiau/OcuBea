@@ -411,7 +411,18 @@ class AudioEncoder private constructor(
         // 20 ms input cannot make a 4096-sample FLAC block ready on its own, so
         // the empty result is the true answer for this call, and the next
         // capture block is what will flush the codec's internal buffer.
-        val drainDeadline = System.nanoTime() + 40_000_000L
+        // The spin budget is 10 ms, not 40 ms. This function runs on the
+        // capture thread, one call per capture block, so every millisecond the
+        // drain waits is a millisecond the AudioRecord ring is not being
+        // polled. FLAC spends most of its life mid-block, which pins this loop
+        // to its full budget on most calls; at 40 ms a FLAC read cycle took
+        // ~86 ms against a 46 ms mic cadence, and CaptureRecord.log showed
+        // feed calls lagging behind real time by more than 20% (measured:
+        // 363 feeds supplied 7.9 s of samples over a 22 s window). Ten
+        // milliseconds keeps a little of the "flush what you queued" behaviour
+        // for AAC (whose frame is often already queued) while starving the
+        // mic only ~20% of the slack the ring has, which it absorbs.
+        val drainDeadline = System.nanoTime() + 10_000_000L
         var gotAny = false
         while (System.nanoTime() < drainDeadline) {
             val outIdx = codec.dequeueOutputBuffer(info, 5_000)

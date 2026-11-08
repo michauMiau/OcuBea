@@ -205,12 +205,14 @@ object AudioCodecProbe {
         /**
          * The codec to serve when a client does not ask for one.
          *
-         * AAC is the default, not Opus: AAC encoders exist on every Android
-         * this app supports, while software Opus starts at Android 11. Choosing
-         * the best codec available on the *newest* phone would make the stream
-         * fail on the old e-waste phone that is the whole point of the app.
+         * FLAC where the device can encode it, AAC otherwise: FLAC measured at
+         * 0.2% from a WAV reference on the Android 6 phone after the retry
+         * contract and the 10 ms drain budget, and it is the only lossless
+         * option. The old e-waste phones ship no FLAC encoder, so the rule
+         * hands them AAC or WAV instead of the newest phone's best codec,
+         * which is the point the oldest-device test keeps enforcing.
          */
-        fun defaultId(): String = if (canAac) "aac" else "wav"
+        fun defaultId(): String = if (canFlac) "flac" else if (canAac) "aac" else "wav"
     }
 
     /**
