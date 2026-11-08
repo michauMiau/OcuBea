@@ -132,6 +132,7 @@ class TelemetryHandler(
             append("\"version\":\"${versionName()}\",")
             append("\"uptime_s\":${uptimeSeconds()},")
             append("\"camera_active\":${cameraManager.isStreaming},")
+            append("\"focus_locked\":${cameraManager.isFocusLocked()},")
             // Requested vs. delivered, named as such. The adaptive governor
             // quietly drops the camera to a smaller rung when it cannot hold the
             // requested rate, and a top-level "resolution" and "fps" that echo

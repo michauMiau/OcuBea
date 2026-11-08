@@ -1360,6 +1360,37 @@ private fun handleHlsProfile(session: IHTTPSession): Response {
                 config.maxClipSeconds = secs
                 okText("ok $secs")
             }
+            // Retention caps are also unclamped head-of-config before this: any
+            // device on the LAN could POST a value that evicted every clip,
+            // or one that protected every clip forever. The config setters
+            // clamp, so here we only parse and let them do it.
+            "clip_max_space_mb" -> {
+                val mb = (value.toIntOrNull() ?: 4096).coerceIn(64, 1024 * 64)
+                config.clipMaxSpaceMb = mb
+                okText("ok $mb")
+            }
+            "clip_max_age_hours" -> {
+                val hours = (value.toIntOrNull() ?: 24 * 7).coerceIn(1, 24 * 90)
+                config.clipMaxAgeHours = hours
+                okText("ok $hours")
+            }
+            "clip_max_files" -> {
+                val n = (value.toIntOrNull() ?: 500).coerceIn(10, 5000)
+                config.clipMaxFiles = n
+                okText("ok $n")
+            }
+            // Focus lock is the one camera control that does not come with a
+            // switch already: the AF button autofocuses momentarily and then
+            // hands the lens back to the hunting loop. On = focus once where
+            // it lands and stay there; off = cancel the lock and hunt again.
+            "focus_lock", "focuslock" -> {
+                if (value != "off" && value != "false" && value != "0") {
+                    cameraManager.setFocus(0.5f, 0.5f, true)
+                } else {
+                    cameraManager.clearFocusLock()
+                }
+                okText("ok")
+            }
             "audio_enabled", "audio" -> {
                 config.audioEnabled = value != "off" && value != "false" && value != "0"
                 okText("ok")

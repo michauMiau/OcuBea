@@ -1107,6 +1107,13 @@ function App() {
             momentary=${true}
             icon="M12 18v-3M12 6V3M6 12H3M21 12h-3M7 7l1.8-1.8M15.2 7l1.8 1.8M7 17l1.8 1.8M15.2 17l1.8 1.8"
           />
+          <${Tile}
+            id="bFocusLock"
+            on=${!!s.focus_locked}
+            label=${t('focusLock')}
+            onChange=${(v) => act(setSetting, 'focus_lock', v ? 'on' : 'off', poll)}
+            icon="M7 11h10v10H7zM9 11V7a3 3 0 0 1 6 0v4"
+          />
           ${
             /* ffc is the one endpoint that genuinely implements "toggle": it
                     reads the camera state and inverts it (StreamServer.kt:890).
@@ -1254,6 +1261,87 @@ function App() {
           <dt>${t('available')}</dt>
           <dd>${audio.available || t('off')}</dd>
         </dl>
+      </section>
+      <section class="ret">
+        <h2>${t('retention')}</h2>
+        <${Row} label=${t('maxSpaceMb')}>
+          <${Slider}
+            id="ret-space"
+            min=${64}
+            max=${65536}
+            step=${1}
+            value=${s.clip_max_space_mb}
+            label=${t('maxSpaceMb')}
+            onInput=${(v) => act(setSetting, 'clip_max_space_mb', v, poll)}
+          />
+          <input
+            id="ret-space-value"
+            class="val num"
+            type="number"
+            min="64"
+            max="65536"
+            step="1"
+            value=${s.clip_max_space_mb}
+            aria-label=${t('maxSpaceMb')}
+            onChange=${(e) => {
+              const typed = Math.max(64, Math.min(65536, Math.round(+e.target.value || 0)));
+              if (typed === s.clip_max_space_mb) return;
+              act(setSetting, 'clip_max_space_mb', typed, poll);
+            }}
+          />
+        <//>
+        <${Row} label=${t('maxAgeHours')}>
+          <${Slider}
+            id="ret-age"
+            min=${1}
+            max=${2160}
+            step=${1}
+            value=${s.clip_max_age_hours}
+            label=${t('maxAgeHours')}
+            onInput=${(v) => act(setSetting, 'clip_max_age_hours', v, poll)}
+          />
+          <input
+            id="ret-age-value"
+            class="val num"
+            type="number"
+            min="1"
+            max="2160"
+            step="1"
+            value=${s.clip_max_age_hours}
+            aria-label=${t('maxAgeHours')}
+            onChange=${(e) => {
+              const typed = Math.max(1, Math.min(2160, Math.round(+e.target.value || 0)));
+              if (typed === s.clip_max_age_hours) return;
+              act(setSetting, 'clip_max_age_hours', typed, poll);
+            }}
+          />
+        <//>
+        <${Row} label=${t('maxFiles')}>
+          <${Slider}
+            id="ret-files"
+            min=${10}
+            max=${5000}
+            step=${1}
+            value=${s.clip_max_files}
+            label=${t('maxFiles')}
+            onInput=${(v) => act(setSetting, 'clip_max_files', v, poll)}
+          />
+          <input
+            id="ret-files-value"
+            class="val num"
+            type="number"
+            min="10"
+            max="5000"
+            step="1"
+            value=${s.clip_max_files}
+            aria-label=${t('maxFiles')}
+            onChange=${(e) => {
+              const typed = Math.max(10, Math.min(5000, Math.round(+e.target.value || 0)));
+              if (typed === s.clip_max_files) return;
+              act(setSetting, 'clip_max_files', typed, poll);
+            }}
+          />
+        <//>
       </section>
 
       <section class="files">

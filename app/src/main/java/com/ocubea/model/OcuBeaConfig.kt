@@ -298,6 +298,12 @@ class OcuBeaConfig(private val prefs: SharedPreferences) {
         "motion_record" to motionRecord,
         "pre_record_seconds" to preRecordSeconds,
         "max_clip_seconds" to maxClipSeconds,
+        // Read back by /config.json so the retention sliders read the caps
+        // back after they POST them; a slider that cannot read its own value
+        // is a slider that cannot be trusted to keep it.
+        "clip_max_space_mb" to clipMaxSpaceMb,
+        "clip_max_age_hours" to clipMaxAgeHours,
+        "clip_max_files" to clipMaxFiles,
         // /config.json is where a client reads back what it wrote. These three
         // were absent, so sound=on was applied to nothing and then could not be
         // confirmed from outside -- the same class of lie as device_name.
