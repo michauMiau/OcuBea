@@ -913,23 +913,6 @@ function App() {
         >
           ${lang.toUpperCase()}
         </button>
-      </header>
-      ${
-        /* Two status bars rendered the same numbers twice. Measured on the
-           Android 16 phone at 1280x800: one chip row at y=34 and another at
-           y=956, both `display:flex`, one reporting FPS / encoder / viewers /
-           resolution / segments / uptime / dropped and the other bitrate /
-           frames / effect. Everything the top bar shows was already there, so
-           the lower row repeated two values and added three that appear
-           nowhere else.
-
-           The three move up rather than being deleted, because bitrate, frame
-           count and the active effect are not in the top row and a frame
-           counter nobody can see is not telemetry. The row wraps to a second
-           line on a narrow screen, which is what `flex-wrap` is for. */
-        null
-      }
-      <div class="statusbar">
         <dl class="chips">
           <span class="chip">
             <dt>FPS</dt>
@@ -980,7 +963,7 @@ function App() {
                target being met or missed, and it has no other home. */ null
           }
         </dl>
-      </div>
+      </header>
     </div>
 
     <main>

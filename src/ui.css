@@ -91,13 +91,14 @@ a:focus-visible,
   color: var(--warn);
   border-color: var(--warn);
 }
-/* the status bar: above the picture, not under it. The values were a <dl> in a
-   full section further down the page, so the two things the user checks most
-   often, is it live and is the encoder keeping up, were below the fold and
-   under the video. Same dt/dd pairs, one wrapping row, one border, inside the
-   sticky top bar so it is on screen at every scroll position. */
+/* the status bar: the title row and every chip in ONE sticky bar. Two rows
+   at the top -- header plus a chip row beneath it -- is what the user read as
+   double chip bars. So the chips live inside the header line, inside one
+   scrolling flex row, and the top of the page is a single bar. */
 .statusbar {
-  padding: 0 12px 6px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 .chips {
   display: flex;
@@ -105,6 +106,8 @@ a:focus-visible,
   gap: 4px;
   overflow-x: auto;
   scrollbar-width: none;
+  flex: 1;
+  min-width: 0;
 }
 .chips::-webkit-scrollbar {
   display: none;
