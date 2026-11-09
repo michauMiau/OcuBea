@@ -896,9 +896,9 @@ function App() {
       <header>
         <h1>OcuBea</h1>
         <span class=${'pill ' + (running ? 'on' : 'off')}>
-          ${running
-            ? '● ' + t('live') + ' · ' + (s.fps || 0) + ' ' + t('fps')
-            : '○ ' + t('stopped')}
+          ${
+            running ? '● ' + t('live') + ' · ' + (s.fps || 0) + ' ' + t('fps') : '○ ' + t('stopped')
+          }
         </span>
         ${!online && html`<span class="pill off">${t('phoneOffline')}</span>`}
         <button
@@ -913,6 +913,26 @@ function App() {
         >
           ${lang.toUpperCase()}
         </button>
+      </header>
+    </div>
+
+    <main>
+      ${
+        /* Picture and audio in one box: the speaker control belongs next to the
+          stream it controls, not three sections further down under the
+          security panel.*/ null
+      }
+      <div class="stage">
+        <${Stream}
+          mode=${mode}
+          running=${running}
+          lowLatency=${lowLatency}
+          audioCodec=${audio.codec}
+          audioEnabled=${!!audio.enabled}
+        />
+        <${LiveAudio} codec=${audio.codec} enabled=${!!audio.enabled} running=${running} />
+      </div>
+      <div class="statusbar">
         <dl class="chips">
           <span class="chip">
             <dt>FPS</dt>
@@ -1389,29 +1409,31 @@ function App() {
             ${t('deleteAll')}
           </button>
         </div>
-        ${recordings.length === 0
-          ? html`<p class="dim">${t('noRecordings')}</p>`
-          : recordings.map(
-              (r) =>
-                html` <div class="row file">
-                  <span class="name" title=${r.name}>${r.name}</span>
-                  <span class="size">${bytes(r.size)}</span>
-                  <a
-                    class="ctl"
-                    href=${'/recordings/' + encodeURIComponent(r.name)}
-                    download
-                    title=${t('download')}
-                    >↓</a
-                  >
-                  <button
-                    class="ctl"
-                    onClick=${() => act(deleteRecording, r.name, loadLists)}
-                    title=${t('deleteClip')}
-                  >
-                    ✕
-                  </button>
-                </div>`,
-            )}
+        ${
+          recordings.length === 0
+            ? html`<p class="dim">${t('noRecordings')}</p>`
+            : recordings.map(
+                (r) =>
+                  html` <div class="row file">
+                    <span class="name" title=${r.name}>${r.name}</span>
+                    <span class="size">${bytes(r.size)}</span>
+                    <a
+                      class="ctl"
+                      href=${'/recordings/' + encodeURIComponent(r.name)}
+                      download
+                      title=${t('download')}
+                      >↓</a
+                    >
+                    <button
+                      class="ctl"
+                      onClick=${() => act(deleteRecording, r.name, loadLists)}
+                      title=${t('deleteClip')}
+                    >
+                      ✕
+                    </button>
+                  </div>`,
+              )
+        }
       </section>
 
       <section class="files">
@@ -1421,25 +1443,27 @@ function App() {
              failing write reported nothing -- the error field is the phone's
              own clipState error, and dropped frames are the one number that
              says the encoder was falling behind. -->
-        ${clipRec &&
-        html` <dl class="kv">
-          <dt>${t('recState')}</dt>
-          <dd>${clipRec.active ? t('recording') : clipRec.armed ? t('armed') : t('idle')}</dd>
-          ${clipRec.file &&
-          html`<dt>${t('recFile')}</dt>
-            <dd>${clipRec.file}</dd>`}
-          <dt>${t('recFrames')}</dt>
-          <dd>${clipRec.frames}</dd>
-          ${clipRec.dropped > 0 &&
-          html`<dt>${t('recDropped')}</dt>
-            <dd class="warn">${clipRec.dropped}</dd>`}
-          ${clipRec.bytes > 0 &&
-          html`<dt>${t('recBytes')}</dt>
-            <dd>${bytes(clipRec.bytes)}</dd>`}
-          ${clipRec.error &&
-          html`<dt>${t('recError')}</dt>
-            <dd class="warn">${clipRec.error}</dd>`}
-        </dl>`}
+        ${
+          clipRec &&
+          html` <dl class="kv">
+            <dt>${t('recState')}</dt>
+            <dd>${clipRec.active ? t('recording') : clipRec.armed ? t('armed') : t('idle')}</dd>
+            ${clipRec.file &&
+            html`<dt>${t('recFile')}</dt>
+              <dd>${clipRec.file}</dd>`}
+            <dt>${t('recFrames')}</dt>
+            <dd>${clipRec.frames}</dd>
+            ${clipRec.dropped > 0 &&
+            html`<dt>${t('recDropped')}</dt>
+              <dd class="warn">${clipRec.dropped}</dd>`}
+            ${clipRec.bytes > 0 &&
+            html`<dt>${t('recBytes')}</dt>
+              <dd>${bytes(clipRec.bytes)}</dd>`}
+            ${clipRec.error &&
+            html`<dt>${t('recError')}</dt>
+              <dd class="warn">${clipRec.error}</dd>`}
+          </dl>`
+        }
         <div class="row">
           <button id="bRecNow" class="ctl primary" onClick=${() => act(recordNow, 30, loadLists)}>
             ${t('recordNow')}
@@ -1467,32 +1491,34 @@ function App() {
             ${t('deleteAll')}
           </button>
         </div>
-        ${clips.length === 0
-          ? html`<p class="dim">${t('noClips')}</p>`
-          : clips.map(
-              (c) =>
-                html` <div class="row file">
-                  <span class="name" title=${c.name} onClick=${() => setClipPreview(c.name)}
-                    >${c.name}</span
-                  >
-                  <span class="size">${bytes(c.size)}</span>
-                  <a
-                    class="ctl"
-                    href=${'/clips/' + encodeURIComponent(c.name)}
-                    download
-                    title=${t('download')}
-                    >↓</a
-                  >
-                  <button
-                    id="clipDelete"
-                    class="ctl"
-                    onClick=${() => act(clipOnFile, 'delete', c.name, loadLists)}
-                    title=${t('deleteClip')}
-                  >
-                    ✕
-                  </button>
-                </div>`,
-            )}
+        ${
+          clips.length === 0
+            ? html`<p class="dim">${t('noClips')}</p>`
+            : clips.map(
+                (c) =>
+                  html` <div class="row file">
+                    <span class="name" title=${c.name} onClick=${() => setClipPreview(c.name)}
+                      >${c.name}</span
+                    >
+                    <span class="size">${bytes(c.size)}</span>
+                    <a
+                      class="ctl"
+                      href=${'/clips/' + encodeURIComponent(c.name)}
+                      download
+                      title=${t('download')}
+                      >↓</a
+                    >
+                    <button
+                      id="clipDelete"
+                      class="ctl"
+                      onClick=${() => act(clipOnFile, 'delete', c.name, loadLists)}
+                      title=${t('deleteClip')}
+                    >
+                      ✕
+                    </button>
+                  </div>`,
+              )
+        }
       </section>
 
       <section>
@@ -1506,11 +1532,13 @@ function App() {
           <dd>${audio.enabled ? audio.codec : t('off')}</dd>
           <dt>${t('battery')}</dt>
           <dd>
-            ${sensors && sensors.battery
-              ? sensors.battery.level +
-                '% · ' +
-                (sensors.battery.status ? t('battery_' + sensors.battery.status) : t('off'))
-              : t('off')}
+            ${
+              sensors && sensors.battery
+                ? sensors.battery.level +
+                  '% · ' +
+                  (sensors.battery.status ? t('battery_' + sensors.battery.status) : t('off'))
+                : t('off')
+            }
           </dd>
           <dt>${t('storage')}</dt>
           <dd>
@@ -1519,25 +1547,27 @@ function App() {
         </dl>
       </section>
 
-      ${clipPreview &&
-      html` <section class="preview">
-        <h2>${t('clipPreview')}</h2>
-        <video
-          src=${'/clips/' + encodeURIComponent(clipPreview)}
-          controls
-          autoplay
-          playsinline
-          style="width:100%;max-height:60vh;background:#000"
-        ></video>
-        <div class="row">
-          <a class="ctl" href=${'/clips/' + encodeURIComponent(clipPreview)} download
-            >${t('download')}</a
-          >
-          <button id="clipCloseBtn" class="ctl danger" onClick=${() => setClipPreview(null)}>
-            ${t('close')}
-          </button>
-        </div>
-      </section>`}
+      ${
+        clipPreview &&
+        html` <section class="preview">
+          <h2>${t('clipPreview')}</h2>
+          <video
+            src=${'/clips/' + encodeURIComponent(clipPreview)}
+            controls
+            autoplay
+            playsinline
+            style="width:100%;max-height:60vh;background:#000"
+          ></video>
+          <div class="row">
+            <a class="ctl" href=${'/clips/' + encodeURIComponent(clipPreview)} download
+              >${t('download')}</a
+            >
+            <button id="clipCloseBtn" class="ctl danger" onClick=${() => setClipPreview(null)}>
+              ${t('close')}
+            </button>
+          </div>
+        </section>`
+      }
 
       <section>
         <h2>${t('api')}</h2>
@@ -1570,22 +1600,24 @@ function App() {
           <dt>${t('JS heap (MB)') || 'JS heap (MB)'}</dt>
           <dd>${prof.heap}</dd>
         </dl>
-        ${!(metrics && metrics.enabled)
-          ? html`<p class="dim">${t('profilingOff')}</p>`
-          : spans.length
-            ? html`<div class="bars">
-                ${spans.map(
-                  ([name, s]) =>
-                    html`<div class="bar">
-                      <span class="bar-name">${name}</span>
-                      <span class="bar-track"
-                        ><i style=${{ width: Math.max(2, (s.p95_ms / spansMax) * 100) + '%' }}></i
-                      ></span>
-                      <span class="bar-val num">${s.p95_ms.toFixed(2)} ms · ${s.n}</span>
-                    </div>`,
-                )}
-              </div>`
-            : html`<p class="dim">${t('profilingNoSpans')}</p>`}
+        ${
+          !(metrics && metrics.enabled)
+            ? html`<p class="dim">${t('profilingOff')}</p>`
+            : spans.length
+              ? html`<div class="bars">
+                  ${spans.map(
+                    ([name, s]) =>
+                      html`<div class="bar">
+                        <span class="bar-name">${name}</span>
+                        <span class="bar-track"
+                          ><i style=${{ width: Math.max(2, (s.p95_ms / spansMax) * 100) + '%' }}></i
+                        ></span>
+                        <span class="bar-val num">${s.p95_ms.toFixed(2)} ms · ${s.n}</span>
+                      </div>`,
+                  )}
+                </div>`
+              : html`<p class="dim">${t('profilingNoSpans')}</p>`
+        }
       </details>
     </main>
   `;

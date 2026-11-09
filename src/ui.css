@@ -121,6 +121,7 @@ a:focus-visible,
   border: 1px solid var(--line);
   border-radius: 6px;
   min-width: 0;
+  flex: none;
 }
 /* The dt above its dd, not beside it.
  *
@@ -165,6 +166,21 @@ a:focus-visible,
   word-break: normal;
   overflow: visible;
   text-align: center;
+}
+/* Below ~460px the single header row cannot carry labels too: each chip
+   sheds its dt (the value stays, the metric name moves to the title tooltip)
+   so the one bar still fits between the logo and the language button instead
+   of tucking its tail off the screen. */
+@media (max-width: 460px) {
+  .chip dt {
+    display: none;
+  }
+  .chip {
+    padding: 2px 5px;
+  }
+  .chip dd {
+    font-size: 11px;
+  }
 }
 main {
   max-width: 860px;
