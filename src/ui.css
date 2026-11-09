@@ -101,9 +101,13 @@ a:focus-visible,
 }
 .chips {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 5px;
-  margin: 0;
+  flex-wrap: nowrap;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.chips::-webkit-scrollbar {
+  display: none;
 }
 .chip {
   display: inline-flex;
@@ -318,6 +322,66 @@ section.split {
 section.prof {
   /* The profiler is two rows of numbers; a tighter inset keeps it low-key. */
   padding: 8px 12px;
+}
+details.prof {
+  padding: 8px 12px;
+}
+details.prof summary {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--txt);
+  cursor: pointer;
+  list-style: none;
+}
+details.prof summary::-webkit-details-marker {
+  display: none;
+}
+.prof-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 12px;
+}
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bar-name {
+  width: 76px;
+  flex: none;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--dim);
+  text-align: right;
+}
+.bar-track {
+  flex: 1;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.bar-track i {
+  display: block;
+  height: 100%;
+  background: var(--acc);
+}
+.bar-val {
+  flex: none;
+  min-width: 92px;
+  font-size: 11px;
+  color: var(--dim);
+  text-align: right;
 }
 /* A section that exists only to list files gets its own identity: the file
      lists are the tallest thing on the page, and at full height they pushed

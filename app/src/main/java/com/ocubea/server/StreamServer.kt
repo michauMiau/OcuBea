@@ -388,6 +388,8 @@ class StreamServer(
         uri == "/sensors.json" -> telemetry.handleSensorsJson(session)
         uri == "/config.json" -> telemetry.handleConfigJson()
         uri == "/codecs.json" -> telemetry.handleCodecsJson()
+        uri == "/metrics.json" -> telemetry.handleMetricsJson()
+        uri == "/metrics/enable" && method == Method.POST -> telemetry.handleMetricsEnable(session)
 
         // ── HLS (low-latency hardware H.264) ──
         uri == "/hls" || uri == "/hls/index.m3u8" || uri == "/hls.m3u8" -> handleHlsPlaylist(session)

@@ -573,4 +573,36 @@ private fun boolJson(on: Boolean) = "\"" + boolStr(on) + "\""
                 """"summary":"${r.summary().escapeIt()}"}"""
         )
     }
+
+    /**
+     * GET /metrics.json — per-span timings from com.ocubea.perf.Metrics, as
+     * JSON. This is the pipeline-cost graph data the WebUI profiler paints.
+     * Recording is off by default; the WebUI's profiler section toggles it,
+     * so an empty spans map is the normal answer when nobody asked for it.
+     */
+    fun handleMetricsJson(): Response {
+        val snaps = if (com.ocubea.perf.Metrics.enabled) com.ocubea.perf.Metrics.snapshot() else emptyMap()
+        val spans = snaps.entries.joinToString(",") { (name, s) ->
+            "\"" + name.escapeIt() + "\":" + "{" +
+                "\"p50_ms\":" + s.p50Millis + "," +
+                "\"p95_ms\":" + s.p95Millis + "," +
+                "\"p99_ms\":" + s.p99Millis + "," +
+                "\"max_ms\":" + s.maxMillis + "," +
+                "\"mean_ms\":" + s.meanMillis + "," +
+                "\"n\":" + s.totalSamples + "," +
+                "\"truncated\":" + s.truncated + "}"
+        }
+        return NanoHTTPD.newFixedLengthResponse(
+            Status.OK, "application/json",
+            "{\"enabled\":" + com.ocubea.perf.Metrics.enabled + ",\"spans\":{" + spans + "}}"
+        )
+    }
+
+    /** POST /metrics/enable?on=1|0 — the WebUI profiler's Start/Stop toggle. */
+    fun handleMetricsEnable(session: IHTTPSession): Response {
+        val p = try { session.parms } catch (_: Exception) { emptyMap() }
+        val on = p["on"] == "1" || p["on"] == "true"
+        com.ocubea.perf.Metrics.setEnabled(on)
+        return NanoHTTPD.newFixedLengthResponse(Status.OK, "application/json", "{\"enabled\":" + on + "}")
+    }
 }

@@ -10,6 +10,7 @@ import Hls from 'hls.js';
 
 import {
   bytes,
+  api,
   get,
   setSetting,
   ptz,
@@ -760,7 +761,29 @@ function App() {
   // which clip the <video> preview is showing, if any
   const [clipPreview, setClipPreview] = useState(null);
   const [prof, setProf] = useState({ fps: 0, heap: 0 });
+  const [metrics, setMetrics] = useState(null);
   usePerformanceProfiler(setProf);
+  // Pipeline span timings for the profiler graph, slowest first.
+  const spans =
+    metrics && metrics.spans
+      ? Object.entries(metrics.spans)
+          .sort((a, b) => b[1].p95_ms - a[1].p95_ms)
+          .slice(0, 8)
+      : [];
+  const spansMax = spans.length ? spans[0][1].p95_ms || 1 : 1;
+  const toggleProfiling = async () => {
+    const on = !(metrics && metrics.enabled);
+    try {
+      await api('/metrics/enable?on=' + (on ? '1' : '0'), { method: 'POST' });
+    } catch {
+      /* optional */
+    }
+    try {
+      setMetrics(await get('/metrics.json'));
+    } catch {
+      /* optional */
+    }
+  };
   const [recordings, setRecordings] = useState([]);
   const [flash, setFlash] = useState('');
   const [token, setTokenState] = useState(() => getToken());
@@ -785,6 +808,13 @@ function App() {
     }
     try {
       setSensors(await get('/sensors.json'));
+    } catch {
+      /* optional */
+    }
+    // Metrics for the profiler section. Ignore failures; a phone without the
+    // profiler enabled reports the same thing every poll anyway.
+    try {
+      setMetrics(await get('/metrics.json'));
     } catch {
       /* optional */
     }
@@ -1492,7 +1522,13 @@ function App() {
           <dt>${t('audio')}</dt>
           <dd>${audio.enabled ? audio.codec : t('off')}</dd>
           <dt>${t('battery')}</dt>
-          <dd>${sensors && sensors.battery ? sensors.battery.level + '%' : t('off')}</dd>
+          <dd>
+            ${sensors && sensors.battery
+              ? sensors.battery.level +
+                '% · ' +
+                (sensors.battery.status ? t('battery_' + sensors.battery.status) : t('off'))
+              : t('off')}
+          </dd>
           <dt>${t('storage')}</dt>
           <dd>
             ${sensors && sensors.storage ? bytes(sensors.storage.free_mb * 1048576) : t('off')}
@@ -1537,15 +1573,37 @@ function App() {
         <//>
         <p class="dim">${t('tokenHint')}</p>
       </section>
-      <section class="prof">
-        <h2>${t('perfProfiler') || 'Profiler'}</h2>
+      <details class="prof">
+        <summary>${t('perfProfiler') || 'Profiler'}</summary>
+        <div class="prof-head">
+          <button class="btn" onClick=${toggleProfiling}>
+            ${metrics && metrics.enabled ? t('stopProfiling') : t('startProfiling')}
+          </button>
+          <span class="dim">${t('profilingNote')}</span>
+        </div>
         <dl>
           <dt>FPS</dt>
           <dd>${prof.fps}</dd>
           <dt>${t('JS heap (MB)') || 'JS heap (MB)'}</dt>
           <dd>${prof.heap}</dd>
         </dl>
-      </section>
+        ${!(metrics && metrics.enabled)
+          ? html`<p class="dim">${t('profilingOff')}</p>`
+          : spans.length
+            ? html`<div class="bars">
+                ${spans.map(
+                  ([name, s]) =>
+                    html`<div class="bar">
+                      <span class="bar-name">${name}</span>
+                      <span class="bar-track"
+                        ><i style=${{ width: Math.max(2, (s.p95_ms / spansMax) * 100) + '%' }}></i
+                      ></span>
+                      <span class="bar-val num">${s.p95_ms.toFixed(2)} ms · ${s.n}</span>
+                    </div>`,
+                )}
+              </div>`
+            : html`<p class="dim">${t('profilingNoSpans')}</p>`}
+      </details>
     </main>
   `;
 }

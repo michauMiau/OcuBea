@@ -29,6 +29,7 @@ class DeviceSensors(private val context: Context) {
             append("\"battery\":{")
             append("\"level\":${b.level},")
             append("\"charging\":${b.charging},")
+            append("\"status\":\"${b.status}\",")
             append("\"temperature_c\":${fmt(b.temperatureC)},")
             append("\"voltage_mv\":${b.voltageMv},")
             append("\"health\":\"${b.health}\",")
@@ -91,6 +92,7 @@ class DeviceSensors(private val context: Context) {
     data class BatteryInfo(
         val level: Int,
         val charging: Boolean,
+        val status: String,
         val temperatureC: Float?,
         val voltageMv: Int,
         val health: String,
@@ -102,11 +104,19 @@ class DeviceSensors(private val context: Context) {
             val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
             val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
             val pct = if (level >= 0 && scale > 0) level * 100 / scale else -1
+            val statusExtra = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val batteryStatus = when (statusExtra) {
+                BatteryManager.BATTERY_STATUS_CHARGING -> "charging"
+                BatteryManager.BATTERY_STATUS_DISCHARGING -> "discharging"
+                BatteryManager.BATTERY_STATUS_FULL -> "full"
+                BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "not_charging"
+                else -> "unknown"
+            }
             BatteryInfo(
                 level = pct,
-                charging = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ==
-                    BatteryManager.BATTERY_STATUS_CHARGING ||
-                    intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) == BatteryManager.BATTERY_STATUS_FULL,
+                charging = statusExtra == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    statusExtra == BatteryManager.BATTERY_STATUS_FULL,
+                status = batteryStatus,
                 temperatureC = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0)
                     ?.takeIf { it != 0 }?.let { it / 10.0f },
                 voltageMv = intent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1,
@@ -127,7 +137,7 @@ class DeviceSensors(private val context: Context) {
                 }
             )
         } catch (_: Exception) {
-            BatteryInfo(-1, false, null, -1, "unknown", "unknown")
+            BatteryInfo(-1, false, "unknown", null, -1, "unknown", "unknown")
         }
 
     // ── Storage ────────────────────────────────────────────────
