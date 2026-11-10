@@ -690,7 +690,7 @@ function Stream({ mode, running, lowLatency, audioCodec, audioEnabled }) {
 
   return html`
     <div class="stream" ref=${boxRef}>
-      <img ref=${imgRef} alt="Live stream" style=${useMjpeg ? '' : 'display:none'} />
+      <img ref=${imgRef} alt="Live stream" style=${useMjpeg && running ? '' : 'display:none'} />
       <video
         ref=${vidRef}
         playsinline
@@ -984,6 +984,7 @@ function App() {
           <button
             id="bStream"
             class="big danger primary-weight"
+            disabled=${!running}
             onClick=${() => act(setSetting, 'force_stop', '1')}
           >
             ${t('stop')}
@@ -1276,7 +1277,7 @@ function App() {
             min=${64}
             max=${65536}
             step=${1}
-            value=${s.clip_max_space_mb}
+            value=${s.clip_max_space_mb ?? 4096}
             label=${t('maxSpaceMb')}
             onInput=${(v) => act(setSetting, 'clip_max_space_mb', v, poll)}
           />
@@ -1287,7 +1288,7 @@ function App() {
             min="64"
             max="65536"
             step="1"
-            value=${s.clip_max_space_mb}
+            value=${s.clip_max_space_mb ?? 4096}
             aria-label=${t('maxSpaceMb')}
             onChange=${(e) => {
               const typed = Math.max(64, Math.min(65536, Math.round(+e.target.value || 0)));
@@ -1302,7 +1303,7 @@ function App() {
             min=${1}
             max=${2160}
             step=${1}
-            value=${s.clip_max_age_hours}
+            value=${s.clip_max_age_hours ?? 168}
             label=${t('maxAgeHours')}
             onInput=${(v) => act(setSetting, 'clip_max_age_hours', v, poll)}
           />
@@ -1313,7 +1314,7 @@ function App() {
             min="1"
             max="2160"
             step="1"
-            value=${s.clip_max_age_hours}
+            value=${s.clip_max_age_hours ?? 168}
             aria-label=${t('maxAgeHours')}
             onChange=${(e) => {
               const typed = Math.max(1, Math.min(2160, Math.round(+e.target.value || 0)));
@@ -1328,7 +1329,7 @@ function App() {
             min=${10}
             max=${5000}
             step=${1}
-            value=${s.clip_max_files}
+            value=${s.clip_max_files ?? 500}
             label=${t('maxFiles')}
             onInput=${(v) => act(setSetting, 'clip_max_files', v, poll)}
           />
@@ -1339,7 +1340,7 @@ function App() {
             min="10"
             max="5000"
             step="1"
-            value=${s.clip_max_files}
+            value=${s.clip_max_files ?? 500}
             aria-label=${t('maxFiles')}
             onChange=${(e) => {
               const typed = Math.max(10, Math.min(5000, Math.round(+e.target.value || 0)));
@@ -1352,7 +1353,7 @@ function App() {
 
       <section class="files">
         <h2>${t('recordings')} ${recordings.length}</h2>
-        <div class="tiles cols-1">
+        <div class="row">
           <${Tile}
             id="bRec"
             on=${!!recording.enabled}
@@ -1364,8 +1365,6 @@ function App() {
               })}
             icon="M12 14a2 2 0 100-4 2 2 0 000 4zM5.5 8.5h13l1 10h-15l1-10zM9 5l3-2 3 2"
           />
-        </div>
-        <div class="row">
           <button id="bRefreshRec" class="ctl" onClick=${() => act(loadLists)}>
             ${t('refresh')}
           </button>
@@ -1492,18 +1491,18 @@ function App() {
         <h2>${t('device')}</h2>
         <dl>
           <dt>Model</dt>
-          <dd>${sensorsDev.model || t('off')}</dd>
+          <dd>${sensorsDev.model || t('noData')}</dd>
           <dt>${t('battery')}</dt>
           <dd>
             ${sensors && sensors.battery
               ? sensors.battery.level +
                 '% · ' +
-                (sensors.battery.status ? t('battery_' + sensors.battery.status) : t('off'))
-              : t('off')}
+                (sensors.battery.status ? t('battery_' + sensors.battery.status) : t('noData'))
+              : t('noData')}
           </dd>
           <dt>${t('storage')}</dt>
           <dd>
-            ${sensors && sensors.storage ? bytes(sensors.storage.free_mb * 1048576) : t('off')}
+            ${sensors && sensors.storage ? bytes(sensors.storage.free_mb * 1048576) : t('noData')}
           </dd>
         </dl>
       </section>

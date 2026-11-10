@@ -3,7 +3,7 @@
   --panel: #161b22;
   --line: #30363d;
   --txt: #e6edf3;
-  --dim: #8b949e;
+  --dim: #96a2ab;
   --acc: #4caf50;
   --warn: #ff5252;
   --line-soft: #21262d;
@@ -395,6 +395,19 @@ details.prof summary {
 }
 details.prof summary::-webkit-details-marker {
   display: none;
+}
+/* The disclosure has to look like one: a chevron that rotates when the
+   section opens. A bare heading with no marker is indistinguishable from a
+   section title, and the user cannot tell what is clickable. */
+details.prof summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--acc);
+  transition: transform 0.15s ease;
+}
+details.prof[open] summary::before {
+  transform: rotate(90deg);
 }
 .prof-head {
   display: flex;
