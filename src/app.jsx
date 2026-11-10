@@ -1019,7 +1019,7 @@ function App() {
               act(setHlsProfile, v ? 'low' : 'default', poll);
             }}
           >
-            ${t('lowLatency')}
+            ${t('lowLatency')}: ${lowLatency ? t('on') : t('off')}
           </button>
           <${HlsQuality} />
           <button

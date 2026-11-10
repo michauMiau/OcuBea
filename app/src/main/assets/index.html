@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0d1117">
-<meta name="ocubea-build" content="192ff171">
+<meta name="ocubea-build" content="a75e8137">
 <title>OcuBea</title>
 <link rel="icon" type="image/png" href="/favicon.ico">
 <!-- No query string on the icon, deliberately. A build-id query here means a
@@ -1846,7 +1846,7 @@ Schedule: ${l.map(m=>ze(m))} pos: ${this.timelinePos}`),u.length&&this.log(`Remo
             class=${"big secondary"+(l?" on":"")}
             onClick=${()=>{let P=!l;c(P),localStorage.setItem("ocubea_ll",P?"1":"0"),$(qu,P?"low":"default",k)}}
           >
-            ${D("lowLatency")}
+            ${D("lowLatency")}: ${l?D("on"):D("off")}
           </button>
           <${pp} />
           <button
