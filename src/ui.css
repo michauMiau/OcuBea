@@ -705,6 +705,23 @@ button.big.secondary:hover {
 button.big.primary-weight {
   flex: 1 1 30%;
 }
+/* A disabled action has to LOOK disabled, not act disabled. The stop button
+   kept the filled danger colour while the stream was stopped, so it read as
+   live and clickable; dimming it matches the state the header already says. */
+button.big:disabled,
+button.ctl:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+button.big.primary:disabled {
+  background: var(--ok-dim);
+  color: var(--txt);
+}
+button.big.danger:disabled {
+  border-color: var(--line);
+  color: var(--dim);
+  background: transparent;
+}
 .row {
   display: flex;
   gap: 8px;
@@ -945,6 +962,17 @@ input[type='radio'] {
   cursor: pointer;
   display: inline-grid;
   place-content: center;
+}
+/* A radio is only 14px, which is not a touch target. The row itself carries
+   the tap area: 44px tall, and the label and description stretch the full
+   width so pressing anywhere in the row picks the codec. */
+.row label,
+.row .name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  cursor: pointer;
 }
 input[type='radio']::before {
   content: '';
