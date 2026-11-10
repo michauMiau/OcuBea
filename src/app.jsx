@@ -408,9 +408,9 @@ function LiveAudio({ codec, enabled, running }) {
     <button
       id="bAud"
       class=${'tgl' + (playing ? ' on' : '')}
-      aria-label=${playing ? t('audioOn') : t('audioMuted')}
+      aria-label=${t('browserAudio')}
       aria-pressed=${playing}
-      title=${playing ? t('audioOn') : t('audioMuted')}
+      title=${t('browserAudio')}
       disabled=${!have}
       onClick=${() => setOn(!on)}
     >
@@ -1018,7 +1018,7 @@ function App() {
               act(setHlsProfile, v ? 'low' : 'default', poll);
             }}
           >
-            ${t('lowLatency')}: ${lowLatency ? t('on') : t('off')}
+            ${t('lowLatency')}
           </button>
           <${HlsQuality} />
           <button
@@ -1245,7 +1245,6 @@ function App() {
             icon="M4 9v6h4l5 4V5L8 9H4zM17 8.5a5 5 0 010 7M19.5 6a8.5 8.5 0 010 12"
           />
         </div>
-        <span class="dim">${audio.enabled ? t('audioOn') : t('audioOff')}</span>
         ${AudioCodecs(audio.available).map(
           ([id, key]) =>
             html` <${Row} label=${t(key)}>
@@ -1357,7 +1356,7 @@ function App() {
           <${Tile}
             id="bRec"
             on=${!!recording.enabled}
-            label=${t('recording')}
+            label=${t('continuousRecording')}
             onChange=${(v) =>
               act(setSetting, 'recording', v ? 'on' : 'off', async () => {
                 await poll();
@@ -1494,10 +1493,6 @@ function App() {
         <dl>
           <dt>Model</dt>
           <dd>${sensorsDev.model || t('off')}</dd>
-          <dt>${t('recording')}</dt>
-          <dd>${recording.enabled ? (recording.active ? '● ' + t('on') : t('idle')) : t('off')}</dd>
-          <dt>${t('audio')}</dt>
-          <dd>${audio.enabled ? audio.codec : t('off')}</dd>
           <dt>${t('battery')}</dt>
           <dd>
             ${sensors && sensors.battery
@@ -1551,7 +1546,7 @@ function App() {
         <p class="dim">${t('tokenHint')}</p>
       </section>
       <details class="prof">
-        <summary>${t('perfProfiler') || 'Profiler'}</summary>
+        <summary>${t('performance')}</summary>
         <div class="prof-head">
           <button class="btn" onClick=${toggleProfiling}>
             ${metrics && metrics.enabled ? t('stopProfiling') : t('startProfiling')}

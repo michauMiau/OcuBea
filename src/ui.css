@@ -64,7 +64,7 @@ h1 {
   font-weight: 700;
 }
 .pill {
-  margin-left: auto;
+  margin-left: 0;
   display: inline-flex;
   align-items: center;
   min-height: 44px;
@@ -102,12 +102,8 @@ a:focus-visible,
 }
 .chips {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 4px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  flex: 1;
-  min-width: 0;
 }
 .chips::-webkit-scrollbar {
   display: none;
@@ -144,6 +140,27 @@ a:focus-visible,
   padding: 3px 8px;
   text-align: center;
 }
+/* Rows of buttons never clip mid-word: wrap first, and a button that would
+   be cut off the viewport shrinks its own box instead. The tile labels wrap
+   too; "Sound in the browser" no longer hides a hidden tail under the tile. */
+.row {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+/* Buttons inside control rows never clip: they wrap to the next line
+   rather than tucking their tail off-screen, and shrink to the available
+   space at narrow widths. */
+.row .btn,
+.row button {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.tilebtn {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .chip dt {
   font-size: 9px;
   letter-spacing: 0.05em;
@@ -172,9 +189,6 @@ a:focus-visible,
    so the one bar still fits between the logo and the language button instead
    of tucking its tail off the screen. */
 @media (max-width: 460px) {
-  .chip dt {
-    display: none;
-  }
   .chip {
     padding: 2px 5px;
   }
@@ -295,6 +309,31 @@ main {
   white-space: nowrap;
   font-family: ui-monospace, monospace;
   font-size: 12px;
+}
+/* Button rows: nothing may clip mid-word. The stream-control rows, tile rows
+   and file rows all overflowed the viewport at 390px, so their content wraps
+   and shrinks instead of tucking its tail off-screen. */
+.row {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.row .btn,
+.row button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tiles .tile,
+.tiles button {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* A dt that spills past its chip gets clipped, never wrapped off-screen; the
+   tooltip already carries the full metric name for the hover case. */
+.chip dd {
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .row .val {
   color: var(--dim);
@@ -626,7 +665,7 @@ button.big {
   flex: 1 1 30%;
   min-width: 0;
   height: 44px;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 500;
   display: inline-flex;
   align-items: center;
@@ -1089,6 +1128,7 @@ code {
   align-items: center;
   justify-content: center;
   min-height: 44px;
+  flex: none;
   background: var(--line-soft);
   color: var(--txt);
   border: 1px solid var(--line);
@@ -1462,4 +1502,31 @@ footer {
 .tilebtn.on {
   background: rgba(34, 197, 94, 0.18);
   border-color: var(--acc);
+}
+
+/* Control rows shrink so their buttons never leave the viewport: buttons
+   share the line, and anything left over wraps to the next line rather than
+   tucking its tail off-screen. Basis is the text, not zero: a button shrunk
+   below its own label is unreadable, so the shrink stops at the label. */
+.row .btn,
+.row button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* Control rows shrink so their buttons never leave the viewport: buttons
+   share the line, and anything left over wraps to the next line rather than
+   tucking its tail off-screen. Basis is the text, not zero: a button shrunk
+   below its own label is unreadable, so the shrink stops at the label. */
+.row .btn,
+.row button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* A value that spills past a chip clips with ellipsis, never wraps
+   off-screen; the tooltip already carries the full value. */
+.chip dd {
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
