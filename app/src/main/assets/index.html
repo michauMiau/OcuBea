@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0d1117">
-<meta name="ocubea-build" content="2773e085">
+<meta name="ocubea-build" content="313ff6bf">
 <title>OcuBea</title>
 <link rel="icon" type="image/png" href="/favicon.ico">
 <!-- No query string on the icon, deliberately. A build-id query here means a
@@ -1545,6 +1545,24 @@ footer {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A value that spills past a chip clips with ellipsis; the tooltip already
+   carries the full value. */
+.chip dd {
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Control rows shrink so their buttons never leave the viewport: buttons
+   share the line, and anything left over wraps to the next line rather than
+   tucking its tail off-screen. Basis is the text, not zero: a button shrunk
+   below its own label is unreadable, so the shrink stops at the label. */
+.row .btn,
+.row button {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 </style>
