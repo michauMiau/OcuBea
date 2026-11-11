@@ -1560,20 +1560,32 @@ function App() {
         </dl>
         ${!(metrics && metrics.enabled)
           ? html`<p class="dim">${t('profilingOff')}</p>`
-          : spans.length
-            ? html`<div class="bars">
-                ${spans.map(
-                  ([name, s]) =>
-                    html`<div class="bar">
-                      <span class="bar-name">${name}</span>
-                      <span class="bar-track"
-                        ><i style=${{ width: Math.max(2, (s.p95_ms / spansMax) * 100) + '%' }}></i
-                      ></span>
-                      <span class="bar-val num">${s.p95_ms.toFixed(2)} ms · ${s.n}</span>
-                    </div>`,
-                )}
-              </div>`
-            : html`<p class="dim">${t('profilingNoSpans')}</p>`}
+          : html`<div>
+              ${metrics && metrics.rejected > 0
+                ? html`<p class="dim">
+                    ${t('profilingRejected')}: ${metrics.rejected}/${metrics.max_spans || 64}
+                  </p>`
+                : null}
+              ${spans.length
+                ? html`<div class="bars">
+                    ${spans.map(
+                      ([name, s]) =>
+                        html`<div
+                          class="bar"
+                          title=${`p50 ${s.p50_ms.toFixed(2)} · p95 ${s.p95_ms.toFixed(2)} · p99 ${s.p99_ms.toFixed(2)} · max ${s.max_ms.toFixed(2)} · mean ${s.mean_ms.toFixed(2)} ms`}
+                        >
+                          <span class="bar-name">${name}</span>
+                          <span class="bar-track"
+                            ><i
+                              style=${{ width: Math.max(2, (s.p95_ms / spansMax) * 100) + '%' }}
+                            ></i
+                          ></span>
+                          <span class="bar-val num">${s.p95_ms.toFixed(2)} ms · ${s.n}</span>
+                        </div>`,
+                    )}
+                  </div>`
+                : html`<p class="dim">${t('profilingNoSpans')}</p>`}
+            </div>`}
       </details>
     </main>
   `;

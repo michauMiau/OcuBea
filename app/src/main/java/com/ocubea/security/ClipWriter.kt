@@ -1,6 +1,7 @@
 package com.ocubea.security
 
 import android.content.Context
+import com.ocubea.perf.Metrics
 import com.ocubea.stream.H264Encoder
 import java.io.IOException
 import java.io.RandomAccessFile
@@ -188,26 +189,32 @@ class ClipWriter(private val context: Context) {
             val segment = runCatching { muxer?.append(sample) }.getOrNull() ?: continue
             val bytes = segment.bytes
 
-            val ok = synchronized(lock) {
-                val raf = file
-                if (raf == null) {
-                    false
-                } else {
-                    try {
-                        raf.write(bytes)
-                        bytesWritten += bytes.size
-                        framesWritten++
-                        // durationMs is a measurement of what this segment
-                        // actually covers, so accumulating it tracks the
-                        // presentation length rather than wall-clock time.
-                        durationUs += segment.durationMs * 1000L
-                        true
-                    } catch (e: IOException) {
-                        // A pulled SD card lands here.
-                        lastError = e.message ?: "clip write failed"
+            val cw = if (Metrics.enabled) Metrics.timer(Metrics.CLIP_WRITE) else null
+            val cw0 = if (cw != null) cw.begin() else 0L
+            val ok = try {
+                synchronized(lock) {
+                    val raf = file
+                    if (raf == null) {
                         false
+                    } else {
+                        try {
+                            raf.write(bytes)
+                            bytesWritten += bytes.size
+                            framesWritten++
+                            // durationMs is a measurement of what this segment
+                            // actually covers, so accumulating it tracks the
+                            // presentation length rather than wall-clock time.
+                            durationUs += segment.durationMs * 1000L
+                            true
+                        } catch (e: IOException) {
+                            // A pulled SD card lands here.
+                            lastError = e.message ?: "clip write failed"
+                            false
+                        }
                     }
                 }
+            } finally {
+                if (cw != null) cw.end(cw0)
             }
             // Stop cleanly on a dead handle rather than spinning on it for the
             // rest of the session.

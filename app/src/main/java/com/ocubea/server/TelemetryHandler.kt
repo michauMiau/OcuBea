@@ -592,9 +592,13 @@ private fun boolJson(on: Boolean) = "\"" + boolStr(on) + "\""
                 "\"n\":" + s.totalSamples + "," +
                 "\"truncated\":" + s.truncated + "}"
         }
+        val rejected = com.ocubea.perf.Metrics.rejectedSpans()
         return NanoHTTPD.newFixedLengthResponse(
             Status.OK, "application/json",
-            "{\"enabled\":" + com.ocubea.perf.Metrics.enabled + ",\"spans\":{" + spans + "}}"
+            "{\"enabled\":" + com.ocubea.perf.Metrics.enabled +
+                ",\"rejected\":" + rejected +
+                ",\"max_spans\":" + com.ocubea.perf.Metrics.MAX_SPANS +
+                ",\"spans\":{" + spans + "}}"
         )
     }
 

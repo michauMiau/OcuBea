@@ -1190,10 +1190,13 @@ class CameraManager(
                             val quality = jpegQualityOverride.coerceIn(40, 100)
                             val bos = jpegPool.acquire()
                             val jpeg: ByteArray
+                            val tj = if (Metrics.enabled) Metrics.timer(Metrics.JPEG) else null
+                            val tj0 = if (tj != null) tj.begin() else 0L
                             try {
                                 processed.compress(Bitmap.CompressFormat.JPEG, quality, bos)
                                 jpeg = bos.toByteArray()
                             } finally {
+                                if (tj != null) tj.end(tj0)
                                 jpegPool.release(bos)
                             }
                             frameCounter++
